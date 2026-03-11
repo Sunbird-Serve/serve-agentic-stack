@@ -1,7 +1,13 @@
 """
-SERVE AI Platform - Backend Server
+SERVE AI Platform - Backend Server (Refactored)
 For development environment - runs all services in combined mode.
 In production, use docker-compose to run services separately.
+
+This version includes:
+- AgentRouter abstraction for routing decisions
+- WorkflowValidator for state transition validation
+- Structured contracts for clean inter-service communication
+- Enhanced structured logging
 """
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,11 +17,11 @@ import logging
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from uuid import UUID, uuid4
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from enum import Enum
 import re
 
-# Configure logging
+# Configure structured logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -80,6 +86,18 @@ class EventType(str, Enum):
     HANDOFF = "handoff"
     ERROR = "error"
     USER_MESSAGE = "user_message"
+
+class OrchestrationEventType(str, Enum):
+    SESSION_CREATED = 'session_created'
+    SESSION_RESUMED = 'session_resumed'
+    MESSAGE_RECEIVED = 'message_received'
+    AGENT_INVOKED = 'agent_invoked'
+    AGENT_RESPONDED = 'agent_responded'
+    STATE_TRANSITION = 'state_transition'
+    ROUTING_DECISION = 'routing_decision'
+    HANDOFF_INITIATED = 'handoff_initiated'
+    VALIDATION_FAILED = 'validation_failed'
+    ERROR_OCCURRED = 'error_occurred'
 
 
 # ============ Pydantic Models ============
@@ -203,6 +221,30 @@ class PauseSessionRequest(BaseModel):
     reason: Optional[str] = None
 
 
+# ============ Routing Contract ============
+
+class RoutingDecision(BaseModel):
+    """Represents a routing decision made by the orchestrator."""
+    target_agent: str
+    confidence: float = Field(ge=0.0, le=1.0, default=1.0)
+    reason: str
+    fallback_agent: Optional[str] = None
+    routing_context: Dict[str, Any] = Field(default_factory=dict)
+
+
+# ============ Transition Validation Contract ============
+
+class TransitionValidation(BaseModel):
+    """Represents the result of validating a state transition."""
+    is_valid: bool
+    from_state: str
+    to_state: str
+    reason: str
+    warnings: List[str] = Field(default_factory=list)
+    required_fields_met: bool = True
+    recommended_action: Optional[str] = None
+
+
 # ============ In-Memory Store ============
 
 class InMemoryStore:
@@ -213,6 +255,189 @@ class InMemoryStore:
         self.telemetry = {}
 
 store = InMemoryStore()
+
+
+# ============ Workflow Validator ============
+
+class WorkflowValidator:
+    """Validates state transitions within workflows."""
+    
+    # Define valid transitions for onboarding workflow
+    VALID_TRANSITIONS = {
+        'init': ['intent_discovery'],
+        'intent_discovery': ['purpose_orientation', 'paused'],
+        'purpose_orientation': ['eligibility_confirmation', 'paused'],
+        'eligibility_confirmation': ['capability_discovery', 'paused'],
+        'capability_discovery': ['profile_confirmation', 'paused'],
+        'profile_confirmation': ['onboarding_complete', 'capability_discovery', 'paused'],
+        'onboarding_complete': [],
+        'paused': ['init', 'intent_discovery', 'purpose_orientation', 
+                   'eligibility_confirmation', 'capability_discovery', 'profile_confirmation'],
+    }
+    
+    # Required fields for each stage
+    STAGE_REQUIRED_FIELDS = {
+        'eligibility_confirmation': ['full_name', 'email'],
+        'capability_discovery': ['skills', 'availability'],
+        'profile_confirmation': ['full_name', 'email', 'skills', 'availability'],
+        'onboarding_complete': ['full_name', 'email', 'skills', 'availability'],
+    }
+    
+    def validate_transition(
+        self,
+        from_state: str,
+        to_state: str,
+        confirmed_fields: Dict = None
+    ) -> TransitionValidation:
+        """Validate a state transition."""
+        confirmed_fields = confirmed_fields or {}
+        
+        # Allow staying in same state
+        if from_state == to_state:
+            return TransitionValidation(
+                is_valid=True,
+                from_state=from_state,
+                to_state=to_state,
+                reason="Remaining in current stage"
+            )
+        
+        # Check if transition is allowed
+        valid_next = self.VALID_TRANSITIONS.get(from_state, [])
+        if to_state not in valid_next:
+            return TransitionValidation(
+                is_valid=False,
+                from_state=from_state,
+                to_state=to_state,
+                reason=f"Transition from '{from_state}' to '{to_state}' is not allowed",
+                recommended_action=f"Valid next stages: {valid_next}"
+            )
+        
+        # Check required fields
+        required = self.STAGE_REQUIRED_FIELDS.get(to_state, [])
+        missing = [f for f in required if not confirmed_fields.get(f)]
+        
+        if missing and to_state != 'paused':
+            return TransitionValidation(
+                is_valid=True,
+                from_state=from_state,
+                to_state=to_state,
+                reason="Transition allowed with warnings",
+                warnings=[f"Missing fields: {missing}"],
+                required_fields_met=False,
+                recommended_action="Collect missing required fields"
+            )
+        
+        return TransitionValidation(
+            is_valid=True,
+            from_state=from_state,
+            to_state=to_state,
+            reason=f"Valid transition from '{from_state}' to '{to_state}'",
+            required_fields_met=True
+        )
+    
+    def get_completion_percentage(self, stage: str) -> int:
+        """Calculate workflow completion percentage."""
+        stages = ['init', 'intent_discovery', 'purpose_orientation',
+                  'eligibility_confirmation', 'capability_discovery',
+                  'profile_confirmation', 'onboarding_complete']
+        if stage not in stages:
+            return 0
+        idx = stages.index(stage)
+        return round((idx / (len(stages) - 1)) * 100)
+    
+    def is_terminal_stage(self, stage: str) -> bool:
+        """Check if stage is terminal."""
+        return stage == 'onboarding_complete'
+
+
+workflow_validator = WorkflowValidator()
+
+
+# ============ Agent Router ============
+
+class AgentRouter:
+    """Routes requests to appropriate agents."""
+    
+    AGENT_STAGES = {
+        'onboarding': ['init', 'intent_discovery', 'purpose_orientation',
+                       'eligibility_confirmation', 'capability_discovery',
+                       'profile_confirmation', 'onboarding_complete', 'paused']
+    }
+    
+    def make_routing_decision(
+        self,
+        session_state: SessionState,
+        user_message: str
+    ) -> RoutingDecision:
+        """Determine which agent should handle the request."""
+        current_agent = session_state.active_agent
+        current_stage = session_state.stage
+        
+        # Check if current agent handles this stage
+        agent_stages = self.AGENT_STAGES.get(current_agent, [])
+        if current_stage in agent_stages:
+            return RoutingDecision(
+                target_agent=current_agent,
+                confidence=1.0,
+                reason=f"Continuing with {current_agent} for stage {current_stage}",
+                routing_context={'decision_type': 'continue'}
+            )
+        
+        # Find appropriate agent
+        for agent, stages in self.AGENT_STAGES.items():
+            if current_stage in stages:
+                return RoutingDecision(
+                    target_agent=agent,
+                    confidence=0.9,
+                    reason=f"Routing to {agent} for stage {current_stage}",
+                    fallback_agent=current_agent,
+                    routing_context={'decision_type': 'stage_based'}
+                )
+        
+        # Fallback
+        return RoutingDecision(
+            target_agent=current_agent,
+            confidence=0.5,
+            reason=f"Fallback to {current_agent}",
+            routing_context={'decision_type': 'fallback'}
+        )
+    
+    def log_routing_decision(self, session_id: str, decision: RoutingDecision):
+        """Log routing decision for debugging."""
+        logger.info(f"Routing Decision: session={session_id}, "
+                   f"target={decision.target_agent}, "
+                   f"confidence={decision.confidence}, "
+                   f"reason={decision.reason}")
+
+
+agent_router = AgentRouter()
+
+
+# ============ Structured Event Logger ============
+
+def log_orchestration_event(
+    event_type: OrchestrationEventType,
+    session_id: str,
+    agent: str = None,
+    workflow: str = None,
+    stage: str = None,
+    duration_ms: float = None,
+    details: Dict = None,
+    success: bool = True
+):
+    """Log structured orchestration events."""
+    event = {
+        'event': event_type.value,
+        'session_id': session_id,
+        'timestamp': datetime.utcnow().isoformat(),
+        'agent': agent,
+        'workflow': workflow,
+        'stage': stage,
+        'success': success,
+        'duration_ms': duration_ms,
+        **(details or {})
+    }
+    logger.info(f"Orchestration: {event}")
 
 
 # ============ MCP Capabilities ============
@@ -250,6 +475,14 @@ async def mcp_start_session(request: StartSessionRequest) -> MCPResponse:
     store.messages[session_id] = []
     store.telemetry[session_id] = []
     
+    log_orchestration_event(
+        OrchestrationEventType.SESSION_CREATED,
+        session_id,
+        workflow="new_volunteer_onboarding",
+        stage="init",
+        details={'channel': request.channel.value, 'persona': request.persona.value}
+    )
+    
     return MCPResponse(status="success", data={
         "session_id": session_id,
         "stage": "init",
@@ -264,6 +497,13 @@ async def mcp_resume_context(session_id: str) -> MCPResponse:
     profile = store.profiles.get(session_id, {})
     messages = store.messages.get(session_id, [])[-10:]
     
+    log_orchestration_event(
+        OrchestrationEventType.SESSION_RESUMED,
+        session_id,
+        workflow=session.get("workflow"),
+        stage=session.get("stage")
+    )
+    
     return MCPResponse(status="success", data={
         "session": session,
         "volunteer_profile": profile,
@@ -277,6 +517,24 @@ async def mcp_advance_state(session_id: str, new_state: str, sub_state: str = No
         return MCPResponse(status="error", error="Session not found")
     
     old_state = session["stage"]
+    profile = store.profiles.get(session_id, {})
+    
+    # Validate transition
+    validation = workflow_validator.validate_transition(
+        old_state, new_state, profile
+    )
+    
+    if not validation.is_valid:
+        logger.warning(f"Invalid transition blocked: {validation.reason}")
+        return MCPResponse(
+            status="error",
+            error=validation.reason,
+            data={"recommended_action": validation.recommended_action}
+        )
+    
+    if validation.warnings:
+        logger.info(f"Transition warnings: {validation.warnings}")
+    
     session["stage"] = new_state
     session["sub_state"] = sub_state
     session["updated_at"] = datetime.utcnow().isoformat()
@@ -284,10 +542,26 @@ async def mcp_advance_state(session_id: str, new_state: str, sub_state: str = No
     if new_state == "onboarding_complete":
         session["status"] = "completed"
     
+    log_orchestration_event(
+        OrchestrationEventType.STATE_TRANSITION,
+        session_id,
+        workflow=session["workflow"],
+        stage=new_state,
+        details={
+            'from_state': old_state,
+            'to_state': new_state,
+            'required_fields_met': validation.required_fields_met
+        }
+    )
+    
     return MCPResponse(status="success", data={
         "session_id": session_id,
         "previous_state": old_state,
-        "current_state": new_state
+        "current_state": new_state,
+        "validation": {
+            "is_valid": validation.is_valid,
+            "warnings": validation.warnings
+        }
     })
 
 async def mcp_get_missing_fields(session_id: str) -> MCPResponse:
@@ -316,6 +590,7 @@ async def mcp_save_confirmed_fields(session_id: str, fields: Dict[str, Any]) -> 
     for field, value in fields.items():
         store.profiles[session_id][field] = value
     
+    logger.info(f"Saved fields for session {session_id}: {list(fields.keys())}")
     return MCPResponse(status="success", data={"saved_fields": list(fields.keys())})
 
 async def mcp_save_message(session_id: str, role: str, content: str, agent: str = None) -> MCPResponse:
@@ -348,70 +623,256 @@ async def mcp_log_event(session_id: str, event_type: str, agent: str = None, dat
     return MCPResponse(status="success", data={"event_id": event_id})
 
 
+# ============ eVidyaloka Context ============
+
+EVIDYALOKA_CONTEXT = """
+eVidyaloka's Mission:
+eVidyaloka enables equitable access to quality education for children in rural India.
+We connect passionate volunteers with students who need support.
+
+Communication Style:
+- Warm and welcoming - like greeting a friend joining a cause
+- Respectful and encouraging
+- Simple, clear language - avoid jargon
+- Never use technical terms like: workflow, orchestrator, MCP, agent, system
+"""
+
 # ============ Onboarding Agent Logic ============
 
+def build_state_prompt(stage: str, missing_fields: List[str], confirmed_fields: Dict) -> str:
+    """Build contextual prompt for eVidyaloka-aligned responses."""
+    
+    base = f"""You are an onboarding assistant for eVidyaloka, helping new volunteers join 
+our mission to bring quality education to children in rural India.
+
+{EVIDYALOKA_CONTEXT}
+
+Guidelines:
+- Keep responses concise (2-3 sentences max)
+- Be warm but not overly effusive
+- Ask one question at a time
+- Never mention technical terms or internal processes
+"""
+    
+    stage_instructions = {
+        "init": """STAGE: Welcome
+Give a warm, brief welcome and ask what brings them to volunteer with eVidyaloka.
+Example: "Welcome! It's wonderful to meet someone interested in supporting education. What brings you to eVidyaloka?" """,
+        
+        "intent_discovery": """STAGE: Understanding Interest
+Learn why they want to volunteer. Acknowledge their motivation warmly.
+Example: "That's really thoughtful. What draws you specifically to education or working with children?" """,
+        
+        "purpose_orientation": """STAGE: Sharing Mission
+Share briefly what eVidyaloka does - connecting volunteers with rural students.
+Ask what kind of support they'd enjoy providing.
+Example: "At eVidyaloka, volunteers teach and mentor children who might not otherwise have access to quality education. What kind of support would you enjoy providing?" """,
+        
+        "eligibility_confirmation": """STAGE: Getting to Know You
+Gather basic info: name, email. Ask for one piece at a time naturally.
+Example: "I'd love to know who I'm chatting with! What's your name?" """,
+        
+        "capability_discovery": """STAGE: Your Strengths
+Explore skills and availability. Be encouraging about whatever they share.
+Example: "What subjects or skills do you feel comfortable sharing with students?" """,
+        
+        "profile_confirmation": """STAGE: Confirm Profile
+Present what you've learned and ask if anything needs updating.
+Keep it conversational, not robotic.""",
+        
+        "onboarding_complete": """STAGE: Welcome Aboard!
+Congratulate them warmly. Let them know we'll match them with students soon.
+Example: "You're all set to begin your journey with eVidyaloka. We'll connect you with students soon. Thank you for choosing to make a difference!" """,
+        
+        "paused": """STAGE: Paused
+Be understanding, let them know they can return anytime.
+Example: "Of course! Take all the time you need. When you're ready, I'll be here." """
+    }
+    
+    prompt = base + "\n\n" + stage_instructions.get(stage, stage_instructions["init"])
+    
+    if missing_fields:
+        prompt += f"\n\nINFO STILL NEEDED: {', '.join(missing_fields)}. Ask about one naturally."
+    if confirmed_fields:
+        prompt += f"\n\nCONFIRMED: {confirmed_fields}"
+    
+    return prompt
+
 STATE_PROMPTS = {
-    "init": """You are SERVE AI, a friendly volunteer onboarding assistant. Warmly greet the user and ask what brings them to volunteer. Keep response to 2-3 sentences.""",
-    "intent_discovery": """You are SERVE AI in Intent Discovery. Understand why the volunteer wants to participate and what impact they hope to make. Acknowledge their motivation.""",
-    "purpose_orientation": """You are SERVE AI in Purpose Orientation. Share briefly how SERVE connects volunteers with opportunities. Ask what activities interest them.""",
-    "eligibility_confirmation": """You are SERVE AI in Eligibility Confirmation. Gather basic info: name, email, location. Ask for one piece at a time.""",
-    "capability_discovery": """You are SERVE AI in Capability Discovery. Explore skills, availability, and preferred volunteer work. Be encouraging.""",
-    "profile_confirmation": """You are SERVE AI in Profile Confirmation. Summarize what you've learned and ask if anything needs updating.""",
-    "onboarding_complete": """You are SERVE AI completing onboarding. Congratulate them and explain what happens next (matching with opportunities).""",
+    "init": "Welcome stage - see build_state_prompt()",
+    "intent_discovery": "Understanding motivation",
+    "purpose_orientation": "Sharing mission",
+    "eligibility_confirmation": "Gathering basic info",
+    "capability_discovery": "Exploring skills",
+    "profile_confirmation": "Confirming profile",
+    "onboarding_complete": "Completion",
 }
 
-def determine_next_state(current_state: str, message: str, missing_fields: List[str]) -> str:
-    pause_signals = ["pause", "stop", "later", "bye", "quit", "exit"]
-    if any(s in message.lower() for s in pause_signals):
+def determine_next_state(current_state: str, message: str, missing_fields: List[str], confirmed_fields: Dict = None) -> str:
+    """
+    Autonomously determine next state based on:
+    1. User signals (pause, exit)
+    2. Data completeness
+    3. Natural conversation flow
+    """
+    confirmed_fields = confirmed_fields or {}
+    message_lower = message.lower()
+    
+    # Check for pause/exit signals
+    pause_signals = ["pause", "stop", "later", "bye", "quit", "exit", "not now"]
+    if any(s in message_lower for s in pause_signals):
         return "paused"
+    
+    # Check for resume signals if paused
+    if current_state == "paused":
+        resume_signals = ["continue", "resume", "back", "ready", "let's go"]
+        if any(s in message_lower for s in resume_signals):
+            return "eligibility_confirmation"
     
     if current_state == "init":
         return "intent_discovery"
-    elif current_state == "intent_discovery" and len(message.split()) > 5:
-        return "purpose_orientation"
+    
+    elif current_state == "intent_discovery":
+        if len(message.split()) > 3:
+            return "purpose_orientation"
+        return current_state
+    
     elif current_state == "purpose_orientation":
         return "eligibility_confirmation"
-    elif current_state == "eligibility_confirmation" and len(missing_fields) < 3:
-        return "capability_discovery"
-    elif current_state == "capability_discovery" and ("skill" in message.lower() or len(missing_fields) < 2):
-        return "profile_confirmation"
+    
+    elif current_state == "eligibility_confirmation":
+        # Progress when we have basic info
+        has_name = confirmed_fields.get("full_name")
+        has_email = confirmed_fields.get("email")
+        if has_name and has_email:
+            return "capability_discovery"
+        return current_state
+    
+    elif current_state == "capability_discovery":
+        # Progress when we have skills
+        has_skills = confirmed_fields.get("skills") and len(confirmed_fields.get("skills", [])) > 0
+        if has_skills:
+            return "profile_confirmation"
+        return current_state
+    
     elif current_state == "profile_confirmation":
-        confirms = ["yes", "correct", "confirm", "looks good", "that's right"]
-        if any(c in message.lower() for c in confirms):
+        confirms = ["yes", "correct", "confirm", "looks good", "that's right", "perfect", "ok", "okay"]
+        if any(c in message_lower for c in confirms):
             return "onboarding_complete"
+        corrections = ["no", "wrong", "change", "update", "fix"]
+        if any(c in message_lower for c in corrections):
+            return "capability_discovery"
+        return current_state
     
     return current_state
 
-def extract_fields(message: str) -> Dict[str, Any]:
+def extract_fields(message: str, existing_fields: Dict = None) -> Dict[str, Any]:
+    """
+    Enhanced profile extraction from free-form text.
+    Uses multiple strategies for robust extraction.
+    """
+    existing_fields = existing_fields or {}
     fields = {}
     lower = message.lower()
     
-    for signal in ["my name is", "i'm ", "i am ", "call me "]:
-        if signal in lower:
-            start = lower.index(signal) + len(signal)
-            words = message[start:].split()[:3]
-            name = " ".join(words).strip(".,!?")
-            if name and len(name) > 1:
-                fields["full_name"] = name.title()
+    # Name extraction patterns
+    name_patterns = [
+        r"(?:my name is|i'm|i am|call me|this is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+        r"^([A-Z][a-z]+)(?:\s+here|,)",
+        r"(?:name[:\s]+)([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+    ]
+    
+    if "full_name" not in existing_fields:
+        for pattern in name_patterns:
+            match = re.search(pattern, message, re.IGNORECASE)
+            if match:
+                name = match.group(1).strip()
+                # Clean name - remove trailing noise
+                words = name.split()
+                clean_words = []
+                stop_words = {'and', 'or', 'but', 'i', 'my', 'am', 'is', 'the', 'want', 'would', 'like', 'to', 'here'}
+                for word in words:
+                    if word.lower() in stop_words:
+                        break
+                    if word[0].isupper() or len(clean_words) == 0:
+                        clean_words.append(word)
+                    else:
+                        break
+                if clean_words:
+                    fields["full_name"] = " ".join(clean_words[:3]).title()
+                    break
+    
+    # Email extraction
+    if "email" not in existing_fields:
+        emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', message)
+        if emails:
+            fields["email"] = emails[0].lower()
+    
+    # Phone extraction
+    if "phone" not in existing_fields:
+        phone_patterns = [
+            r'\b(\+?\d{1,3}[-.\s]?\d{3}[-.\s]?\d{3}[-.\s]?\d{4})\b',
+            r'\b(\d{10})\b',
+        ]
+        for pattern in phone_patterns:
+            match = re.search(pattern, message)
+            if match:
+                fields["phone"] = match.group(1)
                 break
     
-    emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', message)
-    if emails:
-        fields["email"] = emails[0]
+    # Location extraction
+    if "location" not in existing_fields:
+        location_signals = [
+            r"(?:i(?:'m| am)? (?:from|in|at|based in|living in|located in))\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+            r"(?:based out of|working from)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+        ]
+        for pattern in location_signals:
+            match = re.search(pattern, message, re.IGNORECASE)
+            if match:
+                fields["location"] = match.group(1).strip().title()
+                break
     
-    skills = ["programming", "teaching", "writing", "design", "marketing", "cooking", 
-              "driving", "healthcare", "communication", "leadership", "organizing"]
-    found = [s for s in skills if s in lower]
-    if found:
-        fields["skills"] = found
+    # Skill extraction with synonyms
+    skill_keywords = {
+        "teaching": ["teach", "teaching", "tutor", "tutoring", "instructor"],
+        "mathematics": ["math", "maths", "mathematics", "algebra", "calculus"],
+        "science": ["science", "physics", "chemistry", "biology"],
+        "english": ["english", "grammar", "writing", "literature"],
+        "programming": ["programming", "coding", "code", "software", "python", "java"],
+        "art": ["art", "drawing", "painting", "creative"],
+        "music": ["music", "singing", "instrument"],
+        "communication": ["communication", "speaking", "presentation"],
+        "mentoring": ["mentor", "mentoring", "guidance"],
+    }
     
-    for signal in ["i live in", "i'm from", "located in", "based in"]:
-        if signal in lower:
-            start = lower.index(signal) + len(signal)
-            words = message[start:].split()[:3]
-            loc = " ".join(words).strip(".,!?")
-            if loc:
-                fields["location"] = loc.title()
+    found_skills = []
+    for skill_name, keywords in skill_keywords.items():
+        for keyword in keywords:
+            if keyword in lower:
+                if skill_name not in found_skills:
+                    found_skills.append(skill_name)
+                break
+    
+    if found_skills:
+        existing_skills = existing_fields.get("skills", [])
+        if isinstance(existing_skills, list):
+            combined = list(set(existing_skills + found_skills))
+            fields["skills"] = combined
+        else:
+            fields["skills"] = found_skills
+    
+    # Availability extraction
+    if "availability" not in existing_fields:
+        avail_patterns = [
+            r"(\d+)\s*(?:hours?|hrs?)\s*(?:per|a)?\s*(?:week|wk)",
+            r"(weekends?|saturday|sunday|weekdays?|evenings?|mornings?)",
+            r"(few hours|couple of hours|some time)",
+            r"(flexible)",
+        ]
+        for pattern in avail_patterns:
+            match = re.search(pattern, lower)
+            if match:
+                fields["availability"] = match.group(0)
                 break
     
     return fields
@@ -419,7 +880,7 @@ def extract_fields(message: str) -> Dict[str, Any]:
 async def generate_llm_response(system_prompt: str, messages: List[Dict], user_message: str) -> str:
     api_key = os.environ.get("EMERGENT_LLM_KEY")
     if not api_key:
-        return "Thank you for your message! I'm here to help you with volunteer onboarding. Could you tell me about yourself and what motivates you to volunteer?"
+        return "Welcome to eVidyaloka! We're so glad you're interested in supporting education for children in rural India. What brings you to volunteer with us today?"
     
     try:
         from emergentintegrations.llm.chat import LlmChat, UserMessage
@@ -433,52 +894,87 @@ async def generate_llm_response(system_prompt: str, messages: List[Dict], user_m
         
         context = ""
         for msg in messages[-5:]:
-            role = "User" if msg.get("role") == "user" else "Assistant"
+            role = "Volunteer" if msg.get("role") == "user" else "eVidyaloka"
             context += f"{role}: {msg.get('content', '')}\n"
         
-        full_msg = f"{context}\nUser: {user_message}" if context else user_message
+        full_msg = f"{context}\nVolunteer: {user_message}" if context else user_message
         response = await chat.send_message(UserMessage(text=full_msg))
         return response
     except Exception as e:
         logger.error(f"LLM error: {e}")
-        return "Thank you! I'm here to help with your volunteer onboarding. What brings you to SERVE today?"
+        return "Welcome to eVidyaloka! We're excited you want to help bring quality education to children who need it most. What draws you to volunteer with us?"
 
 async def process_agent_turn(request: AgentTurnRequest) -> AgentTurnResponse:
+    start_time = datetime.utcnow()
     session_state = request.session_state
     current_state = session_state.stage
     telemetry = []
+    
+    # Make routing decision
+    routing_decision = agent_router.make_routing_decision(session_state, request.user_message)
+    agent_router.log_routing_decision(str(request.session_id), routing_decision)
+    
+    log_orchestration_event(
+        OrchestrationEventType.AGENT_INVOKED,
+        str(request.session_id),
+        agent=routing_decision.target_agent,
+        details={'confidence': routing_decision.confidence, 'reason': routing_decision.reason}
+    )
     
     # Get missing fields
     missing_result = await mcp_get_missing_fields(str(request.session_id))
     missing_fields = missing_result.data.get("missing_fields", []) if missing_result.data else []
     confirmed_fields = missing_result.data.get("confirmed_fields", {}) if missing_result.data else {}
     
-    # Extract fields from message
-    extracted = extract_fields(request.user_message)
+    # Extract fields from message (enhanced extraction with existing fields context)
+    extracted = extract_fields(request.user_message, existing_fields=confirmed_fields)
     if extracted:
         await mcp_save_confirmed_fields(str(request.session_id), extracted)
         confirmed_fields.update(extracted)
         missing_fields = [f for f in missing_fields if f not in extracted]
+        logger.info(f"Extracted fields: {list(extracted.keys())}")
     
-    # Determine next state
-    next_state = determine_next_state(current_state, request.user_message, missing_fields)
+    # Determine next state autonomously (data-driven)
+    next_state = determine_next_state(current_state, request.user_message, missing_fields, confirmed_fields)
     
+    # Validate transition
     if next_state != current_state:
-        telemetry.append(TelemetryEvent(
-            session_id=request.session_id,
-            event_type=EventType.STATE_TRANSITION,
-            agent=AgentType.ONBOARDING,
-            data={"from": current_state, "to": next_state}
-        ))
+        validation = workflow_validator.validate_transition(
+            current_state, next_state, confirmed_fields
+        )
+        
+        if not validation.is_valid:
+            logger.warning(f"Agent proposed invalid transition: {validation.reason}")
+            next_state = current_state
+        else:
+            telemetry.append(TelemetryEvent(
+                session_id=request.session_id,
+                event_type=EventType.STATE_TRANSITION,
+                agent=AgentType.ONBOARDING,
+                data={
+                    "from": current_state, 
+                    "to": next_state,
+                    "validated": True,
+                    "warnings": validation.warnings
+                }
+            ))
     
-    # Get prompt and generate response
-    prompt = STATE_PROMPTS.get(next_state, STATE_PROMPTS["init"])
-    if missing_fields:
-        prompt += f"\n\nStill needed: {', '.join(missing_fields)}. Ask about one naturally."
-    if confirmed_fields:
-        prompt += f"\n\nConfirmed: {confirmed_fields}"
+    # Build contextual prompt for eVidyaloka-aligned response
+    prompt = build_state_prompt(next_state, missing_fields, confirmed_fields)
     
     assistant_msg = await generate_llm_response(prompt, request.conversation_history, request.user_message)
+    
+    # Calculate duration
+    duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
+    
+    log_orchestration_event(
+        OrchestrationEventType.AGENT_RESPONDED,
+        str(request.session_id),
+        agent=AgentType.ONBOARDING.value,
+        stage=next_state,
+        duration_ms=duration_ms,
+        details={'response_length': len(assistant_msg), 'fields_extracted': list(extracted.keys()) if extracted else []}
+    )
     
     handoff = None
     if next_state == "onboarding_complete":
@@ -489,6 +985,12 @@ async def process_agent_turn(request: AgentTurnRequest) -> AgentTurnResponse:
             handoff_type=HandoffType.AGENT_TRANSITION,
             payload={"confirmed_fields": confirmed_fields},
             reason="Onboarding completed"
+        )
+        log_orchestration_event(
+            OrchestrationEventType.HANDOFF_INITIATED,
+            str(request.session_id),
+            agent=AgentType.SELECTION.value,
+            details={'from_agent': AgentType.ONBOARDING.value, 'reason': 'Onboarding completed'}
         )
     
     return AgentTurnResponse(
@@ -514,8 +1016,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="SERVE AI Platform",
-    description="Multi-agent volunteer management platform",
-    version="1.0.0",
+    description="Multi-agent volunteer management platform with clean orchestration",
+    version="1.1.0",
     lifespan=lifespan
 )
 
@@ -532,6 +1034,7 @@ app.add_middleware(
 
 @app.post("/api/orchestrator/interact", response_model=InteractionResponse)
 async def orchestrator_interact(request: InteractionRequest):
+    start_time = datetime.utcnow()
     session_id = request.session_id
     session_state = None
     conversation = []
@@ -575,6 +1078,12 @@ async def orchestrator_interact(request: InteractionRequest):
             stage="init"
         )
     
+    log_orchestration_event(
+        OrchestrationEventType.MESSAGE_RECEIVED,
+        str(session_state.id),
+        details={'message_length': len(request.message)}
+    )
+    
     await mcp_save_message(str(session_state.id), "user", request.message, session_state.active_agent)
     
     agent_request = AgentTurnRequest(
@@ -592,10 +1101,10 @@ async def orchestrator_interact(request: InteractionRequest):
     if agent_response.state != session_state.stage:
         await mcp_advance_state(str(session_state.id), agent_response.state, agent_response.sub_state)
     
-    states = ["init", "intent_discovery", "purpose_orientation", "eligibility_confirmation",
-              "capability_discovery", "profile_confirmation", "onboarding_complete"]
-    idx = states.index(agent_response.state) if agent_response.state in states else 0
-    progress = round((idx / (len(states) - 1)) * 100)
+    progress = workflow_validator.get_completion_percentage(agent_response.state)
+    is_terminal = workflow_validator.is_terminal_stage(agent_response.state)
+    
+    total_duration = (datetime.utcnow() - start_time).total_seconds() * 1000
     
     return InteractionResponse(
         session_id=session_state.id,
@@ -604,13 +1113,17 @@ async def orchestrator_interact(request: InteractionRequest):
         workflow=agent_response.workflow,
         state=agent_response.state,
         sub_state=agent_response.sub_state,
-        status=SessionStatus.COMPLETED if agent_response.state == "onboarding_complete" else SessionStatus.ACTIVE,
+        status=SessionStatus.COMPLETED if is_terminal else SessionStatus.ACTIVE,
         journey_progress={
             "current_state": agent_response.state,
             "progress_percent": progress,
             "confirmed_fields": agent_response.confirmed_fields,
             "missing_fields": agent_response.missing_fields
-        }
+        },
+        debug_info={
+            "timing_ms": total_duration,
+            "telemetry_events": [e.model_dump(mode="json") for e in agent_response.telemetry_events]
+        } if agent_response.telemetry_events else None
     )
 
 @app.get("/api/orchestrator/session/{session_id}")
@@ -641,7 +1154,7 @@ async def list_sessions(status: Optional[str] = None, limit: int = 50):
 
 @app.get("/api/orchestrator/health")
 async def orchestrator_health():
-    return {"service": "serve-orchestrator", "status": "healthy", "version": "1.0.0"}
+    return {"service": "serve-orchestrator", "status": "healthy", "version": "1.1.0"}
 
 
 # ============ Onboarding Agent Endpoints ============
@@ -652,7 +1165,7 @@ async def agent_turn(request: AgentTurnRequest):
 
 @app.get("/api/agents/onboarding/health")
 async def agent_health():
-    return {"service": "serve-onboarding-agent-service", "status": "healthy", "version": "1.0.0"}
+    return {"service": "serve-onboarding-agent-service", "status": "healthy", "version": "1.1.0"}
 
 
 # ============ MCP Capability Endpoints ============
@@ -697,6 +1210,14 @@ async def mcp_handoff(request: EmitHandoffRequest):
     session = store.sessions.get(str(request.session_id))
     if session:
         session["active_agent"] = request.to_agent.value
+    
+    log_orchestration_event(
+        OrchestrationEventType.HANDOFF_INITIATED,
+        str(request.session_id),
+        agent=request.to_agent.value,
+        details={'from_agent': request.from_agent.value, 'reason': request.reason}
+    )
+    
     return MCPResponse(status="success", data={
         "handoff_id": str(uuid4()),
         "from_agent": request.from_agent.value,
@@ -779,7 +1300,7 @@ async def mcp_telemetry(session_id: UUID, limit: int = 100):
 
 @app.get("/api/mcp/health")
 async def mcp_health():
-    return {"service": "serve-agentic-mcp-service", "status": "healthy", "version": "1.0.0"}
+    return {"service": "serve-agentic-mcp-service", "status": "healthy", "version": "1.1.0"}
 
 
 # ============ Platform Health ============
@@ -789,10 +1310,16 @@ async def health():
     return {
         "platform": "SERVE AI",
         "status": "healthy",
+        "version": "1.1.0",
         "services": {
             "orchestrator": "healthy",
             "onboarding_agent": "healthy",
             "mcp_service": "healthy"
+        },
+        "features": {
+            "agent_router": True,
+            "workflow_validator": True,
+            "structured_logging": True
         }
     }
 
@@ -800,5 +1327,10 @@ async def health():
 async def root():
     return {
         "message": "Welcome to SERVE AI Platform",
-        "version": "1.0.0"
+        "version": "1.1.0",
+        "architecture": {
+            "agent_router": "Intelligent routing based on workflow and stage",
+            "workflow_validator": "State transition validation with field requirements",
+            "structured_logging": "Comprehensive event logging for debugging"
+        }
     }

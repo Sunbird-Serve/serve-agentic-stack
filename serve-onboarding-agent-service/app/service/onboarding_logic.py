@@ -1,8 +1,15 @@
 """
-SERVE Onboarding Agent Service - Onboarding Logic
-Autonomous agent for volunteer onboarding
+SERVE Onboarding Agent Service - Onboarding Logic (Enhanced)
+Autonomous agent for volunteer onboarding with eVidyaloka context
+
+Key improvements:
+- Dynamic question selection based on missing information
+- Robust profile extraction from free-form text
+- Autonomous state transitions based on collected data
+- Pause/resume handling
+- eVidyaloka-aligned warm communication
 """
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
 import re
 import logging
 
@@ -17,7 +24,8 @@ from app.service.llm_adapter import llm_adapter
 logger = logging.getLogger(__name__)
 
 
-# State machine configuration
+# ============ State Machine Configuration ============
+
 STATE_TRANSITIONS = {
     OnboardingState.INIT.value: [OnboardingState.INTENT_DISCOVERY.value],
     OnboardingState.INTENT_DISCOVERY.value: [OnboardingState.PURPOSE_ORIENTATION.value, OnboardingState.PAUSED.value],
@@ -29,161 +37,353 @@ STATE_TRANSITIONS = {
     OnboardingState.PAUSED.value: [s.value for s in OnboardingState if s != OnboardingState.PAUSED],
 }
 
-
-# System prompts for each state
-STATE_PROMPTS = {
-    OnboardingState.INIT.value: """You are SERVE AI, a friendly and professional volunteer onboarding assistant for the SERVE volunteer management platform. 
-
-Your role is to guide new volunteers through the onboarding process. In this initial stage, warmly greet the user and introduce yourself. Ask them what brings them to volunteer and what they hope to achieve.
-
-Keep your response friendly, concise (2-3 sentences), and end with a question to understand their motivation.""",
-
-    OnboardingState.INTENT_DISCOVERY.value: """You are SERVE AI, helping with volunteer onboarding. You're in the Intent Discovery phase.
-
-Your goal is to understand:
-- Why the volunteer wants to participate
-- What kind of impact they hope to make
-- Any specific causes or areas they're passionate about
-
-Based on their response, acknowledge their motivation and gently guide them to share more about their interests. Keep responses conversational and supportive.""",
-
-    OnboardingState.PURPOSE_ORIENTATION.value: """You are SERVE AI in the Purpose Orientation phase.
-
-Help the volunteer understand:
-- How SERVE connects volunteers with meaningful opportunities
-- The types of volunteer work available
-- How their skills and interests can make a difference
-
-Share briefly about the program and ask what types of activities interest them most.""",
-
-    OnboardingState.ELIGIBILITY_CONFIRMATION.value: """You are SERVE AI in the Eligibility Confirmation phase.
-
-Gather essential information to confirm eligibility:
-- Basic contact information (name, email)
-- Location/availability
-- Any relevant experience
-
-Be warm and explain why this information helps match them with opportunities. Ask for one piece of information at a time.""",
-
-    OnboardingState.CAPABILITY_DISCOVERY.value: """You are SERVE AI in the Capability Discovery phase.
-
-Explore the volunteer's:
-- Skills and expertise
-- Available time commitment
-- Preferred types of volunteer work
-- Any certifications or special training
-
-Help them articulate their strengths and match them to volunteer opportunities. Be encouraging about the skills they share.""",
-
-    OnboardingState.PROFILE_CONFIRMATION.value: """You are SERVE AI in the Profile Confirmation phase.
-
-Summarize what you've learned about the volunteer and confirm the details are correct. Present their profile information and ask if anything needs to be updated.
-
-Be clear, organized, and reassuring that their information will be used to find the best volunteer matches.""",
-
-    OnboardingState.ONBOARDING_COMPLETE.value: """You are SERVE AI completing the onboarding process.
-
-Congratulate the volunteer on completing onboarding! Let them know:
-- Their profile is now complete
-- What happens next (matching with opportunities)
-- How they can get in touch if they have questions
-
-Be warm, celebratory, and set positive expectations for their volunteer journey.""",
+# Required fields for each stage progression
+STAGE_REQUIREMENTS = {
+    OnboardingState.ELIGIBILITY_CONFIRMATION.value: ["full_name", "email"],
+    OnboardingState.CAPABILITY_DISCOVERY.value: ["skills"],
+    OnboardingState.PROFILE_CONFIRMATION.value: ["full_name", "email", "skills"],
+    OnboardingState.ONBOARDING_COMPLETE.value: ["full_name", "email", "skills", "availability"],
 }
 
 
-def determine_next_state(current_state: str, user_message: str, missing_fields: List[str]) -> str:
+# ============ Profile Extraction ============
+
+class ProfileExtractor:
     """
-    Determine the next state based on current state and user input.
-    """
-    # Check for pause/stop signals
-    pause_signals = ["pause", "stop", "later", "bye", "quit", "exit"]
-    if any(signal in user_message.lower() for signal in pause_signals):
-        return OnboardingState.PAUSED.value
+    Robust extraction of structured data from free-form conversation.
     
-    # State-specific transitions
+    Uses multiple strategies:
+    1. Pattern matching for common formats
+    2. Keyword-based extraction
+    3. Context-aware parsing
+    """
+    
+    # Name extraction patterns
+    NAME_SIGNALS = [
+        r"(?:my name is|i'm|i am|call me|this is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+        r"^([A-Z][a-z]+)(?:\s+here|,)",  # "Sarah here" or "Sarah,"
+        r"(?:name[:\s]+)([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+    ]
+    
+    # Email pattern
+    EMAIL_PATTERN = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+    
+    # Phone patterns (various formats)
+    PHONE_PATTERNS = [
+        r'\b(\+?\d{1,3}[-.\s]?\d{3}[-.\s]?\d{3}[-.\s]?\d{4})\b',
+        r'\b(\d{10})\b',
+        r'\b(\d{3}[-.\s]\d{3}[-.\s]\d{4})\b',
+    ]
+    
+    # Location signals
+    LOCATION_SIGNALS = [
+        r"(?:i(?:'m| am)? (?:from|in|at|based in|living in|located in))\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?(?:,\s*[A-Z][a-z]+)?)",
+        r"(?:location[:\s]+)([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+        r"(?:based out of|working from)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+    ]
+    
+    # Skill keywords and synonyms
+    SKILL_KEYWORDS = {
+        "teaching": ["teach", "teaching", "tutor", "tutoring", "instructor"],
+        "mathematics": ["math", "maths", "mathematics", "algebra", "calculus", "arithmetic"],
+        "science": ["science", "physics", "chemistry", "biology"],
+        "english": ["english", "grammar", "writing", "reading", "literature"],
+        "programming": ["programming", "coding", "code", "software", "computer", "python", "java"],
+        "art": ["art", "drawing", "painting", "creative"],
+        "music": ["music", "singing", "instrument", "guitar", "piano"],
+        "languages": ["language", "hindi", "tamil", "telugu", "kannada", "spanish", "french"],
+        "communication": ["communication", "speaking", "presentation"],
+        "mentoring": ["mentor", "mentoring", "guidance", "counseling"],
+        "sports": ["sports", "physical education", "fitness", "yoga"],
+    }
+    
+    # Availability patterns
+    AVAILABILITY_PATTERNS = [
+        r"(\d+)\s*(?:hours?|hrs?)\s*(?:per|a|each)?\s*(?:week|wk)",
+        r"(?:weekends?|saturday|sunday|weekdays?|evenings?|mornings?)",
+        r"(?:few hours|couple of hours|some time)",
+    ]
+    
+    def extract_all(self, message: str, existing_fields: Dict = None) -> Dict[str, Any]:
+        """
+        Extract all possible fields from a message.
+        
+        Args:
+            message: User's message
+            existing_fields: Already confirmed fields (to avoid overwriting)
+            
+        Returns:
+            Dictionary of newly extracted fields
+        """
+        existing_fields = existing_fields or {}
+        extracted = {}
+        
+        # Extract name (only if not already confirmed)
+        if "full_name" not in existing_fields:
+            name = self._extract_name(message)
+            if name:
+                extracted["full_name"] = name
+        
+        # Extract email
+        if "email" not in existing_fields:
+            email = self._extract_email(message)
+            if email:
+                extracted["email"] = email
+        
+        # Extract phone
+        if "phone" not in existing_fields:
+            phone = self._extract_phone(message)
+            if phone:
+                extracted["phone"] = phone
+        
+        # Extract location
+        if "location" not in existing_fields:
+            location = self._extract_location(message)
+            if location:
+                extracted["location"] = location
+        
+        # Extract skills (merge with existing)
+        new_skills = self._extract_skills(message)
+        if new_skills:
+            existing_skills = existing_fields.get("skills", [])
+            if isinstance(existing_skills, list):
+                combined = list(set(existing_skills + new_skills))
+                extracted["skills"] = combined
+            else:
+                extracted["skills"] = new_skills
+        
+        # Extract availability
+        if "availability" not in existing_fields:
+            availability = self._extract_availability(message)
+            if availability:
+                extracted["availability"] = availability
+        
+        return extracted
+    
+    def _extract_name(self, message: str) -> Optional[str]:
+        """Extract name from message."""
+        for pattern in self.NAME_SIGNALS:
+            match = re.search(pattern, message, re.IGNORECASE)
+            if match:
+                name = match.group(1).strip()
+                # Clean up - remove trailing articles and conjunctions
+                name = self._clean_name(name)
+                if name and len(name) > 1:
+                    return name.title()
+        return None
+    
+    def _clean_name(self, name: str) -> str:
+        """Clean extracted name by removing trailing noise."""
+        # Split into words
+        words = name.split()
+        clean_words = []
+        
+        # Stop words that indicate end of name
+        stop_words = {'and', 'or', 'but', 'i', 'my', 'am', 'is', 'the', 'a', 'an',
+                      'here', 'hi', 'hello', 'hey', 'want', 'would', 'like', 'to'}
+        
+        for word in words:
+            if word.lower() in stop_words:
+                break
+            # Check if it looks like a name part (starts with capital or is all caps)
+            if word[0].isupper() or word.isupper():
+                clean_words.append(word)
+            else:
+                break
+        
+        return " ".join(clean_words[:3])  # Max 3 name parts
+    
+    def _extract_email(self, message: str) -> Optional[str]:
+        """Extract email from message."""
+        match = re.search(self.EMAIL_PATTERN, message)
+        if match:
+            return match.group(0).lower()
+        return None
+    
+    def _extract_phone(self, message: str) -> Optional[str]:
+        """Extract phone number from message."""
+        for pattern in self.PHONE_PATTERNS:
+            match = re.search(pattern, message)
+            if match:
+                return match.group(1)
+        return None
+    
+    def _extract_location(self, message: str) -> Optional[str]:
+        """Extract location from message."""
+        for pattern in self.LOCATION_SIGNALS:
+            match = re.search(pattern, message, re.IGNORECASE)
+            if match:
+                return match.group(1).strip().title()
+        return None
+    
+    def _extract_skills(self, message: str) -> List[str]:
+        """Extract skills from message."""
+        found_skills = []
+        message_lower = message.lower()
+        
+        for skill_name, keywords in self.SKILL_KEYWORDS.items():
+            for keyword in keywords:
+                if keyword in message_lower:
+                    if skill_name not in found_skills:
+                        found_skills.append(skill_name)
+                    break
+        
+        return found_skills
+    
+    def _extract_availability(self, message: str) -> Optional[str]:
+        """Extract availability information."""
+        message_lower = message.lower()
+        
+        # Look for specific time commitments
+        for pattern in self.AVAILABILITY_PATTERNS:
+            match = re.search(pattern, message_lower)
+            if match:
+                return match.group(0)
+        
+        # Check for general availability keywords
+        availability_keywords = ["weekend", "weekday", "evening", "morning", "flexible"]
+        for keyword in availability_keywords:
+            if keyword in message_lower:
+                return keyword + "s" if not keyword.endswith("s") else keyword
+        
+        return None
+
+
+# Singleton extractor
+profile_extractor = ProfileExtractor()
+
+
+# ============ State Determination ============
+
+def determine_next_state(
+    current_state: str,
+    user_message: str,
+    missing_fields: List[str],
+    confirmed_fields: Dict
+) -> Tuple[str, Optional[str]]:
+    """
+    Autonomously determine the next state based on:
+    1. User signals (pause, exit, etc.)
+    2. Data completeness
+    3. Natural conversation flow
+    
+    Returns:
+        Tuple of (next_state, reason)
+    """
+    message_lower = user_message.lower()
+    
+    # Check for pause/exit signals
+    pause_signals = ["pause", "stop", "later", "bye", "quit", "exit", "not now", "another time"]
+    if any(signal in message_lower for signal in pause_signals):
+        return OnboardingState.PAUSED.value, "User requested to pause"
+    
+    # Check for resume signals (if currently paused)
+    if current_state == OnboardingState.PAUSED.value:
+        resume_signals = ["continue", "resume", "back", "ready", "let's go", "start"]
+        if any(signal in message_lower for signal in resume_signals):
+            # Resume to eligibility confirmation or wherever they left off
+            return OnboardingState.ELIGIBILITY_CONFIRMATION.value, "User wants to resume"
+    
+    # State-specific logic
     if current_state == OnboardingState.INIT.value:
-        return OnboardingState.INTENT_DISCOVERY.value
+        # Always progress from init
+        return OnboardingState.INTENT_DISCOVERY.value, "Initial greeting complete"
     
     elif current_state == OnboardingState.INTENT_DISCOVERY.value:
-        if len(user_message.split()) > 5:
-            return OnboardingState.PURPOSE_ORIENTATION.value
-        return current_state
+        # Progress if they've shared some motivation (message length check)
+        if len(user_message.split()) > 3:
+            return OnboardingState.PURPOSE_ORIENTATION.value, "User shared their motivation"
+        return current_state, "Gathering more about motivation"
     
     elif current_state == OnboardingState.PURPOSE_ORIENTATION.value:
-        return OnboardingState.ELIGIBILITY_CONFIRMATION.value
+        # Progress to gather personal details
+        return OnboardingState.ELIGIBILITY_CONFIRMATION.value, "Mission context shared"
     
     elif current_state == OnboardingState.ELIGIBILITY_CONFIRMATION.value:
-        if len(missing_fields) < 3:
-            return OnboardingState.CAPABILITY_DISCOVERY.value
-        return current_state
+        # Progress when we have basic info
+        has_name = confirmed_fields.get("full_name")
+        has_email = confirmed_fields.get("email")
+        
+        if has_name and has_email:
+            return OnboardingState.CAPABILITY_DISCOVERY.value, "Basic profile complete"
+        return current_state, "Collecting basic information"
     
     elif current_state == OnboardingState.CAPABILITY_DISCOVERY.value:
-        if "skill" in user_message.lower() or len(missing_fields) < 2:
-            return OnboardingState.PROFILE_CONFIRMATION.value
-        return current_state
+        # Progress when we have skills
+        has_skills = confirmed_fields.get("skills") and len(confirmed_fields.get("skills", [])) > 0
+        
+        if has_skills:
+            # Check if we have enough for profile confirmation
+            has_availability = confirmed_fields.get("availability")
+            if has_availability or len(missing_fields) <= 1:
+                return OnboardingState.PROFILE_CONFIRMATION.value, "Skills captured"
+        return current_state, "Gathering skills and availability"
     
     elif current_state == OnboardingState.PROFILE_CONFIRMATION.value:
-        confirm_signals = ["yes", "correct", "confirm", "looks good", "that's right", "accurate"]
-        if any(signal in user_message.lower() for signal in confirm_signals):
-            return OnboardingState.ONBOARDING_COMPLETE.value
-        return current_state
+        # Check for confirmation signals
+        confirm_signals = ["yes", "correct", "confirm", "looks good", "that's right", 
+                         "perfect", "accurate", "good", "ok", "okay", "yep", "yup"]
+        if any(signal in message_lower for signal in confirm_signals):
+            return OnboardingState.ONBOARDING_COMPLETE.value, "Profile confirmed"
+        
+        # Check for correction signals
+        correction_signals = ["no", "wrong", "change", "update", "fix", "actually"]
+        if any(signal in message_lower for signal in correction_signals):
+            return OnboardingState.CAPABILITY_DISCOVERY.value, "User wants to update profile"
+        
+        return current_state, "Awaiting profile confirmation"
     
-    return current_state
+    elif current_state == OnboardingState.ONBOARDING_COMPLETE.value:
+        # Terminal state
+        return current_state, "Onboarding complete"
+    
+    return current_state, "Continuing current stage"
 
 
-def extract_fields_from_message(message: str) -> Dict[str, Any]:
+def evaluate_readiness(confirmed_fields: Dict) -> Tuple[bool, List[str]]:
     """
-    Extract structured data from user message.
+    Evaluate if the volunteer is ready to proceed to selection.
+    
+    Returns:
+        Tuple of (is_ready, missing_required_fields)
     """
-    fields = {}
-    message_lower = message.lower()
+    required = ["full_name", "email", "skills", "availability"]
+    missing = []
     
-    # Extract name
-    name_signals = ["my name is", "i'm ", "i am ", "call me "]
-    for signal in name_signals:
-        if signal in message_lower:
-            start = message_lower.index(signal) + len(signal)
-            words = message[start:].split()[:3]
-            potential_name = " ".join(words).strip(".,!?")
-            if potential_name and len(potential_name) > 1:
-                fields["full_name"] = potential_name.title()
-                break
+    for field in required:
+        value = confirmed_fields.get(field)
+        if not value or (isinstance(value, list) and len(value) == 0):
+            missing.append(field)
     
-    # Extract email
-    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-    emails = re.findall(email_pattern, message)
-    if emails:
-        fields["email"] = emails[0]
-    
-    # Extract skills
-    skill_keywords = ["programming", "teaching", "writing", "design", "marketing", 
-                      "cooking", "driving", "languages", "healthcare", "construction",
-                      "communication", "leadership", "organizing", "fundraising",
-                      "coding", "mentoring", "tutoring", "sports", "music", "art"]
-    found_skills = [skill for skill in skill_keywords if skill in message_lower]
-    if found_skills:
-        fields["skills"] = found_skills
-    
-    # Extract location
-    location_signals = ["i live in", "i'm from", "located in", "based in", "i'm in "]
-    for signal in location_signals:
-        if signal in message_lower:
-            start = message_lower.index(signal) + len(signal)
-            words = message[start:].split()[:3]
-            potential_location = " ".join(words).strip(".,!?")
-            if potential_location:
-                fields["location"] = potential_location.title()
-                break
-    
-    return fields
+    return len(missing) == 0, missing
 
+
+# ============ Main Service ============
 
 class OnboardingAgentService:
-    """Service implementing onboarding agent logic"""
+    """
+    Autonomous onboarding agent service.
+    
+    Responsibilities:
+    - Process conversation turns
+    - Extract profile data autonomously
+    - Manage state transitions
+    - Evaluate volunteer readiness
+    """
     
     async def process_turn(self, request: AgentTurnRequest) -> AgentTurnResponse:
-        """Process a single conversation turn for onboarding"""
+        """
+        Process a single conversation turn for onboarding.
+        
+        Flow:
+        1. Log incoming message
+        2. Get current profile state from MCP
+        3. Extract new data from message
+        4. Save extracted data
+        5. Determine next state
+        6. Generate contextual response
+        7. Prepare handoff if complete
+        """
         session_state = request.session_state
         current_state = session_state.stage
         telemetry_events = []
@@ -196,21 +396,39 @@ class OnboardingAgentService:
             data={"message_length": len(request.user_message)}
         ))
         
-        # Get missing fields from MCP
+        # Get current profile state from MCP
         missing_result = await mcp_client.get_missing_fields(request.session_id)
-        
         missing_fields = missing_result.get("data", {}).get("missing_fields", [])
         confirmed_fields = missing_result.get("data", {}).get("confirmed_fields", {})
         
-        # Extract any new fields from user message
-        extracted_fields = extract_fields_from_message(request.user_message)
+        # Extract new fields from user message
+        extracted_fields = profile_extractor.extract_all(
+            request.user_message,
+            existing_fields=confirmed_fields
+        )
+        
+        # Save extracted fields to MCP
         if extracted_fields:
             await mcp_client.save_confirmed_fields(request.session_id, extracted_fields)
             confirmed_fields.update(extracted_fields)
+            # Update missing fields list
             missing_fields = [f for f in missing_fields if f not in extracted_fields]
+            
+            logger.info(f"Extracted fields: {list(extracted_fields.keys())}")
+            telemetry_events.append(TelemetryEvent(
+                session_id=request.session_id,
+                event_type=EventType.MCP_CALL,
+                agent=AgentType.ONBOARDING,
+                data={"action": "save_fields", "fields": list(extracted_fields.keys())}
+            ))
         
-        # Determine next state
-        next_state = determine_next_state(current_state, request.user_message, missing_fields)
+        # Determine next state autonomously
+        next_state, transition_reason = determine_next_state(
+            current_state,
+            request.user_message,
+            missing_fields,
+            confirmed_fields
+        )
         
         # Log state transition if changed
         if next_state != current_state:
@@ -218,24 +436,21 @@ class OnboardingAgentService:
                 session_id=request.session_id,
                 event_type=EventType.STATE_TRANSITION,
                 agent=AgentType.ONBOARDING,
-                data={"from_state": current_state, "to_state": next_state}
+                data={
+                    "from_state": current_state,
+                    "to_state": next_state,
+                    "reason": transition_reason
+                }
             ))
+            logger.info(f"State transition: {current_state} -> {next_state} ({transition_reason})")
         
-        # Get system prompt for current/next state
-        system_prompt = STATE_PROMPTS.get(next_state, STATE_PROMPTS[OnboardingState.INIT.value])
-        
-        # Add context about missing fields
-        if missing_fields:
-            system_prompt += f"\n\nNote: The following information is still needed: {', '.join(missing_fields)}. Naturally weave a question about one of these into your response."
-        
-        if confirmed_fields:
-            system_prompt += f"\n\nConfirmed information so far: {confirmed_fields}"
-        
-        # Generate response using LLM
+        # Generate contextual response
         assistant_message = await llm_adapter.generate_response(
-            system_prompt=system_prompt,
+            stage=next_state,
             messages=request.conversation_history,
-            user_message=request.user_message
+            user_message=request.user_message,
+            missing_fields=missing_fields,
+            confirmed_fields=confirmed_fields
         )
         
         # Log agent response
@@ -243,20 +458,43 @@ class OnboardingAgentService:
             session_id=request.session_id,
             event_type=EventType.AGENT_RESPONSE,
             agent=AgentType.ONBOARDING,
-            data={"state": next_state, "response_length": len(assistant_message)}
+            data={
+                "state": next_state,
+                "response_length": len(assistant_message),
+                "fields_confirmed": len(confirmed_fields),
+                "fields_missing": len(missing_fields)
+            }
         ))
         
-        # Prepare handoff if onboarding complete
+        # Evaluate readiness and prepare handoff if complete
         handoff_event = None
+        completion_status = "in_progress"
+        
         if next_state == OnboardingState.ONBOARDING_COMPLETE.value:
-            handoff_event = HandoffEvent(
-                session_id=request.session_id,
-                from_agent=AgentType.ONBOARDING,
-                to_agent=AgentType.SELECTION,
-                handoff_type=HandoffType.AGENT_TRANSITION,
-                payload={"confirmed_fields": confirmed_fields},
-                reason="Onboarding completed successfully"
-            )
+            is_ready, missing_required = evaluate_readiness(confirmed_fields)
+            
+            if is_ready:
+                completion_status = "complete"
+                handoff_event = HandoffEvent(
+                    session_id=request.session_id,
+                    from_agent=AgentType.ONBOARDING,
+                    to_agent=AgentType.SELECTION,
+                    handoff_type=HandoffType.AGENT_TRANSITION,
+                    payload={
+                        "confirmed_fields": confirmed_fields,
+                        "readiness": {
+                            "is_ready": True,
+                            "profile_complete": True
+                        }
+                    },
+                    reason="Onboarding completed - volunteer ready for selection"
+                )
+                logger.info(f"Handoff prepared: {AgentType.ONBOARDING.value} -> {AgentType.SELECTION.value}")
+            else:
+                logger.warning(f"Onboarding marked complete but missing: {missing_required}")
+        
+        elif next_state == OnboardingState.PAUSED.value:
+            completion_status = "paused"
         
         return AgentTurnResponse(
             assistant_message=assistant_message,
@@ -264,7 +502,7 @@ class OnboardingAgentService:
             workflow=WorkflowType(session_state.workflow),
             state=next_state,
             sub_state=None,
-            completion_status="complete" if next_state == OnboardingState.ONBOARDING_COMPLETE.value else "in_progress",
+            completion_status=completion_status,
             confirmed_fields=confirmed_fields,
             missing_fields=missing_fields,
             handoff_event=handoff_event,
