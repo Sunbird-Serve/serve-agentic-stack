@@ -1,0 +1,127 @@
+{
+  "identity": {
+    "name": "SERVE AI",
+    "description": "A Digital Public Good (DPG) volunteer management platform connecting humans to impact through AI-driven onboarding.",
+    "persona": "The Civic Bridge",
+    "tone": "Professional, Hopeful, Efficient, Trustworthy",
+    "theme_mode": "light"
+  },
+  "typography": {
+    "fonts": {
+      "headings": {
+        "family": "Outfit, sans-serif",
+        "url": "https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap",
+        "usage": "Use for all H1-H6 headings. Prioritize Semibold (600) for major headers and Medium (500) for subheaders.",
+        "letterSpacing": "tracking-tight"
+      },
+      "body": {
+        "family": "Public Sans, sans-serif",
+        "url": "https://fonts.googleapis.com/css2?family=Public+Sans:wght@300;400;500;600&display=swap",
+        "usage": "Use for all body text, paragraphs, and inputs. Excellent legibility for diverse reading levels.",
+        "lineHeight": "leading-relaxed"
+      },
+      "monospace": {
+        "family": "JetBrains Mono, monospace",
+        "url": "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap",
+        "usage": "Use for logs, debug views, and code snippets."
+      }
+    },
+    "rules": [
+      "Headings > 32px must use tracking-tight (-0.02em).",
+      "Body text should never be smaller than 14px (text-sm) for accessibility.",
+      "Use 'Public Sans' features: tabular-nums for data tables."
+    ]
+  },
+  "colors": {
+    "palette": {
+      "primary": {
+        "DEFAULT": "#0066CC", 
+        "foreground": "#FFFFFF",
+        "description": "UN/DPGA Blue. Use for primary actions, active states, and key branding."
+      },
+      "secondary": {
+        "DEFAULT": "#F1F5F9",
+        "foreground": "#0F172A",
+        "description": "Slate 100. Use for backgrounds, secondary buttons."
+      },
+      "accent": {
+        "DEFAULT": "#00AEEF",
+        "foreground": "#FFFFFF",
+        "description": "Cyan/Teal. Use for 'Hope' elements, progress bars, and highlights."
+      },
+      "background": "#FFFFFF",
+      "foreground": "#0F172A",
+      "card": "#FFFFFF",
+      "card_foreground": "#0F172A",
+      "border": "#E2E8F0",
+      "input": "#E2E8F0",
+      "ring": "#0066CC"
+    },
+    "semantic": {
+      "success": "#10B981",
+      "warning": "#F59E0B",
+      "error": "#EF4444",
+      "info": "#3B82F6"
+    },
+    "rules": [
+      "Avoid gradients for text. Keep it high-contrast.",
+      "Use 'Slate' scale for neutrals (Slate 50 to Slate 900) to maintain a cool, professional tone.",
+      "Never use pure black (#000000). Use Slate 950 (#020617) for 'black'."
+    ]
+  },
+  "layout_strategy": {
+    "spacing": {
+      "base_unit": 4,
+      "scale": ["p-1", "p-2", "p-4", "p-6", "p-8", "p-12", "p-16", "p-24", "p-32"],
+      "rule": "Use generous spacing. If it feels empty, add 25% more padding. Allow content to breathe."
+    },
+    "grids": {
+      "volunteer_view": "Single column focus. Max-width-2xl centered for chat. Sidebar for progress.",
+      "ops_view": "Kanban/Pipeline style. High density. grid-cols-1 md:grid-cols-3 gap-6.",
+      "admin_view": "Dashboard/Terminal grid. grid-cols-12. Logs take 100% width."
+    }
+  },
+  "components": {
+    "library": "shadcn/ui",
+    "customization_rules": {
+      "buttons": "Rounded-md (radius 0.5rem). Font-weight medium. No pill shapes for main actions.",
+      "cards": "Border-slate-200 shadow-sm hover:shadow-md transition-all duration-200. White background.",
+      "inputs": "Bg-slate-50 border-slate-200 focus:ring-2 focus:ring-primary/20.",
+      "dialogs": "Clean white background, sharp shadows, rounded-lg."
+    },
+    "specific_components": [
+      {
+        "name": "ChatInterface",
+        "description": "A conversational UI for volunteers.",
+        "styling": "Bubble style. User: Primary bg, White text. AI: Slate-100 bg, Slate-900 text. Avatar required."
+      },
+      {
+        "name": "PipelineCard",
+        "description": "For Ops view. Shows volunteer status.",
+        "styling": "Compact card. Border-l-4 colored by status (Green=Ready, Amber=Review)."
+      }
+    ]
+  },
+  "assets": {
+    "logo_url": "https://images.unsplash.com/photo-1753362944693-e6ec37d8c9db?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzF8MHwxfHNlYXJjaHw0fHxhYnN0cmFjdCUyMGNvbm5lY3Rpb24lMjBibHVlJTIwdGVhbCUyMGxvZ28lMjBpY29ufGVufDB8fHx8MTc3MzIxNDkwMXww&ixlib=rb-4.1.0&q=85",
+    "logo_description": "Abstract blue connection shape representing service and unity.",
+    "ai_avatar_url": "https://images.unsplash.com/photo-1659018966820-de07c94e0d01?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MDV8MHwxfHNlYXJjaHwzfHxmcmllbmRseSUyMGFpJTIwcm9ib3QlMjBhdmF0YXIlMjAzZCUyMGN1dGV8ZW58MHx8fHwxNzczMjE0OTAyfDA&ixlib=rb-4.1.0&q=85",
+    "ai_avatar_description": "Friendly robot toy on blue background.",
+    "hero_image_url": "https://images.pexels.com/photos/6566000/pexels-photo-6566000.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+    "hero_description": "Volunteers working together."
+  },
+  "universal_guidelines": [
+    "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients",
+    "Don't make generic centered layouts, simplistic gradients, and uniform styling.",
+    "Create depth through layered design elements with z-index hierarchy.",
+    "Use glass-morphism effects with backdrop filters (12-24px blur) for sticky headers.",
+    "You MUST NOT apply universal transition. Eg: transition: all. This results in breaking transforms.",
+    "You MUST NOT center align the app container, ie do not add .App { text-align: center; }.",
+    "Always use modern button styles like pill-shaped, or sharp button with interaction animations & color relevant to the app style.",
+    "NEVER: use AI assistant Emoji characters like 🤖 etc for icons.",
+    "Every interaction needs micro-animations - hover states, transitions.",
+    "Use 2-3x more spacing than feels comfortable. Cramped designs look cheap.",
+    "All interactive and key informational elements MUST include a data-testid attribute."
+  ],
+  "instructions_to_main_agent": "Implement the Role Selection page first as the entry point. Then build the specific views (Volunteer, Ops, Admin) based on the selection. Use the Color Palette strictly to maintain DPGA alignment."
+}
