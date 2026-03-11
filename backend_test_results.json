@@ -1,0 +1,228 @@
+{
+  "summary": {
+    "passed": 8,
+    "total": 14,
+    "success_rate": 57.14285714285714
+  },
+  "results": [
+    {
+      "test": "Platform Health Check",
+      "success": true,
+      "details": "Status 200",
+      "data": {
+        "platform": "SERVE AI",
+        "status": "healthy",
+        "services": {
+          "orchestrator": "healthy",
+          "onboarding_agent": "healthy",
+          "mcp_service": "healthy"
+        }
+      },
+      "timestamp": "2026-03-11T07:54:01.443535"
+    },
+    {
+      "test": "Root Endpoint",
+      "success": true,
+      "details": "Status 200",
+      "data": {
+        "message": "Welcome to SERVE AI Platform",
+        "version": "1.0.0",
+        "services": [
+          "/api/orchestrator - Central coordination layer",
+          "/api/agents/onboarding - Onboarding agent service",
+          "/api/mcp - MCP capability server"
+        ]
+      },
+      "timestamp": "2026-03-11T07:54:01.556148"
+    },
+    {
+      "test": "Orchestrator Health",
+      "success": true,
+      "details": "Status 200",
+      "data": {
+        "service": "serve-orchestrator",
+        "status": "healthy",
+        "version": "1.0.0",
+        "timestamp": "2026-03-11T07:54:01.645624"
+      },
+      "timestamp": "2026-03-11T07:54:01.663082"
+    },
+    {
+      "test": "Onboarding Agent Health",
+      "success": true,
+      "details": "Status 200",
+      "data": {
+        "service": "serve-onboarding-agent-service",
+        "status": "healthy",
+        "version": "1.0.0",
+        "timestamp": "2026-03-11T07:54:01.755969"
+      },
+      "timestamp": "2026-03-11T07:54:01.772972"
+    },
+    {
+      "test": "MCP Start Session",
+      "success": false,
+      "details": "Status 500 (expected 200)",
+      "data": {
+        "text": "Internal Server Error",
+        "status_code": 500
+      },
+      "timestamp": "2026-03-11T07:54:01.883225"
+    },
+    {
+      "test": "MCP Get Missing Fields",
+      "success": false,
+      "details": "Status 500 (expected 200)",
+      "data": {
+        "text": "Internal Server Error",
+        "status_code": 500
+      },
+      "timestamp": "2026-03-11T07:54:01.989933"
+    },
+    {
+      "test": "MCP Save Confirmed Fields",
+      "success": false,
+      "details": "Status 500 (expected 200)",
+      "data": {
+        "text": "Internal Server Error",
+        "status_code": 500
+      },
+      "timestamp": "2026-03-11T07:54:02.104318"
+    },
+    {
+      "test": "MCP Resume Context",
+      "success": false,
+      "details": "Status 500 (expected 200)",
+      "data": {
+        "text": "Internal Server Error",
+        "status_code": 500
+      },
+      "timestamp": "2026-03-11T07:54:02.307731"
+    },
+    {
+      "test": "MCP List Sessions",
+      "success": false,
+      "details": "Status 500 (expected 200)",
+      "data": {
+        "text": "Internal Server Error",
+        "status_code": 500
+      },
+      "timestamp": "2026-03-11T07:54:02.422208"
+    },
+    {
+      "test": "Orchestrator Interact - Initial",
+      "success": false,
+      "details": "Status 500 (expected 200)",
+      "data": {
+        "detail": "Failed to create session"
+      },
+      "timestamp": "2026-03-11T07:54:02.597770"
+    },
+    {
+      "test": "Onboarding Agent Turn",
+      "success": true,
+      "details": "Status 200",
+      "data": {
+        "assistant_message": "Hello! It's wonderful that you want to help - thank you for your generous spirit! \ud83c\udf1f\n\nI'd love to learn more about what's inspiring you to volunteer. \n\n**What's drawing you to volunteer right now?** Is there a particular cause that's close to your heart, or maybe an experience that's motivated you to give back?\n\nThere's no right or wrong answer - I'm just here to understand what matters most to you so we can find the perfect way for you to make a difference!",
+        "active_agent": "onboarding",
+        "workflow": "new_volunteer_onboarding",
+        "state": "intent_discovery",
+        "sub_state": null,
+        "completion_status": "in_progress",
+        "confirmed_fields": {},
+        "missing_fields": [],
+        "handoff_event": null,
+        "telemetry_events": [
+          {
+            "id": "89741de5-ad1f-4382-8496-42f9c4542bde",
+            "session_id": "6b3db0f3-19ee-4794-8a9b-e6e7f411193d",
+            "event_type": "user_message",
+            "agent": "onboarding",
+            "data": {
+              "message_length": 25
+            },
+            "timestamp": "2026-03-11T07:54:02.681196"
+          },
+          {
+            "id": "0299bf68-ac0e-4d0d-b5a2-020f326c17d8",
+            "session_id": "6b3db0f3-19ee-4794-8a9b-e6e7f411193d",
+            "event_type": "state_transition",
+            "agent": "onboarding",
+            "data": {
+              "from_state": "init",
+              "to_state": "intent_discovery"
+            },
+            "timestamp": "2026-03-11T07:54:02.705810"
+          },
+          {
+            "id": "6f0f8c1f-4bc7-432d-9ed2-a34a766006b0",
+            "session_id": "6b3db0f3-19ee-4794-8a9b-e6e7f411193d",
+            "event_type": "agent_response",
+            "agent": "onboarding",
+            "data": {
+              "state": "intent_discovery",
+              "response_length": 461
+            },
+            "timestamp": "2026-03-11T07:54:09.921472"
+          }
+        ]
+      },
+      "timestamp": "2026-03-11T07:54:09.938425"
+    },
+    {
+      "test": "Invalid Session ID",
+      "success": true,
+      "details": "Status 422",
+      "data": {
+        "detail": [
+          {
+            "type": "uuid_parsing",
+            "loc": [
+              "path",
+              "session_id"
+            ],
+            "msg": "Input should be a valid UUID, invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `i` at 1",
+            "input": "invalid-uuid",
+            "ctx": {
+              "error": "invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `i` at 1"
+            },
+            "url": "https://errors.pydantic.dev/2.12/v/uuid_parsing"
+          }
+        ]
+      },
+      "timestamp": "2026-03-11T07:54:10.059642"
+    },
+    {
+      "test": "Malformed Interaction Request",
+      "success": true,
+      "details": "Status 422",
+      "data": {
+        "detail": [
+          {
+            "type": "missing",
+            "loc": [
+              "body",
+              "message"
+            ],
+            "msg": "Field required",
+            "input": {
+              "invalid": "data"
+            },
+            "url": "https://errors.pydantic.dev/2.12/v/missing"
+          }
+        ]
+      },
+      "timestamp": "2026-03-11T07:54:10.192527"
+    },
+    {
+      "test": "Non-existent Endpoint",
+      "success": true,
+      "details": "Status 404",
+      "data": {
+        "detail": "Not Found"
+      },
+      "timestamp": "2026-03-11T07:54:10.295647"
+    }
+  ],
+  "timestamp": "2026-03-11T07:54:10.296595"
+}

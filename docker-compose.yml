@@ -1,0 +1,113 @@
+# SERVE AI - Docker Compose Configuration
+# Local development setup for all services
+
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: serve-postgres
+    environment:
+      POSTGRES_USER: serve
+      POSTGRES_PASSWORD: serve
+      POSTGRES_DB: serve_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U serve -d serve_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MCP Service (Database owner)
+  mcp-service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: serve-mcp-service
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://serve:serve@postgres:5432/serve_db
+      - CORS_ORIGINS=*
+    ports:
+      - "8002:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/mcp/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Orchestrator Service
+  orchestrator:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: serve-orchestrator
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://serve:serve@postgres:5432/serve_db
+      - MCP_SERVICE_URL=http://mcp-service:8001/api/mcp
+      - ONBOARDING_AGENT_URL=http://onboarding-agent:8001/api/agents/onboarding
+      - CORS_ORIGINS=*
+    ports:
+      - "8001:8001"
+    depends_on:
+      - mcp-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/orchestrator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Onboarding Agent Service
+  onboarding-agent:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: serve-onboarding-agent
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://serve:serve@postgres:5432/serve_db
+      - MCP_SERVICE_URL=http://mcp-service:8001/api/mcp
+      - LLM_PROVIDER=claude
+      - LLM_MODEL=claude-sonnet-4-5-20250929
+      - EMERGENT_LLM_KEY=${EMERGENT_LLM_KEY}
+      - CORS_ORIGINS=*
+    ports:
+      - "8003:8001"
+    depends_on:
+      - mcp-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/agents/onboarding/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend UI
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: serve-ui
+    environment:
+      - REACT_APP_BACKEND_URL=http://localhost:8001
+    ports:
+      - "3000:3000"
+    depends_on:
+      - orchestrator
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  default:
+    name: serve-network
