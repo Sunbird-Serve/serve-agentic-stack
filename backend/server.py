@@ -21,6 +21,10 @@ from pydantic import BaseModel, Field, field_validator
 from enum import Enum
 import re
 
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
+
 # Configure structured logging
 logging.basicConfig(
     level=logging.INFO,
