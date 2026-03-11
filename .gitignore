@@ -43,3 +43,7 @@ Thumbs.db
 
 # Emergent internal
 .emergent/
+-e 
+# Environment files
+*.env
+*.env.*
