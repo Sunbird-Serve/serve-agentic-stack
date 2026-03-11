@@ -102,6 +102,25 @@ class MCPClient:
             request_payload["reason"] = reason
         return await self.call_capability("emit-handoff-event", request_payload)
 
+    async def save_memory_summary(
+        self,
+        session_id: UUID,
+        summary_text: str,
+        key_facts: List[str] = None
+    ) -> Dict[str, Any]:
+        """Save a memory summary for the session."""
+        return await self.call_capability("save-memory-summary", {
+            "session_id": str(session_id),
+            "summary_text": summary_text,
+            "key_facts": key_facts or []
+        })
+    
+    async def get_memory_summary(self, session_id: UUID) -> Dict[str, Any]:
+        """Get memory summary for a session."""
+        return await self.call_capability("get-memory-summary", {
+            "session_id": str(session_id)
+        })
+
 
 # Singleton instance
 mcp_client = MCPClient()

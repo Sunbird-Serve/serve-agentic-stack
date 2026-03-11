@@ -47,7 +47,8 @@ def build_system_prompt(
     stage: str,
     missing_fields: List[str],
     confirmed_fields: Dict,
-    conversation_length: int = 0
+    conversation_length: int = 0,
+    memory_context: str = None
 ) -> str:
     """
     Build a contextual system prompt based on current state and data needs.
@@ -57,6 +58,7 @@ def build_system_prompt(
     2. Dynamically focus on collecting missing information
     3. Acknowledge what we already know about the volunteer
     4. Progress naturally through the conversation
+    5. Incorporate memory context for returning volunteers
     """
     
     # Base context for all stages
@@ -71,6 +73,14 @@ Guidelines:
 - Ask one question at a time
 - Never mention technical terms or internal processes
 - Make the volunteer feel valued and welcomed
+"""
+    
+    # Add memory context if available (for returning volunteers)
+    if memory_context:
+        base_prompt += f"""
+
+MEMORY CONTEXT (use naturally, don't explicitly mention having memory):
+{memory_context}
 """
     
     # Stage-specific behavior
@@ -423,7 +433,8 @@ class LLMAdapter:
         messages: List[Dict[str, str]],
         user_message: str,
         missing_fields: List[str] = None,
-        confirmed_fields: Dict = None
+        confirmed_fields: Dict = None,
+        memory_context: str = None
     ) -> str:
         """
         Generate a response using contextual prompting.
@@ -434,6 +445,7 @@ class LLMAdapter:
             user_message: User's latest message
             missing_fields: Fields still needed
             confirmed_fields: Fields already collected
+            memory_context: Memory context from previous conversations
             
         Returns:
             Assistant's response
@@ -441,12 +453,13 @@ class LLMAdapter:
         missing_fields = missing_fields or []
         confirmed_fields = confirmed_fields or {}
         
-        # Build contextual system prompt
+        # Build contextual system prompt with memory
         system_prompt = build_system_prompt(
             stage=stage,
             missing_fields=missing_fields,
             confirmed_fields=confirmed_fields,
-            conversation_length=len(messages)
+            conversation_length=len(messages),
+            memory_context=memory_context
         )
         
         return await self.provider.generate(system_prompt, messages, user_message)

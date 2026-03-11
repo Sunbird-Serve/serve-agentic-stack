@@ -362,14 +362,19 @@ def evaluate_readiness(confirmed_fields: Dict) -> Tuple[bool, List[str]]:
 
 class OnboardingAgentService:
     """
-    Autonomous onboarding agent service.
+    Autonomous onboarding agent service with memory capabilities.
     
     Responsibilities:
     - Process conversation turns
     - Extract profile data autonomously
     - Manage state transitions
     - Evaluate volunteer readiness
+    - Generate and use conversation memory summaries
     """
+    
+    def __init__(self):
+        from app.service.memory_service import memory_service
+        self.memory_service = memory_service
     
     async def process_turn(self, request: AgentTurnRequest) -> AgentTurnResponse:
         """
@@ -378,11 +383,13 @@ class OnboardingAgentService:
         Flow:
         1. Log incoming message
         2. Get current profile state from MCP
-        3. Extract new data from message
-        4. Save extracted data
-        5. Determine next state
-        6. Generate contextual response
-        7. Prepare handoff if complete
+        3. Get memory context for returning volunteers
+        4. Extract new data from message
+        5. Save extracted data
+        6. Determine next state
+        7. Generate contextual response with memory
+        8. Update memory summary if needed
+        9. Prepare handoff if complete
         """
         session_state = request.session_state
         current_state = session_state.stage
@@ -400,6 +407,22 @@ class OnboardingAgentService:
         missing_result = await mcp_client.get_missing_fields(request.session_id)
         missing_fields = missing_result.get("data", {}).get("missing_fields", [])
         confirmed_fields = missing_result.get("data", {}).get("confirmed_fields", {})
+        
+        # Get memory context for returning volunteers
+        memory_context = await self.memory_service.get_memory_context(
+            session_id=str(request.session_id),
+            confirmed_fields=confirmed_fields,
+            mcp_client=mcp_client
+        )
+        
+        if memory_context:
+            logger.info(f"Using memory context for session {str(request.session_id)[:8]}...")
+            telemetry_events.append(TelemetryEvent(
+                session_id=request.session_id,
+                event_type=EventType.MCP_CALL,
+                agent=AgentType.ONBOARDING,
+                data={"action": "get_memory_context", "has_context": True}
+            ))
         
         # Extract new fields from user message
         extracted_fields = profile_extractor.extract_all(
@@ -444,13 +467,14 @@ class OnboardingAgentService:
             ))
             logger.info(f"State transition: {current_state} -> {next_state} ({transition_reason})")
         
-        # Generate contextual response
+        # Generate contextual response with memory
         assistant_message = await llm_adapter.generate_response(
             stage=next_state,
             messages=request.conversation_history,
             user_message=request.user_message,
             missing_fields=missing_fields,
-            confirmed_fields=confirmed_fields
+            confirmed_fields=confirmed_fields,
+            memory_context=memory_context
         )
         
         # Log agent response
@@ -462,9 +486,33 @@ class OnboardingAgentService:
                 "state": next_state,
                 "response_length": len(assistant_message),
                 "fields_confirmed": len(confirmed_fields),
-                "fields_missing": len(missing_fields)
+                "fields_missing": len(missing_fields),
+                "used_memory": bool(memory_context)
             }
         ))
+        
+        # Update memory summary periodically
+        conversation_with_new = request.conversation_history + [
+            {"role": "user", "content": request.user_message},
+            {"role": "assistant", "content": assistant_message}
+        ]
+        
+        summary_result = await self.memory_service.process_conversation_update(
+            session_id=str(request.session_id),
+            conversation=conversation_with_new,
+            mcp_client=mcp_client
+        )
+        
+        if summary_result:
+            telemetry_events.append(TelemetryEvent(
+                session_id=request.session_id,
+                event_type=EventType.MCP_CALL,
+                agent=AgentType.ONBOARDING,
+                data={
+                    "action": "save_memory_summary",
+                    "key_facts_count": len(summary_result.get("key_facts", []))
+                }
+            ))
         
         # Evaluate readiness and prepare handoff if complete
         handoff_event = None
@@ -475,6 +523,14 @@ class OnboardingAgentService:
             
             if is_ready:
                 completion_status = "complete"
+                
+                # Generate final summary before handoff
+                final_summary = await self.memory_service.process_conversation_update(
+                    session_id=str(request.session_id),
+                    conversation=conversation_with_new,
+                    mcp_client=mcp_client
+                )
+                
                 handoff_event = HandoffEvent(
                     session_id=request.session_id,
                     from_agent=AgentType.ONBOARDING,
@@ -482,6 +538,8 @@ class OnboardingAgentService:
                     handoff_type=HandoffType.AGENT_TRANSITION,
                     payload={
                         "confirmed_fields": confirmed_fields,
+                        "memory_summary": final_summary.get("summary_text") if final_summary else None,
+                        "key_facts": final_summary.get("key_facts", []) if final_summary else [],
                         "readiness": {
                             "is_ready": True,
                             "profile_complete": True
@@ -495,6 +553,12 @@ class OnboardingAgentService:
         
         elif next_state == OnboardingState.PAUSED.value:
             completion_status = "paused"
+            # Generate summary when pausing so we remember context
+            await self.memory_service.process_conversation_update(
+                session_id=str(request.session_id),
+                conversation=conversation_with_new,
+                mcp_client=mcp_client
+            )
         
         return AgentTurnResponse(
             assistant_message=assistant_message,

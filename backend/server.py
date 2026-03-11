@@ -253,6 +253,7 @@ class InMemoryStore:
         self.profiles = {}
         self.messages = {}
         self.telemetry = {}
+        self.memory_summaries = {}  # session_id -> {summary_text, key_facts, created_at}
 
 store = InMemoryStore()
 
@@ -904,6 +905,120 @@ async def generate_llm_response(system_prompt: str, messages: List[Dict], user_m
         logger.error(f"LLM error: {e}")
         return "Welcome to eVidyaloka! We're excited you want to help bring quality education to children who need it most. What draws you to volunteer with us?"
 
+
+# ============ Memory Summarization ============
+
+async def generate_memory_summary(conversation: List[Dict[str, str]]) -> tuple:
+    """
+    Generate a summary and key facts from conversation using LLM.
+    Returns tuple of (summary_text, key_facts_list)
+    """
+    api_key = os.environ.get("EMERGENT_LLM_KEY")
+    
+    if not conversation:
+        return "", []
+    
+    # Format conversation
+    formatted = []
+    for msg in conversation[-10:]:
+        role = "Volunteer" if msg.get("role") == "user" else "eVidyaloka"
+        formatted.append(f"{role}: {msg.get('content', '')}")
+    conv_text = "\n".join(formatted)
+    
+    if not api_key:
+        # Basic fallback summary
+        return "Volunteer expressed interest in supporting education through eVidyaloka.", ["Interested in volunteering"]
+    
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        
+        # Generate summary
+        summary_prompt = f"""Create a brief summary (2-3 sentences) of this volunteer onboarding conversation:
+
+{conv_text}
+
+Summary:"""
+        
+        chat = LlmChat(
+            api_key=api_key,
+            session_id=f"memory-summary-{uuid4()}",
+            system_message="You summarize volunteer conversations accurately and concisely."
+        )
+        chat.with_model("anthropic", os.environ.get("LLM_MODEL", "claude-sonnet-4-5-20250929"))
+        
+        summary = await chat.send_message(UserMessage(text=summary_prompt))
+        
+        # Extract key facts
+        facts_prompt = f"""Extract key facts from this conversation as a list (one per line, starting with -):
+
+{conv_text}
+
+Facts:"""
+        
+        facts_response = await chat.send_message(UserMessage(text=facts_prompt))
+        
+        # Parse facts
+        key_facts = []
+        for line in facts_response.strip().split("\n"):
+            line = line.strip()
+            if line.startswith("-"):
+                fact = line[1:].strip()
+                if fact and len(fact) > 5:
+                    key_facts.append(fact)
+        
+        return summary.strip(), key_facts[:10]
+        
+    except Exception as e:
+        logger.error(f"Memory summarization error: {e}")
+        return "Volunteer started onboarding with eVidyaloka.", ["Started onboarding process"]
+
+
+async def should_generate_summary(session_id: str, message_count: int) -> bool:
+    """Check if we should generate a summary based on message count."""
+    threshold = 6
+    return message_count >= threshold and message_count % threshold == 0
+
+
+async def save_memory_summary(session_id: str, summary_text: str, key_facts: List[str]) -> MCPResponse:
+    """Save memory summary to store."""
+    store.memory_summaries[session_id] = {
+        "summary_text": summary_text,
+        "key_facts": key_facts,
+        "created_at": datetime.utcnow()
+    }
+    logger.info(f"Saved memory summary for session {session_id[:8]}...")
+    return MCPResponse(status="success", data={"key_facts_count": len(key_facts)})
+
+
+async def get_memory_summary(session_id: str) -> MCPResponse:
+    """Get memory summary for a session."""
+    summary = store.memory_summaries.get(session_id)
+    if not summary:
+        return MCPResponse(status="success", data=None)
+    return MCPResponse(status="success", data=summary)
+
+
+def get_memory_context(session_id: str, confirmed_fields: Dict) -> str:
+    """Get memory context for prompting."""
+    summary = store.memory_summaries.get(session_id)
+    if not summary:
+        return ""
+    
+    context_parts = []
+    
+    if summary.get("summary_text"):
+        context_parts.append(f"Previous conversation: {summary['summary_text']}")
+    
+    if summary.get("key_facts"):
+        facts = "\n".join(f"  - {f}" for f in summary["key_facts"][:5])
+        context_parts.append(f"Key facts:\n{facts}")
+    
+    name = confirmed_fields.get("full_name")
+    if name:
+        context_parts.append(f"Remember: Their name is {name}. Use it naturally.")
+    
+    return "\n\n".join(context_parts)
+
 async def process_agent_turn(request: AgentTurnRequest) -> AgentTurnResponse:
     start_time = datetime.utcnow()
     session_state = request.session_state
@@ -925,6 +1040,9 @@ async def process_agent_turn(request: AgentTurnRequest) -> AgentTurnResponse:
     missing_result = await mcp_get_missing_fields(str(request.session_id))
     missing_fields = missing_result.data.get("missing_fields", []) if missing_result.data else []
     confirmed_fields = missing_result.data.get("confirmed_fields", {}) if missing_result.data else {}
+    
+    # Get memory context for returning volunteers
+    memory_context = get_memory_context(str(request.session_id), confirmed_fields)
     
     # Extract fields from message (enhanced extraction with existing fields context)
     extracted = extract_fields(request.user_message, existing_fields=confirmed_fields)
@@ -959,10 +1077,29 @@ async def process_agent_turn(request: AgentTurnRequest) -> AgentTurnResponse:
                 }
             ))
     
-    # Build contextual prompt for eVidyaloka-aligned response
+    # Build contextual prompt with memory context
     prompt = build_state_prompt(next_state, missing_fields, confirmed_fields)
+    if memory_context:
+        prompt += f"\n\nMEMORY CONTEXT (use naturally, don't mention having memory):\n{memory_context}"
     
     assistant_msg = await generate_llm_response(prompt, request.conversation_history, request.user_message)
+    
+    # Update memory summary periodically
+    conversation_with_new = request.conversation_history + [
+        {"role": "user", "content": request.user_message},
+        {"role": "assistant", "content": assistant_msg}
+    ]
+    
+    message_count = len(conversation_with_new)
+    if await should_generate_summary(str(request.session_id), message_count):
+        summary_text, key_facts = await generate_memory_summary(conversation_with_new)
+        await save_memory_summary(str(request.session_id), summary_text, key_facts)
+        telemetry.append(TelemetryEvent(
+            session_id=request.session_id,
+            event_type=EventType.MCP_CALL,
+            agent=AgentType.ONBOARDING,
+            data={"action": "save_memory_summary", "key_facts_count": len(key_facts)}
+        ))
     
     # Calculate duration
     duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
@@ -973,17 +1110,29 @@ async def process_agent_turn(request: AgentTurnRequest) -> AgentTurnResponse:
         agent=AgentType.ONBOARDING.value,
         stage=next_state,
         duration_ms=duration_ms,
-        details={'response_length': len(assistant_msg), 'fields_extracted': list(extracted.keys()) if extracted else []}
+        details={
+            'response_length': len(assistant_msg),
+            'fields_extracted': list(extracted.keys()) if extracted else [],
+            'used_memory': bool(memory_context)
+        }
     )
     
     handoff = None
     if next_state == "onboarding_complete":
+        # Generate final summary before handoff
+        summary_text, key_facts = await generate_memory_summary(conversation_with_new)
+        await save_memory_summary(str(request.session_id), summary_text, key_facts)
+        
         handoff = HandoffEvent(
             session_id=request.session_id,
             from_agent=AgentType.ONBOARDING,
             to_agent=AgentType.SELECTION,
             handoff_type=HandoffType.AGENT_TRANSITION,
-            payload={"confirmed_fields": confirmed_fields},
+            payload={
+                "confirmed_fields": confirmed_fields,
+                "memory_summary": summary_text,
+                "key_facts": key_facts
+            },
             reason="Onboarding completed"
         )
         log_orchestration_event(
@@ -993,12 +1142,17 @@ async def process_agent_turn(request: AgentTurnRequest) -> AgentTurnResponse:
             details={'from_agent': AgentType.ONBOARDING.value, 'reason': 'Onboarding completed'}
         )
     
+    # Generate summary when pausing
+    elif next_state == "paused":
+        summary_text, key_facts = await generate_memory_summary(conversation_with_new)
+        await save_memory_summary(str(request.session_id), summary_text, key_facts)
+    
     return AgentTurnResponse(
         assistant_message=assistant_msg,
         active_agent=AgentType.ONBOARDING,
         workflow=WorkflowType(session_state.workflow),
         state=next_state,
-        completion_status="complete" if next_state == "onboarding_complete" else "in_progress",
+        completion_status="complete" if next_state == "onboarding_complete" else ("paused" if next_state == "paused" else "in_progress"),
         confirmed_fields=confirmed_fields,
         missing_fields=missing_fields,
         handoff_event=handoff,
@@ -1298,9 +1452,36 @@ async def mcp_telemetry(session_id: UUID, limit: int = 100):
     events.sort(key=lambda x: x["timestamp"], reverse=True)
     return MCPResponse(status="success", data={"events": events[:limit]})
 
+
+# ============ Memory Summary Endpoints ============
+
+class SaveMemorySummaryRequest(BaseModel):
+    session_id: UUID
+    summary_text: str
+    key_facts: List[str] = []
+
+class GetMemorySummaryRequest(BaseModel):
+    session_id: UUID
+
+
+@app.post("/api/mcp/capabilities/onboarding/save-memory-summary", response_model=MCPResponse)
+async def mcp_save_memory(request: SaveMemorySummaryRequest):
+    return await save_memory_summary(str(request.session_id), request.summary_text, request.key_facts)
+
+
+@app.post("/api/mcp/capabilities/onboarding/get-memory-summary", response_model=MCPResponse)
+async def mcp_get_memory(request: GetMemorySummaryRequest):
+    return await get_memory_summary(str(request.session_id))
+
+
+@app.get("/api/mcp/capabilities/onboarding/memory/{session_id}", response_model=MCPResponse)
+async def mcp_memory_get(session_id: UUID):
+    return await get_memory_summary(str(session_id))
+
+
 @app.get("/api/mcp/health")
 async def mcp_health():
-    return {"service": "serve-agentic-mcp-service", "status": "healthy", "version": "1.1.0"}
+    return {"service": "serve-agentic-mcp-service", "status": "healthy", "version": "1.2.0"}
 
 
 # ============ Platform Health ============
@@ -1310,7 +1491,7 @@ async def health():
     return {
         "platform": "SERVE AI",
         "status": "healthy",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "services": {
             "orchestrator": "healthy",
             "onboarding_agent": "healthy",
@@ -1319,7 +1500,8 @@ async def health():
         "features": {
             "agent_router": True,
             "workflow_validator": True,
-            "structured_logging": True
+            "structured_logging": True,
+            "memory_summarization": True
         }
     }
 
@@ -1327,10 +1509,11 @@ async def health():
 async def root():
     return {
         "message": "Welcome to SERVE AI Platform",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "architecture": {
             "agent_router": "Intelligent routing based on workflow and stage",
             "workflow_validator": "State transition validation with field requirements",
-            "structured_logging": "Comprehensive event logging for debugging"
+            "structured_logging": "Comprehensive event logging for debugging",
+            "memory_summarization": "Long-term conversation memory for returning volunteers"
         }
     }

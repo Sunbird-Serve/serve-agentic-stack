@@ -48,24 +48,9 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
 
 ### Phase 3: Orchestrator Architectural Improvements ✅ (Dec 2025)
 - [x] **Structured Interaction Contracts** (`/app/serve-orchestrator/app/schemas/contracts.py`)
-  - RoutingDecision, TransitionValidation models
-  - AgentInvocationContext, AgentInvocationResult
-  - WorkflowDefinition, WorkflowStageDefinition
-  - SessionContext, OrchestrationEvent
 - [x] **AgentRouter** (`/app/serve-orchestrator/app/service/agent_router.py`)
-  - AgentRegistry for service discovery
-  - Intelligent routing based on workflow and stage
-  - Fallback handling when agents unavailable
-  - Structured routing event logging
 - [x] **WorkflowValidator** (`/app/serve-orchestrator/app/service/workflow_validator.py`)
-  - Complete NEW_VOLUNTEER_ONBOARDING_WORKFLOW definition
-  - Stage transition validation with field requirements
-  - Completion percentage calculation
-  - Validation event logging
 - [x] **Enhanced Structured Logging**
-  - OrchestrationEventType enum
-  - Event-driven logging for all orchestration activities
-  - Routing decisions, state transitions, handoffs tracked
 
 ### Phase 4: Postgres Integration ✅
 - [x] MCP Service uses async SQLAlchemy with PostgreSQL
@@ -74,29 +59,27 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
 - [x] Docker Compose configures production Postgres
 
 ### Phase 5: Onboarding Agent Autonomy ✅ (Dec 2025)
-- [x] **eVidyaloka-Aligned Tone**
-  - Warm, volunteer-oriented communication
-  - Mission-connected messaging without being preachy
-  - Simple language, no technical jargon
-  - Never mentions: workflow, orchestrator, MCP, agent, system
-- [x] **Dynamic Question Selection**
-  - build_state_prompt() generates contextual prompts
-  - Priority-based field collection (name → email → skills → availability)
-  - Acknowledges confirmed fields, focuses on missing ones
-- [x] **Robust Profile Extraction**
-  - Enhanced ProfileExtractor class with regex patterns
-  - Name extraction with noise removal ("Sarah And I" → "Sarah")
-  - Skill keyword synonyms (math → mathematics, code → programming)
-  - Phone number pattern matching (multiple formats)
-  - Location extraction from various phrases
-  - Availability detection (hours/week, weekdays, weekends)
-- [x] **Autonomous State Transitions**
-  - Data-driven progression (not just keyword matching)
-  - Pause/resume handling
-  - Validation before each transition
-- [x] **Readiness Evaluation**
-  - evaluate_readiness() checks all required fields
-  - Handoff preparation with complete profile
+- [x] **eVidyaloka-Aligned Tone** - Warm, volunteer-oriented communication
+- [x] **Dynamic Question Selection** - Priority-based field collection
+- [x] **Robust Profile Extraction** - Fixed name extraction bug, added skill synonyms
+- [x] **Autonomous State Transitions** - Data-driven progression
+
+### Phase 6: Conversation Memory Summarization ✅ (Dec 2025)
+- [x] **Memory Summarizer Service** (`/app/serve-onboarding-agent-service/app/service/memory_service.py`)
+  - LLM-powered summarization of conversation history
+  - Key fact extraction from conversations
+  - Configurable summarization threshold (every 6 messages)
+- [x] **Memory Context in Prompts**
+  - Returning volunteer context generation
+  - Natural integration without explicit memory mention
+- [x] **MCP Memory Capabilities**
+  - `save-memory-summary` - Store conversation summaries
+  - `get-memory-summary` - Retrieve session memory
+  - `get-volunteer-memory` - Cross-session memory for volunteers
+- [x] **Automatic Summary Triggers**
+  - Periodic summarization during conversation
+  - Summary on pause for context preservation
+  - Final summary before handoff with key facts
 
 ### Frontend ✅
 - [x] Role selector, Volunteer chat, Ops dashboard, Admin console
@@ -110,16 +93,16 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
 - `/app/serve-orchestrator/app/schemas/contracts.py` - Interaction contracts
 - `/app/serve-orchestrator/app/service/agent_router.py` - AgentRouter
 - `/app/serve-orchestrator/app/service/workflow_validator.py` - WorkflowValidator
-- `/app/serve-orchestrator/app/service/orchestration.py` - Main orchestration logic
 
 ### Onboarding Agent Service
 - `/app/serve-onboarding-agent-service/app/service/llm_adapter.py` - eVidyaloka prompts
 - `/app/serve-onboarding-agent-service/app/service/onboarding_logic.py` - Agent logic
+- `/app/serve-onboarding-agent-service/app/service/memory_service.py` - Memory summarization
 
 ### MCP Service (Database Owner)
 - `/app/serve-agentic-mcp-service/app/db/database.py` - Postgres config
-- `/app/serve-agentic-mcp-service/app/models/entities.py` - SQLAlchemy models
-- `/app/serve-agentic-mcp-service/app/service/onboarding_capabilities.py` - Business logic
+- `/app/serve-agentic-mcp-service/app/models/entities.py` - SQLAlchemy models (includes MemorySummary)
+- `/app/serve-agentic-mcp-service/app/service/onboarding_capabilities.py` - Business logic + memory ops
 
 ### Preview Environment
 - `/app/backend/server.py` - Monolithic server with all features (in-memory)
@@ -142,6 +125,12 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
 
 ## API Endpoints
 
+### Memory Summary Endpoints (NEW)
+- `POST /api/mcp/capabilities/onboarding/save-memory-summary`
+- `POST /api/mcp/capabilities/onboarding/get-memory-summary`
+- `GET /api/mcp/capabilities/onboarding/memory/{session_id}`
+- `GET /api/mcp/capabilities/onboarding/volunteer-memory/{volunteer_id}`
+
 ### Orchestrator
 - `POST /api/orchestrator/interact` - Main entry point
 - `GET /api/orchestrator/session/{id}` - Get session
@@ -153,17 +142,12 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
 ### MCP Capabilities
 - `POST /api/mcp/capabilities/onboarding/start-session`
 - `POST /api/mcp/capabilities/onboarding/resume-context`
-- `POST /api/mcp/capabilities/onboarding/advance-state`
-- `POST /api/mcp/capabilities/onboarding/get-missing-fields`
-- `POST /api/mcp/capabilities/onboarding/save-confirmed-fields`
-- `POST /api/mcp/capabilities/onboarding/save-message`
-- And 10+ more capability endpoints
+- And 15+ more capability endpoints
 
 ## Database Schema (PostgreSQL)
 - **sessions**: id, channel, persona, workflow, active_agent, status, stage...
-- **session_events**: id, session_id, event_type, from_state, to_state...
 - **volunteer_profiles**: id, session_id, full_name, email, skills, availability...
 - **conversation_messages**: id, session_id, role, content, agent...
-- **memory_summaries**: id, session_id, summary_text, key_facts...
+- **memory_summaries**: id, session_id, volunteer_id, summary_text, key_facts, created_at
 - **handoff_events**: id, session_id, from_agent, to_agent, payload...
 - **telemetry_events**: id, session_id, event_type, agent, data...
