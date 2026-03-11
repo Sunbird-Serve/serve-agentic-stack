@@ -82,12 +82,46 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
   - Final summary before handoff with key facts
 
 ### Frontend ✅
-- [x] Role selector, Volunteer chat, Ops dashboard, Admin console
-- [x] Journey progress tracker
+- [x] Volunteer-first landing page (eVidyaloka branding)
+- [x] Role selector moved to /internal route
+- [x] Volunteer chat interface (no system terminology)
+- [x] Ops dashboard, Admin console (internal only)
+- [x] Journey progress tracker (eVidyaloka terminology)
 - [x] Profile display
-- [x] DPGA-aligned design
+- [x] Mission-driven design
+
+### Phase 7: Volunteer-First UI Flow ✅ (Dec 2025)
+- [x] **Volunteer Landing Page** (`/app/frontend/src/views/VolunteerLanding.jsx`)
+  - Hero section with rural India classroom imagery
+  - "Help a child learn, change a life" messaging
+  - "Start your volunteer journey" CTA
+  - Impact stats (children, volunteers, villages)
+  - How it works section
+  - Testimonial quote
+- [x] **Internal Staff Portal** (`/internal` route)
+  - Role selector for Volunteer Preview, Ops, Tech Admin
+  - No volunteer-facing terminology
+  - "eVidyaloka Staff Portal" branding
+- [x] **Updated Volunteer Chat**
+  - eVidyaloka branding throughout
+  - Back button to landing page
+  - Warm amber color scheme
+  - "Welcome Aboard!" final stage
+- [x] **Terminology Cleanup**
+  - Removed: SERVE AI, MCP, orchestration, platform roles
+  - Added: eVidyaloka mission-aligned messaging
 
 ## Key Files Reference
+
+### Frontend (Volunteer-Facing)
+- `/app/frontend/src/views/VolunteerLanding.jsx` - Landing page
+- `/app/frontend/src/views/VolunteerView.jsx` - Chat interface
+- `/app/frontend/src/components/serve/JourneyProgress.jsx` - Progress tracker
+
+### Frontend (Internal Staff)
+- `/app/frontend/src/views/RoleSelector.jsx` - Internal role selector
+- `/app/frontend/src/views/OpsView.jsx` - Operations dashboard
+- `/app/frontend/src/views/AdminView.jsx` - Tech admin console
 
 ### Orchestrator Service
 - `/app/serve-orchestrator/app/schemas/contracts.py` - Interaction contracts

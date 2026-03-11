@@ -1,5 +1,5 @@
 /**
- * SERVE AI - Journey Progress Component
+ * eVidyaloka - Journey Progress Component
  * Shows volunteer's progress through onboarding stages
  */
 import { Check, Circle, Clock } from 'lucide-react';
@@ -8,11 +8,11 @@ import { Progress } from '../ui/progress';
 const STAGES = [
   { key: 'init', label: 'Welcome' },
   { key: 'intent_discovery', label: 'Your Motivation' },
-  { key: 'purpose_orientation', label: 'About SERVE' },
+  { key: 'purpose_orientation', label: 'About eVidyaloka' },
   { key: 'eligibility_confirmation', label: 'Your Info' },
   { key: 'capability_discovery', label: 'Your Skills' },
   { key: 'profile_confirmation', label: 'Review' },
-  { key: 'onboarding_complete', label: 'Complete' },
+  { key: 'onboarding_complete', label: 'Welcome Aboard!' },
 ];
 
 export const JourneyProgress = ({ currentState, progressPercent = 0, className = '' }) => {
