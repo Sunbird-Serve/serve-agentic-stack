@@ -1,64 +1,71 @@
 # SERVE AI - Product Requirements Document
 
 ## Original Problem Statement
-Build the foundational scaffold for a SERVE AI multi-agent volunteer management platform - a Digital Public Good (DPG) aligned with DPGA.
+Build the foundational scaffold for a SERVE AI multi-agent volunteer management platform with clean service boundaries - a Digital Public Good aligned with DPGA.
 
-## Architecture
+## Architecture (Refactored Jan 2026)
 ```
-serve-ai-ui (React) → serve-orchestrator (FastAPI) → serve-agents → serve-agentic-mcp-service → PostgreSQL
+/app/
+├── serve-ai-ui/                    # React Frontend (Port 3000)
+├── serve-orchestrator/             # Coordination Layer (Port 8001)
+├── serve-onboarding-agent-service/ # Onboarding Agent (Port 8002)
+├── serve-agentic-mcp-service/      # MCP + Database (Port 8003)
+└── docker-compose.yml              # All services + Postgres
 ```
+
+### Service Communication
+- UI → Orchestrator (HTTP)
+- Orchestrator → Agent Services (HTTP)
+- Agent Services → MCP Service (HTTP)
+- MCP Service → PostgreSQL (Direct)
 
 ## User Personas
-1. **Volunteer** - Interacts via chat interface for onboarding
-2. **Ops/Coordinator** - Monitors volunteer pipeline via Kanban dashboard  
-3. **Tech Admin** - Debugs sessions, views telemetry, MCP logs
-
-## Core Requirements (Static)
-- Multi-service architecture with clear boundaries
-- Channel-agnostic orchestration (Web UI, WhatsApp ready)
-- MCP capability server owns database/persistence
-- LLM-powered onboarding agent (Claude Sonnet 4.5)
-- Strongly typed contracts between services
-- Docker Compose for local development
+1. **Volunteer** - Chat interface for onboarding
+2. **Ops/Coordinator** - Pipeline dashboard
+3. **Tech Admin** - Debug console
 
 ## What's Been Implemented (Jan 2026)
-### Backend Services
-- [x] serve-orchestrator - Central coordination layer
-- [x] serve-onboarding-agent-service - Autonomous onboarding agent with LLM
-- [x] serve-agentic-mcp-service - MCP capability server with in-memory fallback
-- [x] Shared contracts and enums
-- [x] SQLAlchemy models for Postgres (with in-memory fallback)
-- [x] 12 MCP capability endpoints for onboarding
 
-### Frontend (React)
+### Service Structure ✅
+- [x] serve-orchestrator - Own folder, FastAPI app, main.py, Dockerfile
+- [x] serve-onboarding-agent-service - Own folder, FastAPI app, main.py, Dockerfile
+- [x] serve-agentic-mcp-service - Own folder, FastAPI app, main.py, Dockerfile
+- [x] serve-ai-ui - Own folder, React app, Dockerfile
+- [x] Docker Compose with Postgres persistent volume
+
+### Backend ✅
+- [x] Orchestrator: session resolution, agent routing, handoff management
+- [x] Onboarding Agent: LLM integration (Claude Sonnet 4.5), state machine
+- [x] MCP Service: 15+ capability endpoints, SQLAlchemy models
+- [x] PostgreSQL schema: sessions, profiles, messages, events, telemetry
+
+### Frontend ✅
 - [x] Role selector landing page
 - [x] Volunteer chat view with journey progress
-- [x] Ops/Coordinator pipeline dashboard (Kanban)
+- [x] Ops pipeline dashboard (Kanban)
 - [x] Tech Admin debug console
-- [x] DPGA-aligned design system (light mode)
-- [x] Custom SERVE AI logo
+- [x] DPGA-aligned design system
 
-### Integration
-- [x] Claude Sonnet 4.5 via emergentintegrations
-- [x] Configurable LLM adapter layer (swap providers)
-- [x] Docker Compose setup
-- [x] Health endpoints for all services
+### Database Entities ✅
+- sessions, session_events, volunteer_profiles
+- conversation_messages, memory_summaries
+- handoff_events, telemetry_events
 
 ## Prioritized Backlog
 
-### P0 - Critical
-- [ ] PostgreSQL persistence (Docker volume setup)
-- [ ] Production deployment configuration
+### P0 - Next Sprint
+- [ ] Deploy with Docker Compose + Postgres
+- [ ] Selection Agent service
 
 ### P1 - High
-- [ ] Selection Agent service
 - [ ] WhatsApp channel adapter
-- [ ] Volunteer profile completion flow
+- [ ] Real-time WebSocket notifications
+- [ ] Enhanced profile extraction (NLP)
 
-### P2 - Medium  
+### P2 - Medium
 - [ ] Engagement Agent service
 - [ ] Need Agent service
-- [ ] Coordinator dashboard features
+- [ ] Coordinator features
 
 ### P3 - Future
 - [ ] Fulfillment Agent
@@ -66,7 +73,7 @@ serve-ai-ui (React) → serve-orchestrator (FastAPI) → serve-agents → serve-
 - [ ] Analytics dashboard
 
 ## Next Tasks
-1. Set up PostgreSQL in production
-2. Implement Selection Agent following same pattern
-3. Add WhatsApp integration via Twilio
-4. Complete volunteer profile fields validation
+1. Deploy with `docker-compose up -d`
+2. Verify Postgres persistence
+3. Implement Selection Agent following same pattern
+4. Add WhatsApp integration
