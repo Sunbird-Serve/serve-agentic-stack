@@ -1,0 +1,121 @@
+# SERVE AI - Docker Compose Configuration
+# Local development setup for all services
+
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: serve-postgres
+    environment:
+      POSTGRES_USER: serve
+      POSTGRES_PASSWORD: servepassword
+      POSTGRES_DB: serve_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U serve -d serve_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - serve-network
+
+  # MCP Service (Database owner) - Port 8003
+  serve-agentic-mcp-service:
+    build:
+      context: ./serve-agentic-mcp-service
+      dockerfile: Dockerfile
+    container_name: serve-agentic-mcp-service
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://serve:servepassword@postgres:5432/serve_db
+      - PORT=8003
+      - CORS_ORIGINS=*
+    ports:
+      - "8003:8003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - serve-network
+
+  # Onboarding Agent Service - Port 8002
+  serve-onboarding-agent-service:
+    build:
+      context: ./serve-onboarding-agent-service
+      dockerfile: Dockerfile
+    container_name: serve-onboarding-agent-service
+    environment:
+      - PORT=8002
+      - CORS_ORIGINS=*
+      - MCP_SERVICE_URL=http://serve-agentic-mcp-service:8003
+      - LLM_PROVIDER=claude
+      - LLM_MODEL=claude-sonnet-4-5-20250929
+      - EMERGENT_LLM_KEY=${EMERGENT_LLM_KEY}
+    ports:
+      - "8002:8002"
+    depends_on:
+      - serve-agentic-mcp-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - serve-network
+
+  # Orchestrator Service - Port 8001
+  serve-orchestrator:
+    build:
+      context: ./serve-orchestrator
+      dockerfile: Dockerfile
+    container_name: serve-orchestrator
+    environment:
+      - PORT=8001
+      - CORS_ORIGINS=*
+      - MCP_SERVICE_URL=http://serve-agentic-mcp-service:8003
+      - ONBOARDING_AGENT_URL=http://serve-onboarding-agent-service:8002
+    ports:
+      - "8001:8001"
+    depends_on:
+      - serve-agentic-mcp-service
+      - serve-onboarding-agent-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - serve-network
+
+  # Frontend UI - Port 3000
+  serve-ai-ui:
+    build:
+      context: ./serve-ai-ui
+      dockerfile: Dockerfile
+    container_name: serve-ai-ui
+    environment:
+      - REACT_APP_BACKEND_URL=http://localhost:8001
+    ports:
+      - "3000:3000"
+    depends_on:
+      - serve-orchestrator
+    networks:
+      - serve-network
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  serve-network:
+    name: serve-network
+    driver: bridge

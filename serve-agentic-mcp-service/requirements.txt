@@ -1,0 +1,8 @@
+fastapi==0.110.1
+uvicorn==0.25.0
+sqlalchemy[asyncio]==2.0.25
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+python-dotenv>=1.0.1
+pydantic>=2.6.4
+email-validator>=2.2.0

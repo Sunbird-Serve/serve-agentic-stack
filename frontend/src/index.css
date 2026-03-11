@@ -1,0 +1,158 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Public+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+    :root {
+        /* DPGA-aligned color palette */
+        --background: 0 0% 100%;
+        --foreground: 222 47% 11%;
+        --card: 0 0% 100%;
+        --card-foreground: 222 47% 11%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 222 47% 11%;
+        --primary: 210 100% 40%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 210 40% 96%;
+        --secondary-foreground: 222 47% 11%;
+        --muted: 210 40% 96%;
+        --muted-foreground: 215 16% 47%;
+        --accent: 195 100% 47%;
+        --accent-foreground: 0 0% 100%;
+        --destructive: 0 84% 60%;
+        --destructive-foreground: 0 0% 100%;
+        --border: 214 32% 91%;
+        --input: 214 32% 91%;
+        --ring: 210 100% 40%;
+        --radius: 0.5rem;
+
+        /* Semantic colors */
+        --success: 160 84% 39%;
+        --warning: 38 92% 50%;
+        --info: 217 91% 60%;
+
+        /* Chart colors */
+        --chart-1: 210 100% 40%;
+        --chart-2: 195 100% 47%;
+        --chart-3: 160 84% 39%;
+        --chart-4: 38 92% 50%;
+        --chart-5: 0 84% 60%;
+    }
+}
+
+@layer base {
+    * {
+        @apply border-border;
+    }
+    
+    body {
+        @apply bg-background text-foreground;
+        font-family: 'Public Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+    }
+    
+    h1, h2, h3, h4, h5, h6 {
+        font-family: 'Outfit', sans-serif;
+        letter-spacing: -0.02em;
+    }
+    
+    code, pre {
+        font-family: 'JetBrains Mono', 'Source Code Pro', monospace;
+    }
+}
+
+@layer utilities {
+    .text-balance {
+        text-wrap: balance;
+    }
+    
+    .glass-effect {
+        backdrop-filter: blur(16px);
+        background: rgba(255, 255, 255, 0.8);
+    }
+    
+    .dpga-gradient {
+        background: linear-gradient(135deg, hsl(210 100% 40%) 0%, hsl(195 100% 47%) 100%);
+    }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: hsl(var(--muted));
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.3);
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.5);
+}
+
+/* Animation utilities */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideIn {
+    from { opacity: 0; transform: translateX(-16px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes pulse-soft {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+.animate-fade-in {
+    animation: fadeIn 0.3s ease-out forwards;
+}
+
+.animate-slide-in {
+    animation: slideIn 0.3s ease-out forwards;
+}
+
+.animate-pulse-soft {
+    animation: pulse-soft 2s ease-in-out infinite;
+}
+
+/* Chat bubble styles */
+.chat-bubble-user {
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+    border-radius: 1rem 1rem 0.25rem 1rem;
+}
+
+.chat-bubble-assistant {
+    background: hsl(var(--secondary));
+    color: hsl(var(--secondary-foreground));
+    border-radius: 1rem 1rem 1rem 0.25rem;
+}
+
+/* Pipeline status indicators */
+.status-active {
+    border-left: 4px solid hsl(var(--success));
+}
+
+.status-pending {
+    border-left: 4px solid hsl(var(--warning));
+}
+
+.status-review {
+    border-left: 4px solid hsl(var(--accent));
+}
+
+.status-paused {
+    border-left: 4px solid hsl(var(--muted-foreground));
+}

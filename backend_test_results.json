@@ -1,0 +1,382 @@
+{
+  "summary": {
+    "passed": 16,
+    "total": 16,
+    "success_rate": 100.0
+  },
+  "results": [
+    {
+      "test": "Platform Health Check",
+      "success": true,
+      "details": "Status 200",
+      "data": {
+        "platform": "SERVE AI",
+        "status": "healthy",
+        "mode": "combined",
+        "services": {
+          "orchestrator": "healthy",
+          "onboarding_agent": "healthy",
+          "mcp_service": "healthy"
+        }
+      },
+      "timestamp": "2026-03-11T08:25:23.983331"
+    },
+    {
+      "test": "Root Endpoint",
+      "success": true,
+      "details": "Status 200",
+      "data": {
+        "message": "Welcome to SERVE AI Platform",
+        "mode": "combined (development)",
+        "version": "1.0.0",
+        "note": "In production, each service runs independently"
+      },
+      "timestamp": "2026-03-11T08:25:24.120116"
+    },
+    {
+      "test": "Orchestrator Health",
+      "success": true,
+      "details": "Status 200",
+      "data": {
+        "service": "serve-orchestrator",
+        "status": "healthy",
+        "version": "1.0.0"
+      },
+      "timestamp": "2026-03-11T08:25:24.258490"
+    },
+    {
+      "test": "Onboarding Agent Health",
+      "success": true,
+      "details": "Status 200",
+      "data": {
+        "service": "serve-onboarding-agent-service",
+        "status": "healthy",
+        "version": "1.0.0"
+      },
+      "timestamp": "2026-03-11T08:25:24.361562"
+    },
+    {
+      "test": "MCP Start Session",
+      "success": true,
+      "details": "Status 200",
+      "data": {
+        "status": "success",
+        "data": {
+          "session_id": "c52ac10d-6e4d-49f2-8574-c0a294d0673c",
+          "stage": "init",
+          "status": "active"
+        },
+        "error": null
+      },
+      "timestamp": "2026-03-11T08:25:24.489786"
+    },
+    {
+      "test": "MCP Get Missing Fields",
+      "success": true,
+      "details": "Status 200",
+      "data": {
+        "status": "success",
+        "data": {
+          "missing_fields": [
+            "full_name",
+            "email",
+            "location",
+            "skills",
+            "availability"
+          ],
+          "confirmed_fields": {},
+          "completion_percentage": 0
+        },
+        "error": null
+      },
+      "timestamp": "2026-03-11T08:25:24.585144"
+    },
+    {
+      "test": "MCP Save Confirmed Fields",
+      "success": true,
+      "details": "Status 200",
+      "data": {
+        "status": "success",
+        "data": {
+          "saved_fields": [
+            "full_name",
+            "email"
+          ]
+        },
+        "error": null
+      },
+      "timestamp": "2026-03-11T08:25:24.719038"
+    },
+    {
+      "test": "MCP Resume Context",
+      "success": true,
+      "details": "Status 200",
+      "data": {
+        "status": "success",
+        "data": {
+          "session": {
+            "id": "c52ac10d-6e4d-49f2-8574-c0a294d0673c",
+            "channel": "web_ui",
+            "persona": "new_volunteer",
+            "workflow": "new_volunteer_onboarding",
+            "active_agent": "onboarding",
+            "status": "active",
+            "stage": "init",
+            "sub_state": null,
+            "context_summary": null,
+            "created_at": "2026-03-11T08:25:24.473606",
+            "updated_at": "2026-03-11T08:25:24.473606"
+          },
+          "volunteer_profile": {
+            "id": "4c774681-2e71-4c4f-8b44-886d25c969c8",
+            "session_id": "c52ac10d-6e4d-49f2-8574-c0a294d0673c",
+            "full_name": "Test User",
+            "email": "test@example.com",
+            "phone": null,
+            "location": null,
+            "skills": [],
+            "interests": [],
+            "availability": null
+          },
+          "conversation_history": [],
+          "memory_summary": null
+        },
+        "error": null
+      },
+      "timestamp": "2026-03-11T08:25:24.834087"
+    },
+    {
+      "test": "MCP List Sessions",
+      "success": true,
+      "details": "Status 200",
+      "data": {
+        "status": "success",
+        "data": {
+          "sessions": [
+            {
+              "id": "c52ac10d-6e4d-49f2-8574-c0a294d0673c",
+              "status": "active",
+              "stage": "init",
+              "active_agent": "onboarding",
+              "volunteer_name": "Test User",
+              "created_at": "2026-03-11T08:25:24.473606",
+              "updated_at": "2026-03-11T08:25:24.473606"
+            }
+          ]
+        },
+        "error": null
+      },
+      "timestamp": "2026-03-11T08:25:24.978133"
+    },
+    {
+      "test": "Orchestrator Interact - Initial",
+      "success": true,
+      "details": "Status 200",
+      "data": {
+        "session_id": "21df6cb1-a90a-4011-b268-a22174f968d1",
+        "assistant_message": "Thank you for your message! I'm here to help you with volunteer onboarding. Could you tell me about yourself and what motivates you to volunteer?",
+        "active_agent": "onboarding",
+        "workflow": "new_volunteer_onboarding",
+        "state": "intent_discovery",
+        "sub_state": null,
+        "status": "active",
+        "journey_progress": {
+          "current_state": "intent_discovery",
+          "progress_percent": 17,
+          "confirmed_fields": {},
+          "missing_fields": [
+            "full_name",
+            "email",
+            "location",
+            "skills",
+            "availability"
+          ]
+        },
+        "debug_info": null
+      },
+      "timestamp": "2026-03-11T08:25:25.114948"
+    },
+    {
+      "test": "Orchestrator Interact - Follow-up",
+      "success": true,
+      "details": "Status 200",
+      "data": {
+        "session_id": "21df6cb1-a90a-4011-b268-a22174f968d1",
+        "assistant_message": "Thank you for your message! I'm here to help you with volunteer onboarding. Could you tell me about yourself and what motivates you to volunteer?",
+        "active_agent": "onboarding",
+        "workflow": "new_volunteer_onboarding",
+        "state": "purpose_orientation",
+        "sub_state": null,
+        "status": "active",
+        "journey_progress": {
+          "current_state": "purpose_orientation",
+          "progress_percent": 33,
+          "confirmed_fields": {
+            "full_name": "John Doe And"
+          },
+          "missing_fields": [
+            "email",
+            "location",
+            "skills",
+            "availability"
+          ]
+        },
+        "debug_info": null
+      },
+      "timestamp": "2026-03-11T08:25:25.222908"
+    },
+    {
+      "test": "Get Session State",
+      "success": true,
+      "details": "Status 200",
+      "data": {
+        "session": {
+          "id": "21df6cb1-a90a-4011-b268-a22174f968d1",
+          "channel": "web_ui",
+          "persona": "new_volunteer",
+          "workflow": "new_volunteer_onboarding",
+          "active_agent": "onboarding",
+          "status": "active",
+          "stage": "purpose_orientation",
+          "sub_state": null,
+          "context_summary": null,
+          "created_at": "2026-03-11T08:25:25.098167",
+          "updated_at": "2026-03-11T08:25:25.204902"
+        },
+        "volunteer_profile": {
+          "id": "1f55842c-1b56-467b-917a-ca785e4cde4b",
+          "session_id": "21df6cb1-a90a-4011-b268-a22174f968d1",
+          "full_name": "John Doe And",
+          "email": null,
+          "phone": null,
+          "location": null,
+          "skills": [],
+          "interests": [],
+          "availability": null
+        },
+        "conversation_history": [
+          {
+            "id": "9952f978-2df3-4d02-adf6-13a932782c40",
+            "role": "user",
+            "content": "Hello, I want to volunteer",
+            "agent": "onboarding",
+            "timestamp": "2026-03-11T08:25:25.098237"
+          },
+          {
+            "id": "1eb69331-4827-4594-9822-3975abc38c15",
+            "role": "assistant",
+            "content": "Thank you for your message! I'm here to help you with volunteer onboarding. Could you tell me about yourself and what motivates you to volunteer?",
+            "agent": "onboarding",
+            "timestamp": "2026-03-11T08:25:25.098419"
+          },
+          {
+            "id": "04b0b44b-986c-407e-a1aa-b74d7648e1bd",
+            "role": "user",
+            "content": "My name is John Doe and I'm interested in volunteering",
+            "agent": "onboarding",
+            "timestamp": "2026-03-11T08:25:25.204806"
+          },
+          {
+            "id": "6123635e-4971-4cdd-a9c3-f6ac637567d9",
+            "role": "assistant",
+            "content": "Thank you for your message! I'm here to help you with volunteer onboarding. Could you tell me about yourself and what motivates you to volunteer?",
+            "agent": "onboarding",
+            "timestamp": "2026-03-11T08:25:25.204894"
+          }
+        ],
+        "memory_summary": null
+      },
+      "timestamp": "2026-03-11T08:25:25.327584"
+    },
+    {
+      "test": "Onboarding Agent Turn",
+      "success": true,
+      "details": "Status 200",
+      "data": {
+        "assistant_message": "Thank you for your message! I'm here to help you with volunteer onboarding. Could you tell me about yourself and what motivates you to volunteer?",
+        "active_agent": "onboarding",
+        "workflow": "new_volunteer_onboarding",
+        "state": "intent_discovery",
+        "sub_state": null,
+        "completion_status": "in_progress",
+        "confirmed_fields": {
+          "full_name": "John Doe And"
+        },
+        "missing_fields": [
+          "email",
+          "location",
+          "skills",
+          "availability"
+        ],
+        "handoff_event": null,
+        "telemetry_events": [
+          {
+            "session_id": "21df6cb1-a90a-4011-b268-a22174f968d1",
+            "event_type": "state_transition",
+            "agent": "onboarding",
+            "data": {
+              "from": "init",
+              "to": "intent_discovery"
+            }
+          }
+        ]
+      },
+      "timestamp": "2026-03-11T08:25:25.430930"
+    },
+    {
+      "test": "Invalid Session ID",
+      "success": true,
+      "details": "Status 422",
+      "data": {
+        "detail": [
+          {
+            "type": "uuid_parsing",
+            "loc": [
+              "path",
+              "session_id"
+            ],
+            "msg": "Input should be a valid UUID, invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `i` at 1",
+            "input": "invalid-uuid",
+            "ctx": {
+              "error": "invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `i` at 1"
+            },
+            "url": "https://errors.pydantic.dev/2.12/v/uuid_parsing"
+          }
+        ]
+      },
+      "timestamp": "2026-03-11T08:25:25.550436"
+    },
+    {
+      "test": "Malformed Interaction Request",
+      "success": true,
+      "details": "Status 422",
+      "data": {
+        "detail": [
+          {
+            "type": "missing",
+            "loc": [
+              "body",
+              "message"
+            ],
+            "msg": "Field required",
+            "input": {
+              "invalid": "data"
+            },
+            "url": "https://errors.pydantic.dev/2.12/v/missing"
+          }
+        ]
+      },
+      "timestamp": "2026-03-11T08:25:25.663907"
+    },
+    {
+      "test": "Non-existent Endpoint",
+      "success": true,
+      "details": "Status 404",
+      "data": {
+        "detail": "Not Found"
+      },
+      "timestamp": "2026-03-11T08:25:25.772208"
+    }
+  ],
+  "timestamp": "2026-03-11T08:25:25.773129"
+}
