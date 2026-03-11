@@ -10,7 +10,7 @@ services:
     container_name: serve-postgres
     environment:
       POSTGRES_USER: serve
-      POSTGRES_PASSWORD: serve
+      POSTGRES_PASSWORD: servepassword
       POSTGRES_DB: serve_db
     ports:
       - "5432:5432"
@@ -21,93 +21,101 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - serve-network
 
-  # MCP Service (Database owner)
-  mcp-service:
+  # MCP Service (Database owner) - Port 8003
+  serve-agentic-mcp-service:
     build:
-      context: ./backend
+      context: ./serve-agentic-mcp-service
       dockerfile: Dockerfile
-    container_name: serve-mcp-service
+    container_name: serve-agentic-mcp-service
     environment:
-      - DATABASE_URL=postgresql+asyncpg://serve:serve@postgres:5432/serve_db
+      - DATABASE_URL=postgresql+asyncpg://serve:servepassword@postgres:5432/serve_db
+      - PORT=8003
       - CORS_ORIGINS=*
     ports:
-      - "8002:8001"
+      - "8003:8003"
     depends_on:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/api/mcp/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8003/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+    networks:
+      - serve-network
 
-  # Orchestrator Service
-  orchestrator:
+  # Onboarding Agent Service - Port 8002
+  serve-onboarding-agent-service:
     build:
-      context: ./backend
+      context: ./serve-onboarding-agent-service
       dockerfile: Dockerfile
-    container_name: serve-orchestrator
+    container_name: serve-onboarding-agent-service
     environment:
-      - DATABASE_URL=postgresql+asyncpg://serve:serve@postgres:5432/serve_db
-      - MCP_SERVICE_URL=http://mcp-service:8001/api/mcp
-      - ONBOARDING_AGENT_URL=http://onboarding-agent:8001/api/agents/onboarding
+      - PORT=8002
       - CORS_ORIGINS=*
-    ports:
-      - "8001:8001"
-    depends_on:
-      - mcp-service
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/api/orchestrator/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  # Onboarding Agent Service
-  onboarding-agent:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: serve-onboarding-agent
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://serve:serve@postgres:5432/serve_db
-      - MCP_SERVICE_URL=http://mcp-service:8001/api/mcp
+      - MCP_SERVICE_URL=http://serve-agentic-mcp-service:8003
       - LLM_PROVIDER=claude
       - LLM_MODEL=claude-sonnet-4-5-20250929
       - EMERGENT_LLM_KEY=${EMERGENT_LLM_KEY}
-      - CORS_ORIGINS=*
     ports:
-      - "8003:8001"
+      - "8002:8002"
     depends_on:
-      - mcp-service
+      - serve-agentic-mcp-service
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/api/agents/onboarding/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8002/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+    networks:
+      - serve-network
 
-  # Frontend UI
-  frontend:
+  # Orchestrator Service - Port 8001
+  serve-orchestrator:
     build:
-      context: ./frontend
+      context: ./serve-orchestrator
       dockerfile: Dockerfile
-    container_name: serve-ui
+    container_name: serve-orchestrator
+    environment:
+      - PORT=8001
+      - CORS_ORIGINS=*
+      - MCP_SERVICE_URL=http://serve-agentic-mcp-service:8003
+      - ONBOARDING_AGENT_URL=http://serve-onboarding-agent-service:8002
+    ports:
+      - "8001:8001"
+    depends_on:
+      - serve-agentic-mcp-service
+      - serve-onboarding-agent-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - serve-network
+
+  # Frontend UI - Port 3000
+  serve-ai-ui:
+    build:
+      context: ./serve-ai-ui
+      dockerfile: Dockerfile
+    container_name: serve-ai-ui
     environment:
       - REACT_APP_BACKEND_URL=http://localhost:8001
     ports:
       - "3000:3000"
     depends_on:
-      - orchestrator
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      - serve-orchestrator
+    networks:
+      - serve-network
 
 volumes:
   postgres_data:
     driver: local
 
 networks:
-  default:
+  serve-network:
     name: serve-network
+    driver: bridge

@@ -12,13 +12,14 @@
       "data": {
         "platform": "SERVE AI",
         "status": "healthy",
+        "mode": "combined",
         "services": {
           "orchestrator": "healthy",
           "onboarding_agent": "healthy",
           "mcp_service": "healthy"
         }
       },
-      "timestamp": "2026-03-11T07:59:55.264164"
+      "timestamp": "2026-03-11T08:25:23.983331"
     },
     {
       "test": "Root Endpoint",
@@ -26,14 +27,11 @@
       "details": "Status 200",
       "data": {
         "message": "Welcome to SERVE AI Platform",
+        "mode": "combined (development)",
         "version": "1.0.0",
-        "services": [
-          "/api/orchestrator - Central coordination layer",
-          "/api/agents/onboarding - Onboarding agent service",
-          "/api/mcp - MCP capability server"
-        ]
+        "note": "In production, each service runs independently"
       },
-      "timestamp": "2026-03-11T07:59:55.420188"
+      "timestamp": "2026-03-11T08:25:24.120116"
     },
     {
       "test": "Orchestrator Health",
@@ -42,10 +40,9 @@
       "data": {
         "service": "serve-orchestrator",
         "status": "healthy",
-        "version": "1.0.0",
-        "timestamp": "2026-03-11T07:59:55.503387"
+        "version": "1.0.0"
       },
-      "timestamp": "2026-03-11T07:59:55.518639"
+      "timestamp": "2026-03-11T08:25:24.258490"
     },
     {
       "test": "Onboarding Agent Health",
@@ -54,10 +51,9 @@
       "data": {
         "service": "serve-onboarding-agent-service",
         "status": "healthy",
-        "version": "1.0.0",
-        "timestamp": "2026-03-11T07:59:55.597547"
+        "version": "1.0.0"
       },
-      "timestamp": "2026-03-11T07:59:55.612815"
+      "timestamp": "2026-03-11T08:25:24.361562"
     },
     {
       "test": "MCP Start Session",
@@ -66,14 +62,13 @@
       "data": {
         "status": "success",
         "data": {
-          "session_id": "6dc9e2b9-ef37-4c15-bcfd-00a9833824bc",
+          "session_id": "c52ac10d-6e4d-49f2-8574-c0a294d0673c",
           "stage": "init",
           "status": "active"
         },
-        "error": null,
-        "diagnostics": null
+        "error": null
       },
-      "timestamp": "2026-03-11T07:59:55.709463"
+      "timestamp": "2026-03-11T08:25:24.489786"
     },
     {
       "test": "MCP Get Missing Fields",
@@ -92,10 +87,9 @@
           "confirmed_fields": {},
           "completion_percentage": 0
         },
-        "error": null,
-        "diagnostics": null
+        "error": null
       },
-      "timestamp": "2026-03-11T07:59:55.817307"
+      "timestamp": "2026-03-11T08:25:24.585144"
     },
     {
       "test": "MCP Save Confirmed Fields",
@@ -109,10 +103,9 @@
             "email"
           ]
         },
-        "error": null,
-        "diagnostics": null
+        "error": null
       },
-      "timestamp": "2026-03-11T07:59:55.917310"
+      "timestamp": "2026-03-11T08:25:24.719038"
     },
     {
       "test": "MCP Resume Context",
@@ -122,7 +115,7 @@
         "status": "success",
         "data": {
           "session": {
-            "id": "6dc9e2b9-ef37-4c15-bcfd-00a9833824bc",
+            "id": "c52ac10d-6e4d-49f2-8574-c0a294d0673c",
             "channel": "web_ui",
             "persona": "new_volunteer",
             "workflow": "new_volunteer_onboarding",
@@ -131,33 +124,26 @@
             "stage": "init",
             "sub_state": null,
             "context_summary": null,
-            "channel_metadata": null,
-            "created_at": "2026-03-11T07:59:55.694092",
-            "updated_at": "2026-03-11T07:59:55.694092"
+            "created_at": "2026-03-11T08:25:24.473606",
+            "updated_at": "2026-03-11T08:25:24.473606"
           },
           "volunteer_profile": {
-            "id": "98105455-b8c4-464a-97bc-770aabf0ec73",
-            "session_id": "6dc9e2b9-ef37-4c15-bcfd-00a9833824bc",
+            "id": "4c774681-2e71-4c4f-8b44-886d25c969c8",
+            "session_id": "c52ac10d-6e4d-49f2-8574-c0a294d0673c",
             "full_name": "Test User",
             "email": "test@example.com",
             "phone": null,
             "location": null,
             "skills": [],
             "interests": [],
-            "availability": null,
-            "experience_level": null,
-            "motivation": null,
-            "preferred_causes": [],
-            "onboarding_completed": false,
-            "created_at": "2026-03-11T07:59:55.694092"
+            "availability": null
           },
           "conversation_history": [],
           "memory_summary": null
         },
-        "error": null,
-        "diagnostics": null
+        "error": null
       },
-      "timestamp": "2026-03-11T07:59:56.013884"
+      "timestamp": "2026-03-11T08:25:24.834087"
     },
     {
       "test": "MCP List Sessions",
@@ -168,64 +154,27 @@
         "data": {
           "sessions": [
             {
-              "id": "6dc9e2b9-ef37-4c15-bcfd-00a9833824bc",
+              "id": "c52ac10d-6e4d-49f2-8574-c0a294d0673c",
               "status": "active",
               "stage": "init",
               "active_agent": "onboarding",
               "volunteer_name": "Test User",
-              "created_at": "2026-03-11T07:59:55.694092",
-              "updated_at": "2026-03-11T07:59:55.694092"
-            },
-            {
-              "id": "ee22e860-5ec7-4ee3-838f-ba3e62ad624a",
-              "status": "active",
-              "stage": "purpose_orientation",
-              "active_agent": "onboarding",
-              "volunteer_name": "Sarah And I",
-              "created_at": "2026-03-11T07:58:35.982614",
-              "updated_at": "2026-03-11T07:58:48.021622"
-            },
-            {
-              "id": "bbc24097-b9ef-456a-9509-6ed53c64b46a",
-              "status": "active",
-              "stage": "intent_discovery",
-              "active_agent": "onboarding",
-              "volunteer_name": null,
-              "created_at": "2026-03-11T07:58:35.883881",
-              "updated_at": "2026-03-11T07:58:42.113364"
-            },
-            {
-              "id": "4a9a3fc7-653d-4538-9417-97304cda38cb",
-              "status": "active",
-              "stage": "intent_discovery",
-              "active_agent": "onboarding",
-              "volunteer_name": null,
-              "created_at": "2026-03-11T07:58:19.426468",
-              "updated_at": "2026-03-11T07:58:24.989526"
-            },
-            {
-              "id": "c165800e-e811-434e-ab41-f52b6c4593fb",
-              "status": "active",
-              "stage": "init",
-              "active_agent": "onboarding",
-              "volunteer_name": null,
-              "created_at": "2026-03-11T07:58:15.168153",
-              "updated_at": "2026-03-11T07:58:15.168153"
+              "created_at": "2026-03-11T08:25:24.473606",
+              "updated_at": "2026-03-11T08:25:24.473606"
             }
           ]
         },
-        "error": null,
-        "diagnostics": null
+        "error": null
       },
-      "timestamp": "2026-03-11T07:59:56.121262"
+      "timestamp": "2026-03-11T08:25:24.978133"
     },
     {
       "test": "Orchestrator Interact - Initial",
       "success": true,
       "details": "Status 200",
       "data": {
-        "session_id": "4d483d62-1724-4271-9184-586918ae3985",
-        "assistant_message": "Hello! It's wonderful that you want to volunteer! \ud83c\udf1f\n\nI'd love to learn more about what's inspiring you to get involved. What's drawing you to volunteer right now? Is there a particular cause or issue that's been on your mind, or maybe a way you'd like to make a difference in your community?\n\nAlso, I'd love to know your name so I can make this conversation more personal!",
+        "session_id": "21df6cb1-a90a-4011-b268-a22174f968d1",
+        "assistant_message": "Thank you for your message! I'm here to help you with volunteer onboarding. Could you tell me about yourself and what motivates you to volunteer?",
         "active_agent": "onboarding",
         "workflow": "new_volunteer_onboarding",
         "state": "intent_discovery",
@@ -233,7 +182,7 @@
         "status": "active",
         "journey_progress": {
           "current_state": "intent_discovery",
-          "progress_percent": 14,
+          "progress_percent": 17,
           "confirmed_fields": {},
           "missing_fields": [
             "full_name",
@@ -243,52 +192,17 @@
             "availability"
           ]
         },
-        "debug_info": {
-          "telemetry_events": [
-            {
-              "id": "6f158738-ecf5-4231-80f0-b27467b97cad",
-              "session_id": "4d483d62-1724-4271-9184-586918ae3985",
-              "event_type": "user_message",
-              "agent": "onboarding",
-              "data": {
-                "message_length": 26
-              },
-              "timestamp": "2026-03-11T07:59:56.273921"
-            },
-            {
-              "id": "b0acb0c8-aebf-4321-ade1-ed73f46f799a",
-              "session_id": "4d483d62-1724-4271-9184-586918ae3985",
-              "event_type": "state_transition",
-              "agent": "onboarding",
-              "data": {
-                "from_state": "init",
-                "to_state": "intent_discovery"
-              },
-              "timestamp": "2026-03-11T07:59:56.299082"
-            },
-            {
-              "id": "af2191fe-013d-4750-acfb-c711619fbb2c",
-              "session_id": "4d483d62-1724-4271-9184-586918ae3985",
-              "event_type": "agent_response",
-              "agent": "onboarding",
-              "data": {
-                "state": "intent_discovery",
-                "response_length": 372
-              },
-              "timestamp": "2026-03-11T07:59:58.795994"
-            }
-          ]
-        }
+        "debug_info": null
       },
-      "timestamp": "2026-03-11T07:59:58.857710"
+      "timestamp": "2026-03-11T08:25:25.114948"
     },
     {
       "test": "Orchestrator Interact - Follow-up",
       "success": true,
       "details": "Status 200",
       "data": {
-        "session_id": "4d483d62-1724-4271-9184-586918ae3985",
-        "assistant_message": "Hi John! It's great to meet you, and I'm excited to help you find a meaningful volunteer opportunity! \ud83c\udf1f\n\nLet me share a bit about SERVE: We connect passionate volunteers like yourself with organizations that need your unique talents and time. Whether you're interested in working directly with people\u2014like tutoring students, mentoring youth, or supporting seniors\u2014or prefer hands-on projects like environmental conservation, community building, or even using professional skills for nonprofits, there are so many ways to make a real impact.\n\nThe beautiful thing about volunteering is that it's most rewarding when it aligns with what you're naturally drawn to and good at. \n\nSo tell me, John\u2014what types of activities or causes resonate most with you? Are you more interested in:\n- Working directly with people (kids, seniors, families in need)?\n- Environmental or animal-related work?\n- Using specific professional skills you have?\n- Hands-on community projects?\n\nAnd to help me find opportunities in your area, **where are you located**?",
+        "session_id": "21df6cb1-a90a-4011-b268-a22174f968d1",
+        "assistant_message": "Thank you for your message! I'm here to help you with volunteer onboarding. Could you tell me about yourself and what motivates you to volunteer?",
         "active_agent": "onboarding",
         "workflow": "new_volunteer_onboarding",
         "state": "purpose_orientation",
@@ -296,7 +210,7 @@
         "status": "active",
         "journey_progress": {
           "current_state": "purpose_orientation",
-          "progress_percent": 29,
+          "progress_percent": 33,
           "confirmed_fields": {
             "full_name": "John Doe And"
           },
@@ -307,44 +221,9 @@
             "availability"
           ]
         },
-        "debug_info": {
-          "telemetry_events": [
-            {
-              "id": "a827554e-10b4-4d52-83ad-6df24f2f7a11",
-              "session_id": "4d483d62-1724-4271-9184-586918ae3985",
-              "event_type": "user_message",
-              "agent": "onboarding",
-              "data": {
-                "message_length": 54
-              },
-              "timestamp": "2026-03-11T07:59:59.045949"
-            },
-            {
-              "id": "120e1dac-b1a4-4d28-a3a6-74706e1cfa5e",
-              "session_id": "4d483d62-1724-4271-9184-586918ae3985",
-              "event_type": "state_transition",
-              "agent": "onboarding",
-              "data": {
-                "from_state": "intent_discovery",
-                "to_state": "purpose_orientation"
-              },
-              "timestamp": "2026-03-11T07:59:59.092004"
-            },
-            {
-              "id": "53355211-7b02-43b6-88e3-70b59b5356e9",
-              "session_id": "4d483d62-1724-4271-9184-586918ae3985",
-              "event_type": "agent_response",
-              "agent": "onboarding",
-              "data": {
-                "state": "purpose_orientation",
-                "response_length": 1038
-              },
-              "timestamp": "2026-03-11T08:00:06.824847"
-            }
-          ]
-        }
+        "debug_info": null
       },
-      "timestamp": "2026-03-11T08:00:06.884920"
+      "timestamp": "2026-03-11T08:25:25.222908"
     },
     {
       "test": "Get Session State",
@@ -352,7 +231,7 @@
       "details": "Status 200",
       "data": {
         "session": {
-          "id": "4d483d62-1724-4271-9184-586918ae3985",
+          "id": "21df6cb1-a90a-4011-b268-a22174f968d1",
           "channel": "web_ui",
           "persona": "new_volunteer",
           "workflow": "new_volunteer_onboarding",
@@ -361,66 +240,60 @@
           "stage": "purpose_orientation",
           "sub_state": null,
           "context_summary": null,
-          "channel_metadata": {},
-          "created_at": "2026-03-11T07:59:56.232347",
-          "updated_at": "2026-03-11T08:00:06.868200"
+          "created_at": "2026-03-11T08:25:25.098167",
+          "updated_at": "2026-03-11T08:25:25.204902"
         },
         "volunteer_profile": {
-          "id": "1d672bf5-6060-4867-8928-aa429a14ca26",
-          "session_id": "4d483d62-1724-4271-9184-586918ae3985",
+          "id": "1f55842c-1b56-467b-917a-ca785e4cde4b",
+          "session_id": "21df6cb1-a90a-4011-b268-a22174f968d1",
           "full_name": "John Doe And",
           "email": null,
           "phone": null,
           "location": null,
           "skills": [],
           "interests": [],
-          "availability": null,
-          "experience_level": null,
-          "motivation": null,
-          "preferred_causes": [],
-          "onboarding_completed": false,
-          "created_at": "2026-03-11T07:59:56.232347"
+          "availability": null
         },
         "conversation_history": [
           {
-            "id": "64fbc004-0f1e-4583-b583-649c3179b8c7",
+            "id": "9952f978-2df3-4d02-adf6-13a932782c40",
             "role": "user",
             "content": "Hello, I want to volunteer",
             "agent": "onboarding",
-            "timestamp": "2026-03-11T07:59:56.253208"
+            "timestamp": "2026-03-11T08:25:25.098237"
           },
           {
-            "id": "44ebcabd-1845-4be2-9caf-a612da8517df",
+            "id": "1eb69331-4827-4594-9822-3975abc38c15",
             "role": "assistant",
-            "content": "Hello! It's wonderful that you want to volunteer! \ud83c\udf1f\n\nI'd love to learn more about what's inspiring you to get involved. What's drawing you to volunteer right now? Is there a particular cause or issue that's been on your mind, or maybe a way you'd like to make a difference in your community?\n\nAlso, I'd love to know your name so I can make this conversation more personal!",
+            "content": "Thank you for your message! I'm here to help you with volunteer onboarding. Could you tell me about yourself and what motivates you to volunteer?",
             "agent": "onboarding",
-            "timestamp": "2026-03-11T07:59:58.818426"
+            "timestamp": "2026-03-11T08:25:25.098419"
           },
           {
-            "id": "e976f5c3-fc01-4169-b03a-72d2db4dfb70",
+            "id": "04b0b44b-986c-407e-a1aa-b74d7648e1bd",
             "role": "user",
             "content": "My name is John Doe and I'm interested in volunteering",
             "agent": "onboarding",
-            "timestamp": "2026-03-11T07:59:59.024886"
+            "timestamp": "2026-03-11T08:25:25.204806"
           },
           {
-            "id": "da461281-2646-4b1d-92cc-1e2e0ce04e34",
+            "id": "6123635e-4971-4cdd-a9c3-f6ac637567d9",
             "role": "assistant",
-            "content": "Hi John! It's great to meet you, and I'm excited to help you find a meaningful volunteer opportunity! \ud83c\udf1f\n\nLet me share a bit about SERVE: We connect passionate volunteers like yourself with organizations that need your unique talents and time. Whether you're interested in working directly with people\u2014like tutoring students, mentoring youth, or supporting seniors\u2014or prefer hands-on projects like environmental conservation, community building, or even using professional skills for nonprofits, there are so many ways to make a real impact.\n\nThe beautiful thing about volunteering is that it's most rewarding when it aligns with what you're naturally drawn to and good at. \n\nSo tell me, John\u2014what types of activities or causes resonate most with you? Are you more interested in:\n- Working directly with people (kids, seniors, families in need)?\n- Environmental or animal-related work?\n- Using specific professional skills you have?\n- Hands-on community projects?\n\nAnd to help me find opportunities in your area, **where are you located**?",
+            "content": "Thank you for your message! I'm here to help you with volunteer onboarding. Could you tell me about yourself and what motivates you to volunteer?",
             "agent": "onboarding",
-            "timestamp": "2026-03-11T08:00:06.847335"
+            "timestamp": "2026-03-11T08:25:25.204894"
           }
         ],
         "memory_summary": null
       },
-      "timestamp": "2026-03-11T08:00:07.022627"
+      "timestamp": "2026-03-11T08:25:25.327584"
     },
     {
       "test": "Onboarding Agent Turn",
       "success": true,
       "details": "Status 200",
       "data": {
-        "assistant_message": "Hi John! It's wonderful to hear from you! \ud83c\udf1f\n\nI'm so glad you want to get involved. Helping others is such a rewarding experience, and I'm here to make sure we find the perfect opportunity for you.\n\nI'd love to understand a bit more about what's motivating you right now. **What's drawing you to volunteer at this moment?** Is there a particular cause that's close to your heart, or maybe an issue in your community that you'd like to help address?\n\nAlso, to help me connect you with local opportunities, **could you share what city or area you're located in?** That way I can point you toward organizations and projects nearby that align with your interests!",
+        "assistant_message": "Thank you for your message! I'm here to help you with volunteer onboarding. Could you tell me about yourself and what motivates you to volunteer?",
         "active_agent": "onboarding",
         "workflow": "new_volunteer_onboarding",
         "state": "intent_discovery",
@@ -438,40 +311,17 @@
         "handoff_event": null,
         "telemetry_events": [
           {
-            "id": "1f0400b4-32cb-478c-ab8b-de0ff3af1c1f",
-            "session_id": "4d483d62-1724-4271-9184-586918ae3985",
-            "event_type": "user_message",
-            "agent": "onboarding",
-            "data": {
-              "message_length": 25
-            },
-            "timestamp": "2026-03-11T08:00:07.103759"
-          },
-          {
-            "id": "8865d598-fc08-4e34-8394-c130b941ca80",
-            "session_id": "4d483d62-1724-4271-9184-586918ae3985",
+            "session_id": "21df6cb1-a90a-4011-b268-a22174f968d1",
             "event_type": "state_transition",
             "agent": "onboarding",
             "data": {
-              "from_state": "init",
-              "to_state": "intent_discovery"
-            },
-            "timestamp": "2026-03-11T08:00:07.124943"
-          },
-          {
-            "id": "1a9ebad2-4cd3-485a-9c01-05b6302f2fd5",
-            "session_id": "4d483d62-1724-4271-9184-586918ae3985",
-            "event_type": "agent_response",
-            "agent": "onboarding",
-            "data": {
-              "state": "intent_discovery",
-              "response_length": 658
-            },
-            "timestamp": "2026-03-11T08:00:13.400558"
+              "from": "init",
+              "to": "intent_discovery"
+            }
           }
         ]
       },
-      "timestamp": "2026-03-11T08:00:13.417603"
+      "timestamp": "2026-03-11T08:25:25.430930"
     },
     {
       "test": "Invalid Session ID",
@@ -494,7 +344,7 @@
           }
         ]
       },
-      "timestamp": "2026-03-11T08:00:13.552570"
+      "timestamp": "2026-03-11T08:25:25.550436"
     },
     {
       "test": "Malformed Interaction Request",
@@ -516,7 +366,7 @@
           }
         ]
       },
-      "timestamp": "2026-03-11T08:00:13.650738"
+      "timestamp": "2026-03-11T08:25:25.663907"
     },
     {
       "test": "Non-existent Endpoint",
@@ -525,8 +375,8 @@
       "data": {
         "detail": "Not Found"
       },
-      "timestamp": "2026-03-11T08:00:13.749730"
+      "timestamp": "2026-03-11T08:25:25.772208"
     }
   ],
-  "timestamp": "2026-03-11T08:00:13.750576"
+  "timestamp": "2026-03-11T08:25:25.773129"
 }

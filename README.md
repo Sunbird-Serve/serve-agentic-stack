@@ -1,43 +1,80 @@
 # SERVE AI Platform
 
-A multi-agent volunteer management platform designed to support the lifecycle of volunteers and needs in the SERVE ecosystem.
+A multi-agent volunteer management platform designed to support the lifecycle of volunteers and needs in the SERVE ecosystem. Built as a Digital Public Good aligned with DPGA.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        SERVE AI Platform                         │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  ┌─────────────┐     ┌─────────────────┐     ┌────────────────┐ │
-│  │  serve-ui   │────▶│ serve-orchestrator│───▶│ serve-agents   │ │
-│  │   (React)   │     │    (FastAPI)      │     │   (FastAPI)    │ │
-│  └─────────────┘     └─────────────────┘     └────────────────┘ │
-│         │                    │                       │           │
-│         │                    │                       │           │
-│         │                    ▼                       ▼           │
-│         │           ┌─────────────────────────────────┐         │
-│         │           │    serve-agentic-mcp-service    │         │
-│         │           │          (FastAPI)              │         │
-│         │           └─────────────────────────────────┘         │
-│         │                        │                               │
-│         │                        ▼                               │
-│         │              ┌─────────────────┐                      │
-│         └─────────────▶│    PostgreSQL   │                      │
-│                        └─────────────────┘                      │
-│                                                                   │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          SERVE AI Platform                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌──────────────┐                                                       │
+│  │ serve-ai-ui  │ (React - Port 3000)                                   │
+│  │   Frontend   │                                                       │
+│  └──────┬───────┘                                                       │
+│         │ HTTP                                                          │
+│         ▼                                                               │
+│  ┌──────────────────┐                                                   │
+│  │ serve-orchestrator│ (FastAPI - Port 8001)                            │
+│  │  Coordination     │                                                   │
+│  └──────┬───────────┘                                                   │
+│         │ HTTP                                                          │
+│         ▼                                                               │
+│  ┌────────────────────────────┐                                         │
+│  │ serve-onboarding-agent-    │ (FastAPI - Port 8002)                   │
+│  │ service                    │                                         │
+│  │ (+ future agent services)  │                                         │
+│  └──────┬─────────────────────┘                                         │
+│         │ HTTP                                                          │
+│         ▼                                                               │
+│  ┌────────────────────────────┐         ┌─────────────┐                 │
+│  │ serve-agentic-mcp-service  │────────▶│  PostgreSQL │                 │
+│  │ (FastAPI - Port 8003)      │         │  (Port 5432)│                 │
+│  │ MCP Capabilities + DB      │         └─────────────┘                 │
+│  └────────────────────────────┘                                         │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Services
 
 | Service | Port | Description |
 |---------|------|-------------|
-| serve-ui | 3000 | React frontend with role-based views |
+| serve-ai-ui | 3000 | React frontend with role-based views |
 | serve-orchestrator | 8001 | Central coordination layer |
-| serve-onboarding-agent | 8003 | Onboarding agent service |
-| serve-agentic-mcp-service | 8002 | MCP capability server (DB owner) |
-| PostgreSQL | 5432 | Database |
+| serve-onboarding-agent-service | 8002 | Onboarding agent service |
+| serve-agentic-mcp-service | 8003 | MCP capability server (DB owner) |
+| PostgreSQL | 5432 | Database with persistent volume |
+
+## Service Boundaries
+
+### serve-orchestrator
+- Channel-agnostic coordination layer
+- Receives interaction requests from UI or channel adapters
+- Resolves or creates sessions
+- Determines workflow and active agent
+- Routes requests to agent services via HTTP
+- Does NOT perform conversational logic
+- Does NOT access database directly
+
+### serve-onboarding-agent-service
+- Implements onboarding conversational logic
+- Receives session context from orchestrator
+- Calls MCP capabilities over HTTP
+- Returns structured agent responses
+- Does NOT access database directly
+
+### serve-agentic-mcp-service
+- Exposes domain capabilities as HTTP APIs
+- Owns ALL database access and persistence
+- Stores sessions, profiles, messages, events
+- Returns structured capability responses
+
+### serve-ai-ui
+- React frontend with Tailwind CSS
+- Role-based views (Volunteer, Ops, Admin)
+- Calls orchestrator via HTTP
 
 ## Quick Start
 
@@ -68,48 +105,50 @@ docker-compose logs -f
 open http://localhost:3000
 ```
 
-### Local Development
+### Running Services Individually
 
-#### Backend Services
+#### MCP Service (start first - owns database)
 
 ```bash
-cd backend
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # or `venv\Scripts\activate` on Windows
-
-# Install dependencies
+cd serve-agentic-mcp-service
 pip install -r requirements.txt
+export DATABASE_URL="postgresql+asyncpg://serve:servepassword@localhost:5432/serve_db"
+uvicorn main:app --host 0.0.0.0 --port 8003 --reload
+```
 
-# Set environment variables
-export DATABASE_URL="postgresql+asyncpg://serve:serve@localhost:5432/serve_db"
-export EMERGENT_LLM_KEY="your-key-here"
-export LLM_PROVIDER="claude"
-export LLM_MODEL="claude-sonnet-4-5-20250929"
+#### Onboarding Agent Service
 
-# Run the server
-uvicorn server:app --host 0.0.0.0 --port 8001 --reload
+```bash
+cd serve-onboarding-agent-service
+pip install -r requirements.txt
+pip install emergentintegrations --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
+export MCP_SERVICE_URL="http://localhost:8003"
+export EMERGENT_LLM_KEY="your-key"
+uvicorn main:app --host 0.0.0.0 --port 8002 --reload
+```
+
+#### Orchestrator Service
+
+```bash
+cd serve-orchestrator
+pip install -r requirements.txt
+export MCP_SERVICE_URL="http://localhost:8003"
+export ONBOARDING_AGENT_URL="http://localhost:8002"
+uvicorn main:app --host 0.0.0.0 --port 8001 --reload
 ```
 
 #### Frontend
 
 ```bash
-cd frontend
-
-# Install dependencies
+cd serve-ai-ui
 yarn install
-
-# Set environment variables
 export REACT_APP_BACKEND_URL="http://localhost:8001"
-
-# Start development server
 yarn start
 ```
 
 ## API Endpoints
 
-### Orchestrator (`/api/orchestrator`)
+### Orchestrator (`http://localhost:8001/api`)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -118,7 +157,14 @@ yarn start
 | `/sessions` | GET | List all sessions |
 | `/health` | GET | Health check |
 
-### MCP Service (`/api/mcp/capabilities/onboarding`)
+### Onboarding Agent (`http://localhost:8002/api`)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/turn` | POST | Process agent turn |
+| `/health` | GET | Health check |
+
+### MCP Service (`http://localhost:8003/api/capabilities/onboarding`)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -127,34 +173,25 @@ yarn start
 | `/advance-state` | POST | Advance to next state |
 | `/save-confirmed-fields` | POST | Save profile fields |
 | `/get-missing-fields` | POST | Get missing required fields |
+| `/save-message` | POST | Save conversation message |
+| `/log-event` | POST | Log telemetry event |
 | `/session/{id}` | GET | Get full session |
 | `/sessions` | GET | List all sessions |
 | `/telemetry/{id}` | GET | Get telemetry events |
 
-### Onboarding Agent (`/api/agents/onboarding`)
+## Database Schema
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/turn` | POST | Process agent turn |
-| `/health` | GET | Health check |
+### Core Entities
 
-## Views
-
-### Volunteer View
-- Chat interface for volunteer interaction
-- Journey progress indicator
-- Profile summary panel
-
-### Ops/Coordinator View
-- Volunteer pipeline (Kanban-style)
-- Session status tracking
-- Quick stats dashboard
-
-### Tech Admin View
-- Session browser
-- Telemetry events viewer
-- Conversation logs
-- Raw JSON data viewer
+| Table | Description |
+|-------|-------------|
+| sessions | Interaction lifecycle tracking |
+| session_events | State transitions and routing decisions |
+| volunteer_profiles | Volunteer information |
+| conversation_messages | Chat history |
+| memory_summaries | Long-term context summaries |
+| handoff_events | Agent transitions |
+| telemetry_events | Operational telemetry |
 
 ## Onboarding States
 
@@ -171,29 +208,47 @@ yarn start
 
 ## Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | - |
-| `EMERGENT_LLM_KEY` | LLM API key | - |
-| `LLM_PROVIDER` | LLM provider (claude/openai/gemini) | claude |
-| `LLM_MODEL` | Model name | claude-sonnet-4-5-20250929 |
-| `MCP_SERVICE_URL` | MCP service URL | http://localhost:8001/api/mcp |
-| `CORS_ORIGINS` | Allowed CORS origins | * |
+### Orchestrator
+| Variable | Description |
+|----------|-------------|
+| `MCP_SERVICE_URL` | URL to MCP service |
+| `ONBOARDING_AGENT_URL` | URL to onboarding agent |
+| `CORS_ORIGINS` | Allowed CORS origins |
+
+### Onboarding Agent
+| Variable | Description |
+|----------|-------------|
+| `MCP_SERVICE_URL` | URL to MCP service |
+| `LLM_PROVIDER` | LLM provider (claude/openai/gemini) |
+| `LLM_MODEL` | Model name |
+| `EMERGENT_LLM_KEY` | LLM API key |
+
+### MCP Service
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `CORS_ORIGINS` | Allowed CORS origins |
 
 ## Future Agents
 
-The architecture supports adding these agents following the same pattern:
+The architecture supports adding these agents as separate services:
 
-- Selection Agent
-- Engagement Agent
-- Need Agent
-- Fulfillment Agent
-- Delivery Assistant
+- serve-selection-agent-service
+- serve-engagement-agent-service
+- serve-need-agent-service
+- serve-fulfillment-agent-service
+- serve-delivery-assistant-service
+
+Each would follow the same pattern:
+1. Create service folder with FastAPI app
+2. Implement agent logic calling MCP capabilities
+3. Add to docker-compose
+4. Register in orchestrator's agent client
 
 ## Tech Stack
 
 - **Frontend**: React, Tailwind CSS, shadcn/ui
-- **Backend**: Python, FastAPI
+- **Backend**: Python 3.11, FastAPI
 - **Database**: PostgreSQL with SQLAlchemy
 - **LLM**: Claude Sonnet 4.5 (configurable)
 - **Infrastructure**: Docker Compose
