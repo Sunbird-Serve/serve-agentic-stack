@@ -120,3 +120,55 @@ async def list_sessions(
 async def get_telemetry(session_id: UUID, limit: int = 100, db: AsyncSession = Depends(get_db)):
     """Get telemetry events for a session"""
     return await onboarding_capability_service.get_telemetry(db, session_id, limit)
+
+
+# ============ Memory Summary Routes ============
+
+class SaveMemorySummaryRequest(BaseModel):
+    session_id: UUID
+    summary_text: str
+    key_facts: List[str] = []
+    volunteer_id: Optional[UUID] = None
+
+class GetMemorySummaryRequest(BaseModel):
+    session_id: UUID
+
+
+@router.post("/save-memory-summary", response_model=MCPResponse)
+async def save_memory_summary(request: SaveMemorySummaryRequest, db: AsyncSession = Depends(get_db)):
+    """Save a conversation memory summary for long-term context"""
+    return await onboarding_capability_service.save_memory_summary(
+        session_id=request.session_id,
+        summary_text=request.summary_text,
+        key_facts=request.key_facts,
+        volunteer_id=request.volunteer_id,
+        db=db
+    )
+
+
+@router.post("/get-memory-summary", response_model=MCPResponse)
+async def get_memory_summary(request: GetMemorySummaryRequest, db: AsyncSession = Depends(get_db)):
+    """Retrieve memory summary for a session"""
+    return await onboarding_capability_service.get_memory_summary(
+        session_id=request.session_id,
+        db=db
+    )
+
+
+@router.get("/memory/{session_id}", response_model=MCPResponse)
+async def get_session_memory(session_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Get memory summary for a session (GET endpoint)"""
+    return await onboarding_capability_service.get_memory_summary(
+        session_id=session_id,
+        db=db
+    )
+
+
+@router.get("/volunteer-memory/{volunteer_id}", response_model=MCPResponse)
+async def get_volunteer_memory(volunteer_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Get all memory summaries for a volunteer across sessions"""
+    return await onboarding_capability_service.get_volunteer_memory(
+        volunteer_id=volunteer_id,
+        db=db
+    )
+

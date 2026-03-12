@@ -675,6 +675,164 @@ class OnboardingCapabilityService:
             logger.error(f"Error preparing handoff: {e}")
             return MCPResponse(status="error", error=str(e))
 
+    # ============ Memory Summary Capabilities ============
+    
+    async def save_memory_summary(
+        self,
+        session_id: UUID,
+        summary_text: str,
+        key_facts: List[str] = None,
+        volunteer_id: UUID = None,
+        db: AsyncSession = None
+    ) -> MCPResponse:
+        """
+        Save a conversation memory summary.
+        
+        This capability stores summarized conversation context for
+        long-term memory, enabling personalized interactions when
+        volunteers return.
+        """
+        try:
+            from app.models import MemorySummary
+            
+            async with get_db() as db:
+                # Check if summary exists for this session
+                result = await db.execute(
+                    select(MemorySummary).where(MemorySummary.session_id == session_id)
+                )
+                existing = result.scalar_one_or_none()
+                
+                if existing:
+                    # Update existing summary
+                    existing.summary_text = summary_text
+                    existing.key_facts = key_facts or []
+                    existing.created_at = datetime.utcnow()
+                    await db.flush()
+                    summary_id = existing.id
+                else:
+                    # Create new summary
+                    summary = MemorySummary(
+                        session_id=session_id,
+                        volunteer_id=volunteer_id,
+                        summary_text=summary_text,
+                        key_facts=key_facts or [],
+                        created_at=datetime.utcnow()
+                    )
+                    db.add(summary)
+                    await db.flush()
+                    summary_id = summary.id
+                
+                await db.commit()
+            
+            logger.info(f"Saved memory summary for session {session_id}")
+            return MCPResponse(
+                status="success",
+                data={
+                    "summary_id": str(summary_id),
+                    "session_id": str(session_id),
+                    "key_facts_count": len(key_facts) if key_facts else 0
+                }
+            )
+        except Exception as e:
+            logger.error(f"Error saving memory summary: {e}")
+            return MCPResponse(status="error", error=str(e))
+    
+    async def get_memory_summary(
+        self,
+        session_id: UUID,
+        db: AsyncSession = None
+    ) -> MCPResponse:
+        """
+        Retrieve memory summary for a session.
+        
+        Returns the most recent summary and key facts for context.
+        """
+        try:
+            from app.models import MemorySummary
+            
+            async with get_db() as db:
+                result = await db.execute(
+                    select(MemorySummary)
+                    .where(MemorySummary.session_id == session_id)
+                    .order_by(MemorySummary.created_at.desc())
+                )
+                summary = result.scalar_one_or_none()
+                
+                if not summary:
+                    return MCPResponse(
+                        status="success",
+                        data=None
+                    )
+                
+                return MCPResponse(
+                    status="success",
+                    data={
+                        "summary_id": str(summary.id),
+                        "session_id": str(session_id),
+                        "summary_text": summary.summary_text,
+                        "key_facts": summary.key_facts or [],
+                        "created_at": summary.created_at.isoformat() if summary.created_at else None
+                    }
+                )
+        except Exception as e:
+            logger.error(f"Error getting memory summary: {e}")
+            return MCPResponse(status="error", error=str(e))
+    
+    async def get_volunteer_memory(
+        self,
+        volunteer_id: UUID,
+        db: AsyncSession = None
+    ) -> MCPResponse:
+        """
+        Retrieve all memory summaries for a volunteer across sessions.
+        
+        Useful for returning volunteers who may have had multiple
+        conversation sessions.
+        """
+        try:
+            from app.models import MemorySummary
+            
+            async with get_db() as db:
+                result = await db.execute(
+                    select(MemorySummary)
+                    .where(MemorySummary.volunteer_id == volunteer_id)
+                    .order_by(MemorySummary.created_at.desc())
+                    .limit(5)
+                )
+                summaries = result.scalars().all()
+                
+                if not summaries:
+                    return MCPResponse(status="success", data={"summaries": []})
+                
+                summaries_data = [
+                    {
+                        "summary_id": str(s.id),
+                        "session_id": str(s.session_id) if s.session_id else None,
+                        "summary_text": s.summary_text,
+                        "key_facts": s.key_facts or [],
+                        "created_at": s.created_at.isoformat() if s.created_at else None
+                    }
+                    for s in summaries
+                ]
+                
+                # Combine key facts from all summaries
+                all_facts = []
+                for s in summaries_data:
+                    all_facts.extend(s.get("key_facts", []))
+                unique_facts = list(dict.fromkeys(all_facts))[:10]
+                
+                return MCPResponse(
+                    status="success",
+                    data={
+                        "summaries": summaries_data,
+                        "combined_key_facts": unique_facts
+                    }
+                )
+        except Exception as e:
+            logger.error(f"Error getting volunteer memory: {e}")
+            return MCPResponse(status="error", error=str(e))
+
+
 
 # Singleton instance
 onboarding_capability_service = OnboardingCapabilityService()

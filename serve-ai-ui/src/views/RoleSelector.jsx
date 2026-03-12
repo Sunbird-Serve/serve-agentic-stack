@@ -1,15 +1,15 @@
 /**
- * SERVE AI - Role Selector Landing Page
- * Entry point for selecting user role/view
+ * Internal Admin Entry - Role Selector
+ * Internal route for staff access to different views
+ * Not visible to volunteers
  */
-import { MessageSquare, Users, Settings, ArrowRight } from 'lucide-react';
-import { ServeLogo } from '../components/serve/ServeLogo';
+import { MessageSquare, Users, Settings, ArrowRight, ShieldCheck } from 'lucide-react';
 
 const ROLES = [
   {
     id: 'volunteer',
-    title: 'Volunteer',
-    description: 'Start your volunteer journey with SERVE AI. Chat with our onboarding assistant to get matched with opportunities.',
+    title: 'Volunteer View',
+    description: 'Preview the volunteer onboarding experience as a volunteer would see it.',
     icon: MessageSquare,
     color: 'bg-blue-500',
     hoverColor: 'hover:border-blue-400',
@@ -25,7 +25,7 @@ const ROLES = [
   {
     id: 'admin',
     title: 'Tech Admin',
-    description: 'Debug and monitor the system. View telemetry, MCP calls, session states, and conversation logs.',
+    description: 'Debug and monitor the system. View telemetry, API calls, session states, and conversation logs.',
     icon: Settings,
     color: 'bg-slate-600',
     hoverColor: 'hover:border-slate-400',
@@ -34,19 +34,21 @@ const ROLES = [
 
 export const RoleSelector = ({ onSelectRole }) => {
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 flex items-center justify-center p-8" data-testid="role-selector">
+    <div className="min-h-screen bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center p-8" data-testid="role-selector">
       <div className="max-w-4xl w-full">
         {/* Header */}
         <div className="text-center mb-12">
           <div className="flex justify-center mb-6">
-            <ServeLogo size="xl" />
+            <div className="w-16 h-16 rounded-xl bg-slate-700 flex items-center justify-center">
+              <ShieldCheck className="w-8 h-8 text-white" />
+            </div>
           </div>
-          <h1 className="text-4xl font-bold text-slate-900 mb-3 tracking-tight">
-            Welcome to SERVE AI
+          <h1 className="text-3xl font-bold text-slate-900 mb-3 tracking-tight">
+            Internal Access
           </h1>
-          <p className="text-lg text-slate-600 max-w-2xl mx-auto">
-            A Digital Public Good volunteer management platform. 
-            Select your role to get started.
+          <p className="text-base text-slate-600 max-w-lg mx-auto">
+            Staff portal for eVidyaloka volunteer management. 
+            Select a view to continue.
           </p>
         </div>
 
@@ -82,7 +84,7 @@ export const RoleSelector = ({ onSelectRole }) => {
         {/* Footer */}
         <div className="mt-12 text-center">
           <p className="text-sm text-slate-400">
-            Powered by SERVE AI • A Digital Public Good
+            eVidyaloka Staff Portal • Internal Use Only
           </p>
         </div>
       </div>

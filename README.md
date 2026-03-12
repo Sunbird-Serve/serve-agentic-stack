@@ -10,31 +10,76 @@ A multi-agent volunteer management platform designed to support the lifecycle of
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
 │  ┌──────────────┐                                                       │
-│  │ serve-ai-ui  │ (React - Port 3000)                                   │
-│  │   Frontend   │                                                       │
+│  │ serve-ai-ui  │  React Frontend                                       │
+│  │  Port 3000   │                                                       │
 │  └──────┬───────┘                                                       │
 │         │ HTTP                                                          │
 │         ▼                                                               │
 │  ┌──────────────────┐                                                   │
-│  │ serve-orchestrator│ (FastAPI - Port 8001)                            │
-│  │  Coordination     │                                                   │
+│  │ serve-orchestrator│  Coordination Layer                              │
+│  │    Port 8001      │                                                   │
 │  └──────┬───────────┘                                                   │
 │         │ HTTP                                                          │
 │         ▼                                                               │
 │  ┌────────────────────────────┐                                         │
-│  │ serve-onboarding-agent-    │ (FastAPI - Port 8002)                   │
-│  │ service                    │                                         │
-│  │ (+ future agent services)  │                                         │
+│  │ serve-onboarding-agent-    │  Onboarding Agent                       │
+│  │ service    Port 8002       │  (future agents added here)             │
 │  └──────┬─────────────────────┘                                         │
 │         │ HTTP                                                          │
 │         ▼                                                               │
 │  ┌────────────────────────────┐         ┌─────────────┐                 │
 │  │ serve-agentic-mcp-service  │────────▶│  PostgreSQL │                 │
-│  │ (FastAPI - Port 8003)      │         │  (Port 5432)│                 │
-│  │ MCP Capabilities + DB      │         └─────────────┘                 │
+│  │        Port 8003           │         │  Port 5432  │                 │
+│  │   MCP Capabilities + DB    │         └─────────────┘                 │
 │  └────────────────────────────┘                                         │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
+```
+
+## Project Structure
+
+```
+/app/
+├── serve-ai-ui/                      # React Frontend
+│   ├── src/
+│   ├── public/
+│   ├── package.json
+│   └── Dockerfile
+│
+├── serve-orchestrator/               # Coordination Service
+│   ├── app/
+│   │   ├── api/
+│   │   ├── service/
+│   │   ├── schemas/
+│   │   └── clients/
+│   ├── main.py
+│   ├── requirements.txt
+│   └── Dockerfile
+│
+├── serve-onboarding-agent-service/   # Onboarding Agent
+│   ├── app/
+│   │   ├── api/
+│   │   ├── service/
+│   │   ├── schemas/
+│   │   └── clients/
+│   ├── main.py
+│   ├── requirements.txt
+│   └── Dockerfile
+│
+├── serve-agentic-mcp-service/        # MCP + Database
+│   ├── app/
+│   │   ├── api/
+│   │   ├── service/
+│   │   ├── schemas/
+│   │   ├── models/
+│   │   └── db/
+│   ├── main.py
+│   ├── requirements.txt
+│   └── Dockerfile
+│
+├── docker-compose.yml                # All services + Postgres
+├── .env.example                      # Environment template
+└── README.md
 ```
 
 ## Services
@@ -43,48 +88,17 @@ A multi-agent volunteer management platform designed to support the lifecycle of
 |---------|------|-------------|
 | serve-ai-ui | 3000 | React frontend with role-based views |
 | serve-orchestrator | 8001 | Central coordination layer |
-| serve-onboarding-agent-service | 8002 | Onboarding agent service |
-| serve-agentic-mcp-service | 8003 | MCP capability server (DB owner) |
-| PostgreSQL | 5432 | Database with persistent volume |
-
-## Service Boundaries
-
-### serve-orchestrator
-- Channel-agnostic coordination layer
-- Receives interaction requests from UI or channel adapters
-- Resolves or creates sessions
-- Determines workflow and active agent
-- Routes requests to agent services via HTTP
-- Does NOT perform conversational logic
-- Does NOT access database directly
-
-### serve-onboarding-agent-service
-- Implements onboarding conversational logic
-- Receives session context from orchestrator
-- Calls MCP capabilities over HTTP
-- Returns structured agent responses
-- Does NOT access database directly
-
-### serve-agentic-mcp-service
-- Exposes domain capabilities as HTTP APIs
-- Owns ALL database access and persistence
-- Stores sessions, profiles, messages, events
-- Returns structured capability responses
-
-### serve-ai-ui
-- React frontend with Tailwind CSS
-- Role-based views (Volunteer, Ops, Admin)
-- Calls orchestrator via HTTP
+| serve-onboarding-agent-service | 8002 | Onboarding agent with LLM |
+| serve-agentic-mcp-service | 8003 | MCP capabilities + database |
+| postgres | 5432 | PostgreSQL with persistent volume |
 
 ## Quick Start
 
 ### Prerequisites
 
 - Docker & Docker Compose
-- Node.js 18+ (for local frontend development)
-- Python 3.11+ (for local backend development)
 
-### Running with Docker Compose
+### Running
 
 ```bash
 # Clone the repository
@@ -105,50 +119,52 @@ docker-compose logs -f
 open http://localhost:3000
 ```
 
-### Running Services Individually
-
-#### MCP Service (start first - owns database)
+### Stop Services
 
 ```bash
-cd serve-agentic-mcp-service
-pip install -r requirements.txt
-export DATABASE_URL="postgresql+asyncpg://serve:servepassword@localhost:5432/serve_db"
-uvicorn main:app --host 0.0.0.0 --port 8003 --reload
+docker-compose down
 ```
 
-#### Onboarding Agent Service
+### Reset Database
 
 ```bash
-cd serve-onboarding-agent-service
-pip install -r requirements.txt
-pip install emergentintegrations --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
-export MCP_SERVICE_URL="http://localhost:8003"
-export EMERGENT_LLM_KEY="your-key"
-uvicorn main:app --host 0.0.0.0 --port 8002 --reload
+docker-compose down -v  # Removes volumes
+docker-compose up -d
 ```
 
-#### Orchestrator Service
+## Service Responsibilities
 
-```bash
-cd serve-orchestrator
-pip install -r requirements.txt
-export MCP_SERVICE_URL="http://localhost:8003"
-export ONBOARDING_AGENT_URL="http://localhost:8002"
-uvicorn main:app --host 0.0.0.0 --port 8001 --reload
-```
+### serve-orchestrator
+- Channel-agnostic coordination layer
+- Receives interaction requests from UI or channel adapters
+- Resolves or creates sessions via MCP
+- Determines workflow and active agent
+- Routes requests to agent services via HTTP
+- Does NOT perform conversational logic
+- Does NOT access database directly
 
-#### Frontend
+### serve-onboarding-agent-service
+- Implements onboarding conversational logic
+- Receives session context from orchestrator
+- Generates responses using LLM (Claude Sonnet 4.5)
+- Calls MCP capabilities over HTTP
+- Returns structured agent responses
+- Does NOT access database directly
 
-```bash
-cd serve-ai-ui
-yarn install
-export REACT_APP_BACKEND_URL="http://localhost:8001"
-yarn start
-```
+### serve-agentic-mcp-service
+- Exposes domain capabilities as HTTP APIs
+- Owns ALL database access and persistence
+- Stores sessions, profiles, messages, events
+- Returns structured capability responses
+
+### serve-ai-ui
+- React frontend with Tailwind CSS
+- Role-based views (Volunteer, Ops, Admin)
+- Calls orchestrator via HTTP
 
 ## API Endpoints
 
-### Orchestrator (`http://localhost:8001/api`)
+### Orchestrator (http://localhost:8001/api)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -157,14 +173,14 @@ yarn start
 | `/sessions` | GET | List all sessions |
 | `/health` | GET | Health check |
 
-### Onboarding Agent (`http://localhost:8002/api`)
+### Onboarding Agent (http://localhost:8002/api)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/turn` | POST | Process agent turn |
 | `/health` | GET | Health check |
 
-### MCP Service (`http://localhost:8003/api/capabilities/onboarding`)
+### MCP Service (http://localhost:8003/api/capabilities/onboarding)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -181,15 +197,15 @@ yarn start
 
 ## Database Schema
 
-### Core Entities
+### Core Tables
 
 | Table | Description |
 |-------|-------------|
 | sessions | Interaction lifecycle tracking |
-| session_events | State transitions and routing decisions |
+| session_events | State transitions and routing |
 | volunteer_profiles | Volunteer information |
 | conversation_messages | Chat history |
-| memory_summaries | Long-term context summaries |
+| memory_summaries | Long-term context |
 | handoff_events | Agent transitions |
 | telemetry_events | Operational telemetry |
 
@@ -197,25 +213,30 @@ yarn start
 
 | State | Description |
 |-------|-------------|
-| `init` | Initial welcome state |
-| `intent_discovery` | Understanding volunteer motivation |
-| `purpose_orientation` | Introducing SERVE program |
+| `init` | Initial welcome |
+| `intent_discovery` | Understanding motivation |
+| `purpose_orientation` | Introducing SERVE |
 | `eligibility_confirmation` | Gathering basic info |
-| `capability_discovery` | Exploring skills & availability |
-| `profile_confirmation` | Reviewing collected information |
-| `onboarding_complete` | Onboarding finished |
+| `capability_discovery` | Exploring skills |
+| `profile_confirmation` | Reviewing info |
+| `onboarding_complete` | Finished |
 | `paused` | Session paused |
 
 ## Environment Variables
 
-### Orchestrator
+### Root (.env)
+```
+EMERGENT_LLM_KEY=your-key-here
+```
+
+### serve-orchestrator
 | Variable | Description |
 |----------|-------------|
 | `MCP_SERVICE_URL` | URL to MCP service |
 | `ONBOARDING_AGENT_URL` | URL to onboarding agent |
 | `CORS_ORIGINS` | Allowed CORS origins |
 
-### Onboarding Agent
+### serve-onboarding-agent-service
 | Variable | Description |
 |----------|-------------|
 | `MCP_SERVICE_URL` | URL to MCP service |
@@ -223,27 +244,20 @@ yarn start
 | `LLM_MODEL` | Model name |
 | `EMERGENT_LLM_KEY` | LLM API key |
 
-### MCP Service
+### serve-agentic-mcp-service
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection string |
 | `CORS_ORIGINS` | Allowed CORS origins |
 
-## Future Agents
+## Adding Future Agents
 
-The architecture supports adding these agents as separate services:
+To add a new agent (e.g., Selection Agent):
 
-- serve-selection-agent-service
-- serve-engagement-agent-service
-- serve-need-agent-service
-- serve-fulfillment-agent-service
-- serve-delivery-assistant-service
-
-Each would follow the same pattern:
-1. Create service folder with FastAPI app
-2. Implement agent logic calling MCP capabilities
-3. Add to docker-compose
-4. Register in orchestrator's agent client
+1. Create `serve-selection-agent-service/` following the onboarding pattern
+2. Add service to `docker-compose.yml`
+3. Register agent URL in orchestrator's agent client
+4. Implement MCP capabilities for the new domain
 
 ## Tech Stack
 
