@@ -5,7 +5,7 @@ HTTP client for calling MCP service capabilities
 import httpx
 import os
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
 from uuid import UUID
 
 logger = logging.getLogger(__name__)
