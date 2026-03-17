@@ -1,9 +1,10 @@
 """
 SERVE Orchestrator Service - Domain Client
-HTTP client for calling Domain Service capabilities
+HTTP client for calling Domain Service capabilities (data persistence layer)
 
-Note: This client uses HTTP to communicate with serve-domain-service.
-For MCP protocol access, use a separate MCP client.
+Note: This client uses HTTP to communicate with serve-domain-service for
+session management, profile storage, and message persistence.
+The serve-mcp-server provides MCP protocol access for agentic tool calls.
 """
 import httpx
 import os
@@ -13,11 +14,8 @@ from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
-# Domain service URL (HTTP API, renamed from MCP service)
-DOMAIN_SERVICE_URL = os.environ.get(
-    "DOMAIN_SERVICE_URL",
-    os.environ.get("MCP_SERVICE_URL", "http://serve-domain-service:8003")  # Backward compat
-)
+# Domain service URL (HTTP API for data persistence)
+DOMAIN_SERVICE_URL = os.environ.get("DOMAIN_SERVICE_URL", "http://serve-domain-service:8003")
 
 
 class DomainClient:
@@ -28,7 +26,7 @@ class DomainClient:
         self.timeout = 30.0
     
     async def call_capability(self, endpoint: str, payload: Dict[str, Any]) -> Dict:
-        """Call a domain capability endpoint"""
+        """Call a domain service capability endpoint"""
         url = f"{self.base_url}/api/capabilities/onboarding/{endpoint}"
         
         async with httpx.AsyncClient() as client:
@@ -131,8 +129,5 @@ class DomainClient:
                 return {"status": "error", "error": str(e)}
 
 
-# Singleton instances
+# Singleton instance
 domain_client = DomainClient()
-
-# Backward compatibility alias
-mcp_client = domain_client

@@ -215,7 +215,7 @@ class ConversationMemoryService:
         self,
         session_id: str,
         conversation: List[Dict[str, str]],
-        mcp_client = None
+        domain_client = None
     ) -> Optional[Dict]:
         """
         Process a conversation update and generate summary if needed.
@@ -223,7 +223,7 @@ class ConversationMemoryService:
         Args:
             session_id: Session identifier
             conversation: Current conversation history
-            mcp_client: MCP client for persistence (optional)
+            domain_client: Domain client for persistence (optional)
             
         Returns:
             Summary data if generated, None otherwise
@@ -254,10 +254,10 @@ class ConversationMemoryService:
         # Cache locally
         self._summaries_cache[session_id] = summary_data
         
-        # Persist via MCP if available
-        if mcp_client:
+        # Persist via domain client if available
+        if domain_client:
             try:
-                await mcp_client.save_memory_summary(
+                await domain_client.save_memory_summary(
                     session_id=session_id,
                     summary_text=summary_text,
                     key_facts=key_facts
@@ -272,7 +272,7 @@ class ConversationMemoryService:
         self,
         session_id: str,
         confirmed_fields: Dict[str, Any] = None,
-        mcp_client = None
+        domain_client = None
     ) -> str:
         """
         Get memory context for an agent prompt.
@@ -280,21 +280,21 @@ class ConversationMemoryService:
         Args:
             session_id: Session identifier
             confirmed_fields: Currently confirmed profile fields
-            mcp_client: MCP client for retrieval (optional)
+            domain_client: Domain client for retrieval (optional)
             
         Returns:
             Context string to include in agent prompts
         """
         summary_data = None
         
-        # Try to get from MCP first
-        if mcp_client:
+        # Try to get from domain service first
+        if domain_client:
             try:
-                result = await mcp_client.get_memory_summary(session_id)
+                result = await domain_client.get_memory_summary(session_id)
                 if result.get("status") == "success" and result.get("data"):
                     summary_data = result["data"]
             except Exception as e:
-                logger.debug(f"Could not get summary from MCP: {e}")
+                logger.debug(f"Could not get summary from domain service: {e}")
         
         # Fall back to cache
         if not summary_data:
@@ -313,7 +313,7 @@ class ConversationMemoryService:
         self,
         session_id: str,
         volunteer_name: str = None,
-        mcp_client = None
+        domain_client = None
     ) -> str:
         """
         Generate a warm context for a returning volunteer.
@@ -321,7 +321,7 @@ class ConversationMemoryService:
         Args:
             session_id: Session identifier
             volunteer_name: Volunteer's name if known
-            mcp_client: MCP client for retrieval
+            domain_client: Domain client for retrieval
             
         Returns:
             Welcome-back context for the agent
@@ -329,9 +329,9 @@ class ConversationMemoryService:
         summary_data = self._summaries_cache.get(session_id)
         
         if not summary_data:
-            if mcp_client:
+            if domain_client:
                 try:
-                    result = await mcp_client.get_memory_summary(session_id)
+                    result = await domain_client.get_memory_summary(session_id)
                     if result.get("status") == "success":
                         summary_data = result.get("data")
                 except:

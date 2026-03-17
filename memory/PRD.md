@@ -10,8 +10,8 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
 ├── serve-ai-ui/                    # React Frontend (Port 3000)
 ├── serve-orchestrator/             # Coordination Layer (Port 8001)
 ├── serve-onboarding-agent-service/ # Onboarding Agent (Port 8002)
-├── serve-data-service/             # Data/Capability Service (Port 8003) [renamed from mcp]
-├── serve-mcp-server/               # NEW: Real MCP Server (Protocol-compliant)
+├── serve-domain-service/           # Data Persistence Service (Port 8003)
+├── serve-mcp-server/               # Real MCP Server (Port 8004) - Protocol-compliant
 ├── docker-compose.yml              # All services + Postgres
 └── README.md
 ```
@@ -19,13 +19,19 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
 ### Important: MCP Clarification
 - **MCP = Model Context Protocol** - the standard protocol for LLM tool access
 - **serve-mcp-server/** - Real MCP server using official Python SDK (`pip install mcp`)
-- **serve-data-service/** - HTTP capability service (formerly misnamed "mcp-service")
+- **serve-domain-service/** - HTTP data persistence layer (formerly misnamed "mcp-service")
 
 ### Service Communication
 - UI → Orchestrator (HTTP)
-- Orchestrator → Agent Services (HTTP)
-- Agent Services → Data Service (HTTP) OR MCP Server (MCP Protocol)
-- Data Service / MCP Server → PostgreSQL (Direct)
+- Orchestrator → Agent Services (HTTP)  
+- Orchestrator/Agent → Domain Service (HTTP) - for data persistence
+- Future: Agent Services → MCP Server (MCP Protocol) - for agentic tool calls
+- Domain Service / MCP Server → PostgreSQL (Direct)
+
+### Client Naming Convention (Updated Dec 2025)
+- `domain_client` - HTTP client for Domain Service (data persistence)
+- All services use `DOMAIN_SERVICE_URL` environment variable
+- Legacy `mcp_client` naming has been removed
 
 ### Runtime
 - **Preview**: Monolithic `/app/backend/server.py` (in-memory storage)
@@ -41,7 +47,7 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
 ### Phase 1: Service Structure ✅
 - [x] serve-orchestrator - FastAPI, own main.py, Dockerfile
 - [x] serve-onboarding-agent-service - FastAPI, own main.py, Dockerfile
-- [x] serve-data-service - FastAPI, own main.py, Dockerfile (was serve-agentic-mcp-service)
+- [x] serve-domain-service - FastAPI, own main.py, Dockerfile (renamed from serve-agentic-mcp-service)
 - [x] serve-ai-ui - React, own Dockerfile
 - [x] Docker Compose with Postgres persistent volume
 - [x] Clean separation - no combined backend
@@ -102,6 +108,13 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
   - MCP tools wrap services with typed interfaces
   - In-memory storage (ready for Postgres connection)
 
+### Phase 9: MCP Migration Cleanup ✅ (Dec 2025)
+- [x] **Service Rename**: `serve-agentic-mcp-service` → `serve-domain-service`
+- [x] **Client Rename**: `mcp_client` → `domain_client` across all services
+- [x] **Environment Variables**: `MCP_SERVICE_URL` → `DOMAIN_SERVICE_URL`
+- [x] **Docker Compose Updated**: Both `serve-domain-service` (port 8003) and `serve-mcp-server` (port 8004)
+- [x] **Documentation Updated**: PRD.md reflects final architecture
+
 ### Frontend ✅
 - [x] Volunteer-first landing page (eVidyaloka branding)
 - [x] Role selector moved to /internal route
@@ -154,10 +167,14 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
 - `/app/serve-onboarding-agent-service/app/service/onboarding_logic.py` - Agent logic
 - `/app/serve-onboarding-agent-service/app/service/memory_service.py` - Memory summarization
 
-### MCP Service (Database Owner)
-- `/app/serve-agentic-mcp-service/app/db/database.py` - Postgres config
-- `/app/serve-agentic-mcp-service/app/models/entities.py` - SQLAlchemy models (includes MemorySummary)
-- `/app/serve-agentic-mcp-service/app/service/onboarding_capabilities.py` - Business logic + memory ops
+### Domain Service (Database Owner)
+- `/app/serve-domain-service/app/db/database.py` - Postgres config
+- `/app/serve-domain-service/app/models/entities.py` - SQLAlchemy models (includes MemorySummary)
+- `/app/serve-domain-service/app/service/onboarding_capabilities.py` - Business logic + memory ops
+
+### MCP Server (Protocol-Compliant Tool Server)
+- `/app/serve-mcp-server/main.py` - FastMCP server with 13 tools
+- `/app/serve-mcp-server/services/` - Reusable business logic services
 
 ### Preview Environment
 - `/app/backend/server.py` - Monolithic server with all features (in-memory)

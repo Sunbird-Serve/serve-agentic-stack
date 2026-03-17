@@ -20,7 +20,7 @@ from app.schemas.contracts import (
     RoutingDecision, TransitionValidation, SessionContext,
     OrchestrationEvent, OrchestrationEventType
 )
-from app.clients import mcp_client
+from app.clients import domain_client
 from app.service.agent_router import agent_router
 from app.service.workflow_validator import workflow_validator
 
@@ -104,7 +104,7 @@ class OrchestrationService:
         )
         
         # Step 2: Save user message
-        await mcp_client.save_message(
+        await domain_client.save_message(
             session_id=session_context.session_id,
             role="user",
             content=request.message,
@@ -189,7 +189,7 @@ class OrchestrationService:
             )
             
             if validation.is_valid:
-                await mcp_client.advance_state(
+                await domain_client.advance_state(
                     session_id=session_context.session_id,
                     new_state=agent_response.state,
                     sub_state=agent_response.sub_state
@@ -198,7 +198,7 @@ class OrchestrationService:
                 logger.warning(f"Invalid transition blocked: {validation.reason}")
         
         # Step 6: Save assistant message
-        await mcp_client.save_message(
+        await domain_client.save_message(
             session_id=session_context.session_id,
             role="assistant",
             content=agent_response.assistant_message,
@@ -207,7 +207,7 @@ class OrchestrationService:
         
         # Step 7: Handle handoff if present
         if agent_response.handoff_event:
-            await mcp_client.emit_handoff_event(
+            await domain_client.emit_handoff_event(
                 session_id=session_context.session_id,
                 from_agent=agent_response.handoff_event.from_agent.value,
                 to_agent=agent_response.handoff_event.to_agent.value,
@@ -271,7 +271,7 @@ class OrchestrationService:
         Returns:
             Tuple of (SessionContext, conversation_history)
         """
-        resume_result = await mcp_client.resume_context(request.session_id)
+        resume_result = await domain_client.resume_context(request.session_id)
         
         if resume_result.get("status") != "success":
             return None, []
@@ -312,7 +312,7 @@ class OrchestrationService:
         workflow = determine_workflow(persona)
         initial_agent = determine_initial_agent(workflow)
         
-        start_result = await mcp_client.start_session(
+        start_result = await domain_client.start_session(
             channel=request.channel.value,
             persona=persona.value,
             channel_metadata=request.channel_metadata
@@ -363,11 +363,11 @@ class OrchestrationService:
     
     async def get_session(self, session_id: UUID) -> dict:
         """Get session state."""
-        return await mcp_client.get_session(session_id)
+        return await domain_client.get_session(session_id)
     
     async def list_sessions(self, status: str = None, limit: int = 50) -> dict:
         """List all sessions."""
-        return await mcp_client.list_sessions(status, limit)
+        return await domain_client.list_sessions(status, limit)
 
 
 # Singleton instance
