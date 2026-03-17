@@ -106,9 +106,114 @@ NEW_VOLUNTEER_ONBOARDING_WORKFLOW = WorkflowDefinition(
 )
 
 
+# Define the Need Coordination workflow
+NEED_COORDINATION_WORKFLOW = WorkflowDefinition(
+    workflow_id='need_coordination',
+    display_name='Need Coordination',
+    description='Guides need coordinators through capturing and validating school needs',
+    initial_stage='initiated',
+    terminal_stages=['approved', 'rejected', 'fulfillment_handoff_ready'],
+    stages={
+        'initiated': WorkflowStageDefinition(
+            stage_id='initiated',
+            display_name='Welcome',
+            responsible_agent='need',
+            valid_next_stages=['resolving_coordinator', 'paused'],
+            required_fields=[],
+            can_pause=True
+        ),
+        'resolving_coordinator': WorkflowStageDefinition(
+            stage_id='resolving_coordinator',
+            display_name='Identifying You',
+            responsible_agent='need',
+            valid_next_stages=['resolving_school', 'human_review', 'paused'],
+            required_fields=[],
+            optional_fields=['coordinator_name', 'whatsapp_number'],
+            can_pause=True
+        ),
+        'resolving_school': WorkflowStageDefinition(
+            stage_id='resolving_school',
+            display_name='Your School',
+            responsible_agent='need',
+            valid_next_stages=['drafting_need', 'human_review', 'paused'],
+            required_fields=[],
+            optional_fields=['school_name', 'school_location'],
+            can_pause=True
+        ),
+        'drafting_need': WorkflowStageDefinition(
+            stage_id='drafting_need',
+            display_name='Capturing Your Need',
+            responsible_agent='need',
+            valid_next_stages=['pending_approval', 'paused'],
+            required_fields=['subjects', 'grade_levels', 'student_count', 'time_slots', 'start_date', 'duration_weeks'],
+            optional_fields=['schedule_preference', 'special_requirements'],
+            can_pause=True
+        ),
+        'pending_approval': WorkflowStageDefinition(
+            stage_id='pending_approval',
+            display_name='Review & Confirm',
+            responsible_agent='need',
+            valid_next_stages=['approved', 'refinement_required', 'drafting_need', 'rejected', 'paused'],
+            required_fields=['subjects', 'grade_levels', 'student_count', 'time_slots', 'start_date', 'duration_weeks'],
+            can_pause=True
+        ),
+        'refinement_required': WorkflowStageDefinition(
+            stage_id='refinement_required',
+            display_name='Updates Needed',
+            responsible_agent='need',
+            valid_next_stages=['drafting_need', 'pending_approval', 'paused'],
+            required_fields=[],
+            can_pause=True
+        ),
+        'approved': WorkflowStageDefinition(
+            stage_id='approved',
+            display_name='Need Confirmed',
+            responsible_agent='need',
+            valid_next_stages=['fulfillment_handoff_ready'],
+            required_fields=['subjects', 'grade_levels', 'student_count', 'time_slots', 'start_date', 'duration_weeks'],
+            can_pause=False
+        ),
+        'fulfillment_handoff_ready': WorkflowStageDefinition(
+            stage_id='fulfillment_handoff_ready',
+            display_name='Ready for Matching',
+            responsible_agent='need',
+            valid_next_stages=[],  # Terminal - handoff to fulfillment agent
+            required_fields=[],
+            can_pause=False
+        ),
+        'human_review': WorkflowStageDefinition(
+            stage_id='human_review',
+            display_name='Under Review',
+            responsible_agent='need',
+            valid_next_stages=['resolving_coordinator', 'resolving_school', 'drafting_need', 'rejected'],
+            required_fields=[],
+            can_pause=False
+        ),
+        'paused': WorkflowStageDefinition(
+            stage_id='paused',
+            display_name='Paused',
+            responsible_agent='need',
+            valid_next_stages=['initiated', 'resolving_coordinator', 'resolving_school',
+                              'drafting_need', 'pending_approval', 'refinement_required'],
+            required_fields=[],
+            can_pause=False
+        ),
+        'rejected': WorkflowStageDefinition(
+            stage_id='rejected',
+            display_name='Not Approved',
+            responsible_agent='need',
+            valid_next_stages=[],  # Terminal
+            required_fields=[],
+            can_pause=False
+        )
+    }
+)
+
+
 # Registry of all workflows
 WORKFLOW_REGISTRY: Dict[str, WorkflowDefinition] = {
     'new_volunteer_onboarding': NEW_VOLUNTEER_ONBOARDING_WORKFLOW,
+    'need_coordination': NEED_COORDINATION_WORKFLOW,
 }
 
 
@@ -269,14 +374,28 @@ class WorkflowValidator:
         if not workflow:
             return 0
         
-        # Define stage order for progress calculation
-        stage_order = [
-            'init', 'intent_discovery', 'purpose_orientation',
-            'eligibility_confirmation', 'capability_discovery',
-            'profile_confirmation', 'onboarding_complete'
-        ]
+        # Define stage order for progress calculation by workflow
+        stage_orders = {
+            'new_volunteer_onboarding': [
+                'init', 'intent_discovery', 'purpose_orientation',
+                'eligibility_confirmation', 'capability_discovery',
+                'profile_confirmation', 'onboarding_complete'
+            ],
+            'need_coordination': [
+                'initiated', 'resolving_coordinator', 'resolving_school',
+                'drafting_need', 'pending_approval', 'approved',
+                'fulfillment_handoff_ready'
+            ]
+        }
+        
+        stage_order = stage_orders.get(workflow_id, [])
         
         if current_stage not in stage_order:
+            # Handle special states
+            if current_stage in ['paused', 'human_review', 'refinement_required']:
+                return 50  # Midway indicator
+            if current_stage in ['rejected']:
+                return 100  # Terminal
             return 0
         
         current_index = stage_order.index(current_stage)

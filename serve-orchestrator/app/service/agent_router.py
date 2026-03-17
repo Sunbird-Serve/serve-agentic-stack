@@ -50,9 +50,23 @@ class AgentRegistry:
                       'profile_confirmation', 'onboarding_complete', 'paused']
         }
         
+        # Need Agent
+        self._agents['need'] = {
+            'url': os.environ.get('NEED_AGENT_URL', 'http://serve-need-agent-service:8005'),
+            'endpoint': '/api/turn',
+            'timeout': 60.0,
+            'healthy': True,
+            'last_check': None,
+            'workflows': ['need_coordination'],
+            'stages': ['initiated', 'resolving_coordinator', 'resolving_school',
+                      'drafting_need', 'pending_approval', 'refinement_required',
+                      'approved', 'paused', 'rejected', 'human_review',
+                      'fulfillment_handoff_ready']
+        }
+        
         # Future agents would be registered here
         # self._agents['selection'] = {...}
-        # self._agents['engagement'] = {...}
+        # self._agents['fulfillment'] = {...}
     
     def get_agent_config(self, agent_id: str) -> Optional[Dict]:
         """Get configuration for a specific agent."""

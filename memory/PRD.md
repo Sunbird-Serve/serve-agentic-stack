@@ -10,6 +10,7 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
 ├── serve-ai-ui/                    # React Frontend (Port 3000)
 ├── serve-orchestrator/             # Coordination Layer (Port 8001)
 ├── serve-onboarding-agent-service/ # Onboarding Agent (Port 8002)
+├── serve-need-agent-service/       # Need Coordination Agent (Port 8005) - NEW
 ├── serve-domain-service/           # Data Persistence Service (Port 8003)
 ├── serve-mcp-server/               # Real MCP Server (Port 8004) - Protocol-compliant
 ├── docker-compose.yml              # All services + Postgres
@@ -25,7 +26,7 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
 - UI → Orchestrator (HTTP)
 - Orchestrator → Agent Services (HTTP)  
 - Orchestrator/Agent → Domain Service (HTTP) - for data persistence
-- Future: Agent Services → MCP Server (MCP Protocol) - for agentic tool calls
+- Agent Services → MCP Server (MCP Protocol) - for agentic tool calls
 - Domain Service / MCP Server → PostgreSQL (Direct)
 
 ### Client Naming Convention (Updated Dec 2025)
@@ -39,8 +40,9 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
 
 ## User Personas
 1. **Volunteer** - Chat interface for onboarding
-2. **Ops/Coordinator** - Pipeline dashboard
-3. **Tech Admin** - Debug console
+2. **Need Coordinator** - Register teaching needs for schools - NEW
+3. **Ops/Coordinator** - Pipeline dashboard
+4. **Tech Admin** - Debug console
 
 ## What's Been Implemented
 
@@ -119,6 +121,7 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
 - [x] Volunteer-first landing page (eVidyaloka branding)
 - [x] Role selector moved to /internal route
 - [x] Volunteer chat interface (no system terminology)
+- [x] Need Coordinator chat interface - NEW
 - [x] Ops dashboard, Admin console (internal only)
 - [x] Journey progress tracker (eVidyaloka terminology)
 - [x] Profile display
@@ -133,7 +136,7 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
   - How it works section
   - Testimonial quote
 - [x] **Internal Staff Portal** (`/internal` route)
-  - Role selector for Volunteer Preview, Ops, Tech Admin
+  - Role selector for Volunteer Preview, Need Coordinator, Ops, Tech Admin
   - No volunteer-facing terminology
   - "eVidyaloka Staff Portal" branding
 - [x] **Updated Volunteer Chat**
@@ -145,12 +148,41 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
   - Removed: SERVE AI, MCP, orchestration, platform roles
   - Added: eVidyaloka mission-aligned messaging
 
+### Phase 10: Need Agent & Workflow ✅ (Dec 2025)
+- [x] **Need Agent Service** (`/app/serve-need-agent-service/`)
+  - Autonomous agent for need coordination
+  - eVidyaloka-aligned conversational prompts
+  - Coordinator and school resolution
+  - Need detail extraction (subjects, grades, students, schedule)
+  - State machine: initiated → resolving_coordinator → resolving_school → drafting_need → pending_approval → approved
+- [x] **MCP Tools for Need Coordination** (17 new tools)
+  - Coordinator: resolve_coordinator_identity, create_coordinator, map_coordinator_to_school
+  - School: resolve_school_context, create_school_context, fetch_previous_need_context
+  - Need: start_need_session, create_or_update_need_draft, get_missing_need_fields, evaluate_need_submission_readiness
+  - Approval: submit_need_for_approval, update_need_status
+  - Handoff: prepare_fulfillment_handoff, emit_need_handoff_event
+  - Session: resume_need_context, advance_need_state, pause_need_session
+  - Telemetry: save_need_message, log_need_event
+- [x] **Orchestrator Support**
+  - `need_coordination` workflow with 11 states
+  - State transitions validated
+  - Completion percentage tracking
+  - Agent routing to Need Agent
+- [x] **Need Coordinator UI** (`/app/frontend/src/views/NeedCoordinatorView.jsx`)
+  - Chat interface for school coordinators
+  - Progress tracker for need registration
+  - "What We Need to Know" guide
+  - Captured details display
+
 ## Key Files Reference
 
 ### Frontend (Volunteer-Facing)
 - `/app/frontend/src/views/VolunteerLanding.jsx` - Landing page
 - `/app/frontend/src/views/VolunteerView.jsx` - Chat interface
 - `/app/frontend/src/components/serve/JourneyProgress.jsx` - Progress tracker
+
+### Frontend (Need Coordinator)
+- `/app/frontend/src/views/NeedCoordinatorView.jsx` - Need registration chat
 
 ### Frontend (Internal Staff)
 - `/app/frontend/src/views/RoleSelector.jsx` - Internal role selector

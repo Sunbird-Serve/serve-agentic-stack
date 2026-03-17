@@ -3,7 +3,7 @@
  * Internal route for staff access to different views
  * Not visible to volunteers
  */
-import { MessageSquare, Users, Settings, ArrowRight, ShieldCheck } from 'lucide-react';
+import { MessageSquare, Users, Settings, ArrowRight, ShieldCheck, School } from 'lucide-react';
 
 const ROLES = [
   {
@@ -13,6 +13,14 @@ const ROLES = [
     icon: MessageSquare,
     color: 'bg-blue-500',
     hoverColor: 'hover:border-blue-400',
+  },
+  {
+    id: 'need_coordinator',
+    title: 'Need Coordinator',
+    description: 'Register teaching needs for schools. Capture subject, grade, and schedule requirements.',
+    icon: School,
+    color: 'bg-amber-500',
+    hoverColor: 'hover:border-amber-400',
   },
   {
     id: 'ops',

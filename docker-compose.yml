@@ -90,6 +90,32 @@ services:
     networks:
       - serve-network
 
+  # Need Agent Service - Port 8005
+  serve-need-agent-service:
+    build:
+      context: ./serve-need-agent-service
+      dockerfile: Dockerfile
+    container_name: serve-need-agent-service
+    environment:
+      - PORT=8005
+      - CORS_ORIGINS=*
+      - DOMAIN_SERVICE_URL=http://serve-domain-service:8003
+      - MCP_SERVER_URL=http://serve-mcp-server:8004
+      - LLM_PROVIDER=claude
+      - LLM_MODEL=claude-sonnet-4-5-20250929
+      - EMERGENT_LLM_KEY=${EMERGENT_LLM_KEY}
+    ports:
+      - "8005:8005"
+    depends_on:
+      - serve-domain-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - serve-network
+
   # Orchestrator Service - Port 8001
   serve-orchestrator:
     build:
@@ -102,6 +128,7 @@ services:
       - DOMAIN_SERVICE_URL=http://serve-domain-service:8003
       - MCP_SERVER_URL=http://serve-mcp-server:8004
       - ONBOARDING_AGENT_URL=http://serve-onboarding-agent-service:8002
+      - NEED_AGENT_URL=http://serve-need-agent-service:8005
     ports:
       - "8001:8001"
     depends_on:
