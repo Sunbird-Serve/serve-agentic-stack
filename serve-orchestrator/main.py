@@ -2,14 +2,18 @@
 SERVE Orchestrator Service - Main Entry Point
 Central coordination layer for SERVE AI
 """
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 import os
 import logging
+import httpx
 from datetime import datetime
 
 from app.api import orchestrator_router
 from app.schemas import HealthResponse
+
+MCP_SERVICE_URL = os.environ.get("MCP_SERVICE_URL", "http://serve-agentic-mcp-service:8003")
 
 # Configure logging
 logging.basicConfig(
@@ -36,7 +40,7 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(orchestrator_router, prefix="/api")
+app.include_router(orchestrator_router, prefix="/api/orchestrator")
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -47,6 +51,33 @@ async def health_check():
         status="healthy",
         version="1.0.0",
         timestamp=datetime.utcnow()
+    )
+
+
+@app.api_route("/api/mcp/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def mcp_proxy(path: str, request: Request):
+    """Proxy all /api/mcp/* requests to the MCP service"""
+    target_url = f"{MCP_SERVICE_URL}/api/{path}"
+    params = dict(request.query_params)
+    body = await request.body()
+    headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in ("host", "content-length")
+    }
+    async with httpx.AsyncClient() as client:
+        proxy_response = await client.request(
+            method=request.method,
+            url=target_url,
+            params=params,
+            content=body,
+            headers=headers,
+            timeout=30.0
+        )
+    return Response(
+        content=proxy_response.content,
+        status_code=proxy_response.status_code,
+        headers=dict(proxy_response.headers),
+        media_type=proxy_response.headers.get("content-type")
     )
 
 

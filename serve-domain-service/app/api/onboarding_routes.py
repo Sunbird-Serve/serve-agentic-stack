@@ -5,7 +5,8 @@ HTTP endpoints for onboarding domain capabilities
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
-from typing import Optional
+from typing import Optional, List
+from pydantic import BaseModel
 
 from app.db import get_db
 from app.service import onboarding_capability_service
