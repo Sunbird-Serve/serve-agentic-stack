@@ -1,6 +1,9 @@
 """
-SERVE Agentic MCP Service - Main Entry Point
+SERVE Domain Service - Main Entry Point
 Domain capability and persistence layer for SERVE AI
+
+This service provides HTTP API access to domain capabilities.
+For MCP (Model Context Protocol) access, use serve-mcp-server.
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +27,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    logger.info("Starting SERVE Agentic MCP Service...")
+    logger.info("Starting SERVE Domain Service...")
     
     # Initialize database
     try:
@@ -37,15 +40,15 @@ async def lifespan(app: FastAPI):
     yield
     
     # Cleanup
-    logger.info("Shutting down SERVE Agentic MCP Service...")
+    logger.info("Shutting down SERVE Domain Service...")
     await close_db()
 
 
 # Create FastAPI application
 app = FastAPI(
-    title="SERVE Agentic MCP Service",
+    title="SERVE Domain Service",
     description="Domain capability and persistence layer for SERVE AI",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan
 )
 
@@ -58,7 +61,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
+# Include routers - keep /api/capabilities path for backward compatibility
 app.include_router(onboarding_router, prefix="/api")
 
 
@@ -66,9 +69,9 @@ app.include_router(onboarding_router, prefix="/api")
 async def health_check():
     """Health check endpoint"""
     return HealthResponse(
-        service="serve-agentic-mcp-service",
+        service="serve-domain-service",
         status="healthy",
-        version="1.0.0",
+        version="1.1.0",
         timestamp=datetime.utcnow()
     )
 
@@ -77,11 +80,12 @@ async def health_check():
 async def root():
     """Root endpoint"""
     return {
-        "service": "SERVE Agentic MCP Service",
-        "version": "1.0.0",
-        "description": "Domain capability and persistence layer",
+        "service": "SERVE Domain Service",
+        "version": "1.1.0",
+        "description": "Domain capability and persistence layer (HTTP API)",
+        "note": "For MCP protocol access, use serve-mcp-server",
         "endpoints": [
-            "/api/capabilities/onboarding - Onboarding domain capabilities",
+            "/api/capabilities/onboarding/* - Onboarding domain capabilities",
             "/api/health - Health check"
         ]
     }
