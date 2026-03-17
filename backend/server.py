@@ -75,6 +75,22 @@ class OnboardingState(str, Enum):
     ONBOARDING_COMPLETE = "onboarding_complete"
     PAUSED = "paused"
 
+
+class NeedWorkflowState(str, Enum):
+    """States in the need lifecycle workflow."""
+    INITIATED = "initiated"
+    RESOLVING_COORDINATOR = "resolving_coordinator"
+    RESOLVING_SCHOOL = "resolving_school"
+    DRAFTING_NEED = "drafting_need"
+    PENDING_APPROVAL = "pending_approval"
+    REFINEMENT_REQUIRED = "refinement_required"
+    APPROVED = "approved"
+    PAUSED = "paused"
+    REJECTED = "rejected"
+    HUMAN_REVIEW = "human_review"
+    FULFILLMENT_HANDOFF_READY = "fulfillment_handoff_ready"
+
+
 class HandoffType(str, Enum):
     AGENT_TRANSITION = "agent_transition"
     RESUME = "resume"
@@ -258,6 +274,11 @@ class InMemoryStore:
         self.messages = {}
         self.telemetry = {}
         self.memory_summaries = {}  # session_id -> {summary_text, key_facts, created_at}
+        # Need coordination stores
+        self.need_drafts = {}  # session_id -> need_draft
+        self.coordinators = {}  # coordinator_id -> coordinator_data
+        self.schools = {}  # school_id -> school_data
+        self.coordinator_by_phone = {}  # phone -> coordinator_id
 
 store = InMemoryStore()
 
@@ -277,7 +298,21 @@ class WorkflowValidator:
         'profile_confirmation': ['onboarding_complete', 'capability_discovery', 'paused'],
         'onboarding_complete': [],
         'paused': ['init', 'intent_discovery', 'purpose_orientation', 
-                   'eligibility_confirmation', 'capability_discovery', 'profile_confirmation'],
+                   'eligibility_confirmation', 'capability_discovery', 'profile_confirmation',
+                   # Need workflow resume states
+                   'initiated', 'resolving_coordinator', 'resolving_school', 'drafting_need', 
+                   'pending_approval', 'refinement_required'],
+        # Need workflow transitions
+        'initiated': ['resolving_coordinator', 'paused'],
+        'resolving_coordinator': ['resolving_school', 'human_review', 'paused'],
+        'resolving_school': ['drafting_need', 'human_review', 'paused'],
+        'drafting_need': ['pending_approval', 'paused'],
+        'pending_approval': ['approved', 'refinement_required', 'drafting_need', 'rejected', 'paused'],
+        'refinement_required': ['drafting_need', 'pending_approval', 'paused'],
+        'approved': ['fulfillment_handoff_ready'],
+        'fulfillment_handoff_ready': [],
+        'human_review': ['resolving_coordinator', 'resolving_school', 'drafting_need', 'rejected'],
+        'rejected': [],
     }
     
     # Required fields for each stage
@@ -286,6 +321,9 @@ class WorkflowValidator:
         'capability_discovery': ['skills', 'availability'],
         'profile_confirmation': ['full_name', 'email', 'skills', 'availability'],
         'onboarding_complete': ['full_name', 'email', 'skills', 'availability'],
+        # Need workflow fields
+        'pending_approval': ['subjects', 'grade_levels', 'student_count', 'time_slots', 'start_date', 'duration_weeks'],
+        'approved': ['subjects', 'grade_levels', 'student_count', 'time_slots', 'start_date', 'duration_weeks'],
     }
     
     def validate_transition(
@@ -340,19 +378,31 @@ class WorkflowValidator:
             required_fields_met=True
         )
     
-    def get_completion_percentage(self, stage: str) -> int:
+    def get_completion_percentage(self, stage: str, workflow: str = 'new_volunteer_onboarding') -> int:
         """Calculate workflow completion percentage."""
-        stages = ['init', 'intent_discovery', 'purpose_orientation',
-                  'eligibility_confirmation', 'capability_discovery',
-                  'profile_confirmation', 'onboarding_complete']
+        stage_orders = {
+            'new_volunteer_onboarding': ['init', 'intent_discovery', 'purpose_orientation',
+                      'eligibility_confirmation', 'capability_discovery',
+                      'profile_confirmation', 'onboarding_complete'],
+            'need_coordination': ['initiated', 'resolving_coordinator', 'resolving_school',
+                      'drafting_need', 'pending_approval', 'approved',
+                      'fulfillment_handoff_ready']
+        }
+        stages = stage_orders.get(workflow, stage_orders['new_volunteer_onboarding'])
         if stage not in stages:
+            if stage in ['paused', 'human_review', 'refinement_required']:
+                return 50
             return 0
         idx = stages.index(stage)
         return round((idx / (len(stages) - 1)) * 100)
     
-    def is_terminal_stage(self, stage: str) -> bool:
+    def is_terminal_stage(self, stage: str, workflow: str = 'new_volunteer_onboarding') -> bool:
         """Check if stage is terminal."""
-        return stage == 'onboarding_complete'
+        terminal_stages = {
+            'new_volunteer_onboarding': ['onboarding_complete'],
+            'need_coordination': ['approved', 'rejected', 'fulfillment_handoff_ready']
+        }
+        return stage in terminal_stages.get(workflow, [])
 
 
 workflow_validator = WorkflowValidator()
@@ -366,7 +416,11 @@ class AgentRouter:
     AGENT_STAGES = {
         'onboarding': ['init', 'intent_discovery', 'purpose_orientation',
                        'eligibility_confirmation', 'capability_discovery',
-                       'profile_confirmation', 'onboarding_complete', 'paused']
+                       'profile_confirmation', 'onboarding_complete', 'paused'],
+        'need': ['initiated', 'resolving_coordinator', 'resolving_school',
+                 'drafting_need', 'pending_approval', 'refinement_required',
+                 'approved', 'paused', 'rejected', 'human_review',
+                 'fulfillment_handoff_ready']
     }
     
     def make_routing_decision(
@@ -1040,6 +1094,19 @@ async def process_agent_turn(request: AgentTurnRequest) -> AgentTurnResponse:
         details={'confidence': routing_decision.confidence, 'reason': routing_decision.reason}
     )
     
+    # Route to appropriate agent based on workflow
+    if session_state.workflow == "need_coordination":
+        return await process_need_agent_turn(request, routing_decision, start_time)
+    else:
+        return await process_onboarding_agent_turn(request, routing_decision, start_time)
+
+
+async def process_onboarding_agent_turn(request: AgentTurnRequest, routing_decision: RoutingDecision, start_time: datetime) -> AgentTurnResponse:
+    """Process turn for onboarding agent."""
+    session_state = request.session_state
+    current_state = session_state.stage
+    telemetry = []
+    
     # Get missing fields
     missing_result = await mcp_get_missing_fields(str(request.session_id))
     missing_fields = missing_result.data.get("missing_fields", []) if missing_result.data else []
@@ -1164,6 +1231,521 @@ async def process_agent_turn(request: AgentTurnRequest) -> AgentTurnResponse:
     )
 
 
+# ============ Need Agent Processing ============
+
+# Need workflow state transitions
+NEED_VALID_TRANSITIONS = {
+    'initiated': ['resolving_coordinator', 'paused'],
+    'resolving_coordinator': ['resolving_school', 'human_review', 'paused'],
+    'resolving_school': ['drafting_need', 'human_review', 'paused'],
+    'drafting_need': ['pending_approval', 'paused'],
+    'pending_approval': ['approved', 'refinement_required', 'drafting_need', 'rejected', 'paused'],
+    'refinement_required': ['drafting_need', 'pending_approval', 'paused'],
+    'approved': ['fulfillment_handoff_ready'],
+    'fulfillment_handoff_ready': [],
+    'human_review': ['resolving_coordinator', 'resolving_school', 'drafting_need', 'rejected'],
+    'paused': ['initiated', 'resolving_coordinator', 'resolving_school', 'drafting_need', 'pending_approval', 'refinement_required'],
+    'rejected': [],
+}
+
+# Mandatory need fields
+MANDATORY_NEED_FIELDS = ['subjects', 'grade_levels', 'student_count', 'time_slots', 'start_date', 'duration_weeks']
+
+
+def extract_need_details(message: str, existing_draft: Dict = None) -> Dict[str, Any]:
+    """Extract need details from message."""
+    existing_draft = existing_draft or {}
+    extracted = {}
+    message_lower = message.lower()
+    
+    # Subject extraction
+    subject_keywords = {
+        "mathematics": ["math", "maths", "mathematics", "arithmetic", "algebra"],
+        "science": ["science", "physics", "chemistry", "biology"],
+        "english": ["english", "grammar", "writing", "reading", "literature"],
+        "hindi": ["hindi", "hindustani"],
+        "social_studies": ["social", "history", "geography", "civics"],
+        "computer_basics": ["computer", "computers", "computing", "it"],
+        "spoken_english": ["spoken english", "speaking english", "english speaking"],
+    }
+    found_subjects = []
+    for subject, keywords in subject_keywords.items():
+        for kw in keywords:
+            if kw in message_lower:
+                if subject not in found_subjects:
+                    found_subjects.append(subject)
+                break
+    if found_subjects:
+        existing = existing_draft.get("subjects", [])
+        extracted["subjects"] = list(set(existing + found_subjects))
+    
+    # Grade extraction
+    grade_patterns = [
+        r"(?:grade|class|std|standard)\s*(\d{1,2})",
+        r"(\d{1,2})(?:th|st|nd|rd)?\s*(?:grade|class|std|standard)",
+    ]
+    found_grades = set()
+    for pattern in grade_patterns:
+        matches = re.findall(pattern, message, re.IGNORECASE)
+        for m in matches:
+            g = str(int(m))
+            if 1 <= int(g) <= 12:
+                found_grades.add(g)
+    # Grade range
+    range_pattern = r"(\d{1,2})\s*(?:to|-)\s*(\d{1,2})"
+    for start, end in re.findall(range_pattern, message):
+        for g in range(int(start), int(end) + 1):
+            if 1 <= g <= 12:
+                found_grades.add(str(g))
+    if found_grades:
+        existing = existing_draft.get("grade_levels", [])
+        extracted["grade_levels"] = list(set(existing + list(found_grades)))
+    
+    # Student count
+    if "student_count" not in existing_draft:
+        count_patterns = [
+            r"(\d+)\s*(?:students?|children|kids|learners)",
+            r"(?:around|about|approximately)\s*(\d+)",
+        ]
+        for pattern in count_patterns:
+            match = re.search(pattern, message_lower)
+            if match:
+                count = int(match.group(1))
+                if 1 <= count <= 1000:
+                    extracted["student_count"] = count
+                    break
+    
+    # Time slots
+    time_patterns = [
+        r"(\d{1,2}(?::\d{2})?\s*(?:am|pm))",
+        r"(morning|afternoon|evening)",
+        r"(weekdays?|weekends?|saturday|sunday)",
+    ]
+    found_slots = []
+    for pattern in time_patterns:
+        matches = re.findall(pattern, message_lower)
+        found_slots.extend(matches)
+    if found_slots:
+        existing = existing_draft.get("time_slots", [])
+        extracted["time_slots"] = list(set(existing + found_slots))
+    
+    # Start date
+    if "start_date" not in existing_draft:
+        from datetime import date, timedelta
+        today = date.today()
+        if "next week" in message_lower:
+            days_ahead = 7 - today.weekday()
+            if days_ahead <= 0:
+                days_ahead += 7
+            extracted["start_date"] = (today + timedelta(days=days_ahead)).isoformat()
+        elif "next month" in message_lower:
+            if today.month == 12:
+                extracted["start_date"] = f"{today.year + 1}-01-01"
+            else:
+                extracted["start_date"] = f"{today.year}-{today.month + 1:02d}-01"
+        elif "immediately" in message_lower or "asap" in message_lower:
+            extracted["start_date"] = today.isoformat()
+    
+    # Duration
+    if "duration_weeks" not in existing_draft:
+        duration_patterns = [
+            r"(\d+)\s*(?:weeks?|wks?)",
+            r"(\d+)\s*(?:months?)",
+        ]
+        for pattern in duration_patterns:
+            match = re.search(pattern, message_lower)
+            if match:
+                value = int(match.group(1))
+                if "month" in message_lower[match.start():match.end()]:
+                    value = value * 4
+                if 1 <= value <= 52:
+                    extracted["duration_weeks"] = value
+                    break
+    
+    return extracted
+
+
+def extract_coordinator_info(message: str) -> Dict[str, Any]:
+    """Extract coordinator name and info from message."""
+    info = {}
+    message_lower = message.lower()
+    
+    # Skip if this is just a greeting or general statement
+    greeting_patterns = ['hello', 'hi', 'hey', 'good morning', 'good afternoon', 'good evening']
+    if any(message_lower.strip().startswith(g) for g in greeting_patterns):
+        # Only extract from greetings if there's explicit name introduction
+        if not any(p in message_lower for p in ['my name is', "i'm ", 'i am ', 'call me']):
+            return info
+    
+    # Skip if message seems to be about school rather than personal name
+    school_indicators = ['school', 'vidyalaya', 'academy', 'institute', 'public', 'college']
+    
+    # Strict name patterns with explicit introduction
+    name_patterns = [
+        r"(?:my name is|i'm|i am)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+        r"(?:this is|call me)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+    ]
+    for pattern in name_patterns:
+        match = re.search(pattern, message, re.IGNORECASE)
+        if match:
+            name = match.group(1).strip().title()
+            stop_words = {'and', 'from', 'at', 'the', 'i', 'am', 'here', 'public', 'school', 'sunrise', 'hello', 'hi'}
+            words = name.split()
+            clean = [w for w in words if w.lower() not in stop_words][:2]
+            
+            # Check if this looks like a school name, not a person name
+            if clean and not any(ind in ' '.join(clean).lower() for ind in school_indicators):
+                info["name"] = " ".join(clean)
+            break
+    return info
+
+
+def extract_school_info(message: str) -> Dict[str, Any]:
+    """Extract school information from message."""
+    info = {}
+    school_patterns = [
+        r"(?:school|vidyalaya|vidya|shala)[:\s]+([A-Za-z\s]+?)(?:,|\.|\sin|\sat|$)",
+        r"(?:from|at|represent)\s+([A-Za-z\s]+?)\s+(?:school|vidyalaya)",
+    ]
+    for pattern in school_patterns:
+        match = re.search(pattern, message, re.IGNORECASE)
+        if match:
+            school_name = match.group(1).strip().title()
+            if len(school_name) > 3:
+                info["name"] = school_name
+            break
+    
+    location_patterns = [
+        r"(?:in|at|from|located in)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+        r"(?:village|town|city|district)[:\s]+([A-Za-z\s]+?)(?:,|\.|\s|$)",
+    ]
+    for pattern in location_patterns:
+        match = re.search(pattern, message, re.IGNORECASE)
+        if match:
+            location = match.group(1).strip().title()
+            if len(location) > 2 and location.lower() not in ['school', 'vidyalaya']:
+                info["location"] = location
+            break
+    return info
+
+
+def get_missing_need_fields(draft: Dict) -> List[str]:
+    """Get list of missing mandatory need fields."""
+    missing = []
+    for field in MANDATORY_NEED_FIELDS:
+        value = draft.get(field)
+        if not value or (isinstance(value, list) and len(value) == 0):
+            missing.append(field)
+    return missing
+
+
+def determine_next_need_state(
+    current_state: str,
+    user_message: str,
+    coordinator_resolved: bool,
+    school_resolved: bool,
+    missing_fields: List[str]
+) -> str:
+    """Determine next state for need workflow."""
+    message_lower = user_message.lower()
+    
+    # Pause signals
+    pause_signals = ["pause", "stop", "later", "bye", "quit", "not now"]
+    if any(signal in message_lower for signal in pause_signals):
+        return "paused"
+    
+    # Resume from pause
+    if current_state == "paused":
+        resume_signals = ["continue", "resume", "ready", "back", "let's go"]
+        if any(signal in message_lower for signal in resume_signals):
+            if not coordinator_resolved:
+                return "resolving_coordinator"
+            elif not school_resolved:
+                return "resolving_school"
+            elif missing_fields:
+                return "drafting_need"
+            else:
+                return "pending_approval"
+    
+    # State progression
+    if current_state == "initiated":
+        return "resolving_coordinator"
+    
+    if current_state == "resolving_coordinator":
+        if coordinator_resolved:
+            return "resolving_school"
+        return current_state
+    
+    if current_state == "resolving_school":
+        if school_resolved:
+            return "drafting_need"
+        return current_state
+    
+    if current_state == "drafting_need":
+        if not missing_fields:
+            return "pending_approval"
+        return current_state
+    
+    if current_state == "pending_approval":
+        confirm_signals = ["yes", "correct", "confirm", "looks good", "that's right", "perfect", "ok", "okay", "submit"]
+        if any(signal in message_lower for signal in confirm_signals):
+            return "approved"
+        change_signals = ["no", "wrong", "change", "update", "fix", "actually"]
+        if any(signal in message_lower for signal in change_signals):
+            return "drafting_need"
+        return current_state
+    
+    if current_state == "approved":
+        return "fulfillment_handoff_ready"
+    
+    return current_state
+
+
+def build_need_state_prompt(state: str, missing_fields: List[str], need_draft: Dict, coordinator: Dict = None, school: Dict = None) -> str:
+    """Build contextual prompt for need coordination."""
+    base = """You are helping eVidyaloka coordinate educational support for schools in rural India.
+You're speaking with a Need Coordinator - someone who represents a school and helps identify what teaching support their students need.
+
+Communication Style:
+- Professional yet warm - these are partners in our mission
+- Clear and efficient - coordinators are busy people
+- Never use technical jargon: avoid terms like workflow, MCP, agent, system, session
+- Keep responses concise (2-3 sentences)
+- Ask one question at a time
+"""
+    
+    stage_prompts = {
+        "initiated": "Warmly greet the coordinator. Ask them to introduce themselves and their school.",
+        "resolving_coordinator": "We need to verify the coordinator's identity. Ask for their name if not provided.",
+        "resolving_school": "Ask about the school - name and location where they need teaching support.",
+        "drafting_need": "Gather the specific educational need. Focus on one question at a time.",
+        "pending_approval": "Summarize the need details and ask the coordinator to confirm everything is correct.",
+        "approved": "The need has been recorded. Thank them and let them know we'll work on matching volunteers.",
+        "paused": "Be understanding. Let them know they can return anytime to continue.",
+        "human_review": "Explain that someone from our team will review the details and follow up.",
+    }
+    
+    prompt = f"{base}\n\nSTAGE: {stage_prompts.get(state, 'Continue the conversation naturally.')}"
+    
+    # Add context
+    if coordinator and coordinator.get("name"):
+        prompt += f"\n\nCOORDINATOR: {coordinator.get('name')}"
+    
+    if school and school.get("name"):
+        prompt += f"\nSCHOOL: {school.get('name')}"
+        if school.get("location"):
+            prompt += f", {school.get('location')}"
+    
+    # Add captured details
+    if need_draft:
+        captured = []
+        if need_draft.get("subjects"):
+            captured.append(f"Subjects: {', '.join(need_draft['subjects'])}")
+        if need_draft.get("grade_levels"):
+            captured.append(f"Grades: {', '.join(need_draft['grade_levels'])}")
+        if need_draft.get("student_count"):
+            captured.append(f"Students: {need_draft['student_count']}")
+        if need_draft.get("time_slots"):
+            captured.append(f"Time slots: {', '.join(need_draft['time_slots'])}")
+        if need_draft.get("start_date"):
+            captured.append(f"Start date: {need_draft['start_date']}")
+        if need_draft.get("duration_weeks"):
+            captured.append(f"Duration: {need_draft['duration_weeks']} weeks")
+        if captured:
+            prompt += f"\n\nCAPTURED SO FAR:\n" + "\n".join(captured)
+    
+    # Add guidance for missing fields
+    if missing_fields and state == "drafting_need":
+        field_prompts = {
+            "subjects": "what subjects they need help with",
+            "grade_levels": "which grade levels",
+            "student_count": "how many students",
+            "time_slots": "what time slots work for classes",
+            "start_date": "when they want to start",
+            "duration_weeks": "how long they need support"
+        }
+        readable = [field_prompts.get(f, f) for f in missing_fields[:2]]
+        prompt += f"\n\nSTILL NEED: {', '.join(readable)}. Ask about one naturally."
+    
+    return prompt
+
+
+async def generate_need_llm_response(prompt: str, messages: List[Dict], user_message: str) -> str:
+    """Generate LLM response for need coordination."""
+    api_key = os.environ.get("EMERGENT_LLM_KEY")
+    if not api_key:
+        return "Hello! Welcome to eVidyaloka. I'm here to help coordinate teaching support for your school. Could you tell me your name and which school you represent?"
+    
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        
+        chat = LlmChat(
+            api_key=api_key,
+            session_id=f"need-{uuid4()}",
+            system_message=prompt
+        )
+        chat.with_model("anthropic", os.environ.get("LLM_MODEL", "claude-sonnet-4-5-20250929"))
+        
+        context = ""
+        for msg in messages[-5:]:
+            role = "Coordinator" if msg.get("role") == "user" else "eVidyaloka"
+            context += f"{role}: {msg.get('content', '')}\n"
+        
+        full_msg = f"{context}\nCoordinator: {user_message}" if context else user_message
+        response = await chat.send_message(UserMessage(text=full_msg))
+        return response
+    except Exception as e:
+        logger.error(f"LLM error in need agent: {e}")
+        return "Hello! Welcome to eVidyaloka. I'm here to help coordinate teaching support for your school. Could you tell me your name and which school you represent?"
+
+
+async def process_need_agent_turn(request: AgentTurnRequest, routing_decision: RoutingDecision, start_time: datetime) -> AgentTurnResponse:
+    """Process turn for need agent."""
+    session_state = request.session_state
+    current_state = session_state.stage
+    telemetry = []
+    session_id = str(request.session_id)
+    
+    # Get or initialize need draft
+    need_draft = store.need_drafts.get(session_id, {})
+    
+    # Get coordinator and school context
+    coordinator = None
+    school = None
+    coordinator_resolved = False
+    school_resolved = False
+    
+    # Check if coordinator is already resolved
+    if need_draft.get("coordinator_id"):
+        coordinator = store.coordinators.get(need_draft["coordinator_id"])
+        coordinator_resolved = True
+    
+    if need_draft.get("school_id"):
+        school = store.schools.get(need_draft["school_id"])
+        school_resolved = True
+    
+    # Process based on current state - try to extract all relevant info
+    # Coordinator resolution
+    if current_state in ["initiated", "resolving_coordinator"] and not coordinator_resolved:
+        coord_info = extract_coordinator_info(request.user_message)
+        if coord_info.get("name"):
+            if not coordinator:
+                coordinator = {
+                    "id": str(uuid4()),
+                    "name": coord_info["name"],
+                    "whatsapp_number": None,
+                    "school_ids": [],
+                    "is_verified": False
+                }
+                store.coordinators[coordinator["id"]] = coordinator
+            need_draft["coordinator_id"] = coordinator["id"]
+            need_draft["coordinator_name"] = coord_info["name"]
+            coordinator_resolved = True
+    
+    # School resolution - try during coordinator or school resolution states
+    if current_state in ["resolving_coordinator", "resolving_school"] and not school_resolved:
+        school_info = extract_school_info(request.user_message)
+        if school_info.get("name"):
+            if not school:
+                school = {
+                    "id": str(uuid4()),
+                    "name": school_info["name"],
+                    "location": school_info.get("location", ""),
+                    "coordinator_ids": [need_draft.get("coordinator_id")] if need_draft.get("coordinator_id") else [],
+                    "previous_needs": []
+                }
+                store.schools[school["id"]] = school
+            need_draft["school_id"] = school["id"]
+            need_draft["school_name"] = school_info["name"]
+            school_resolved = True
+    
+    # Need details extraction - try during drafting or earlier if info provided
+    if current_state in ["resolving_school", "drafting_need"]:
+        extracted = extract_need_details(request.user_message, need_draft)
+        if extracted:
+            need_draft.update(extracted)
+            logger.info(f"Extracted need details: {list(extracted.keys())}")
+    
+    # Save updated draft
+    store.need_drafts[session_id] = need_draft
+    
+    # Get missing fields
+    missing_fields = get_missing_need_fields(need_draft)
+    
+    # Determine next state
+    next_state = determine_next_need_state(
+        current_state, request.user_message,
+        coordinator_resolved, school_resolved, missing_fields
+    )
+    
+    # Validate transition
+    if next_state != current_state:
+        valid_next = NEED_VALID_TRANSITIONS.get(current_state, [])
+        if next_state not in valid_next and next_state != current_state:
+            logger.warning(f"Invalid need transition: {current_state} -> {next_state}")
+            next_state = current_state
+        else:
+            telemetry.append(TelemetryEvent(
+                session_id=request.session_id,
+                event_type=EventType.STATE_TRANSITION,
+                agent=AgentType.NEED,
+                data={"from": current_state, "to": next_state}
+            ))
+    
+    # Build prompt and generate response
+    prompt = build_need_state_prompt(next_state, missing_fields, need_draft, coordinator, school)
+    assistant_msg = await generate_need_llm_response(prompt, request.conversation_history, request.user_message)
+    
+    # Calculate duration
+    duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
+    
+    log_orchestration_event(
+        OrchestrationEventType.AGENT_RESPONDED,
+        session_id,
+        agent=AgentType.NEED.value,
+        stage=next_state,
+        duration_ms=duration_ms,
+        details={'response_length': len(assistant_msg)}
+    )
+    
+    # Determine completion status
+    completion_status = "in_progress"
+    handoff = None
+    
+    if next_state in ["approved", "fulfillment_handoff_ready"]:
+        completion_status = "approved"
+        handoff = HandoffEvent(
+            session_id=request.session_id,
+            from_agent=AgentType.NEED,
+            to_agent=AgentType.FULFILLMENT,
+            handoff_type=HandoffType.AGENT_TRANSITION,
+            payload={
+                "need_draft": need_draft,
+                "school": school,
+                "coordinator": coordinator
+            },
+            reason="Need approved, ready for volunteer matching"
+        )
+    elif next_state == "paused":
+        completion_status = "paused"
+    elif next_state == "rejected":
+        completion_status = "complete"
+    elif next_state == "human_review":
+        completion_status = "human_review"
+    
+    return AgentTurnResponse(
+        assistant_message=assistant_msg,
+        active_agent=AgentType.NEED,
+        workflow=WorkflowType.NEED_COORDINATION,
+        state=next_state,
+        completion_status=completion_status,
+        confirmed_fields=need_draft,
+        missing_fields=missing_fields,
+        handoff_event=handoff,
+        telemetry_events=telemetry
+    )
+
+
 # ============ FastAPI Application ============
 
 @asynccontextmanager
@@ -1216,6 +1798,17 @@ async def orchestrator_interact(request: InteractionRequest):
     
     if not session_state:
         persona = request.persona or PersonaType.NEW_VOLUNTEER
+        
+        # Determine workflow and agent based on persona
+        if persona == PersonaType.NEED_COORDINATOR:
+            workflow = "need_coordination"
+            agent = "need"
+            initial_stage = "initiated"
+        else:
+            workflow = "new_volunteer_onboarding"
+            agent = "onboarding"
+            initial_stage = "init"
+        
         start = await mcp_start_session(StartSessionRequest(
             channel=request.channel,
             persona=persona,
@@ -1226,14 +1819,23 @@ async def orchestrator_interact(request: InteractionRequest):
             raise HTTPException(500, "Failed to create session")
         
         session_id = UUID(start.data["session_id"])
+        
+        # Update the session with correct workflow for need coordinator
+        if persona == PersonaType.NEED_COORDINATOR:
+            store.sessions[str(session_id)]["workflow"] = workflow
+            store.sessions[str(session_id)]["active_agent"] = agent
+            store.sessions[str(session_id)]["stage"] = initial_stage
+            # Initialize need draft store for this session
+            store.need_drafts[str(session_id)] = {}
+        
         session_state = SessionState(
             id=session_id,
             channel=request.channel.value,
             persona=persona.value,
-            workflow="new_volunteer_onboarding",
-            active_agent="onboarding",
+            workflow=workflow,
+            active_agent=agent,
             status="active",
-            stage="init"
+            stage=initial_stage
         )
     
     log_orchestration_event(
@@ -1259,8 +1861,8 @@ async def orchestrator_interact(request: InteractionRequest):
     if agent_response.state != session_state.stage:
         await mcp_advance_state(str(session_state.id), agent_response.state, agent_response.sub_state)
     
-    progress = workflow_validator.get_completion_percentage(agent_response.state)
-    is_terminal = workflow_validator.is_terminal_stage(agent_response.state)
+    progress = workflow_validator.get_completion_percentage(agent_response.state, session_state.workflow)
+    is_terminal = workflow_validator.is_terminal_stage(agent_response.state, session_state.workflow)
     
     total_duration = (datetime.utcnow() - start_time).total_seconds() * 1000
     

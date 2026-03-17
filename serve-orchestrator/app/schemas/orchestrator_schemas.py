@@ -61,6 +61,21 @@ class OnboardingState(str, Enum):
     PAUSED = "paused"
 
 
+class NeedWorkflowState(str, Enum):
+    """States in the need lifecycle workflow."""
+    INITIATED = "initiated"
+    RESOLVING_COORDINATOR = "resolving_coordinator"
+    RESOLVING_SCHOOL = "resolving_school"
+    DRAFTING_NEED = "drafting_need"
+    PENDING_APPROVAL = "pending_approval"
+    REFINEMENT_REQUIRED = "refinement_required"
+    APPROVED = "approved"
+    PAUSED = "paused"
+    REJECTED = "rejected"
+    HUMAN_REVIEW = "human_review"
+    FULFILLMENT_HANDOFF_READY = "fulfillment_handoff_ready"
+
+
 class HandoffType(str, Enum):
     AGENT_TRANSITION = "agent_transition"
     RESUME = "resume"

@@ -8,6 +8,7 @@ import { Header } from './components/serve/Header';
 import { RoleSelector } from './views/RoleSelector';
 import { VolunteerLanding } from './views/VolunteerLanding';
 import { VolunteerView } from './views/VolunteerView';
+import { NeedCoordinatorView } from './views/NeedCoordinatorView';
 import { OpsView } from './views/OpsView';
 import { AdminView } from './views/AdminView';
 import { Toaster } from './components/ui/sonner';
@@ -105,6 +106,8 @@ function App() {
     switch (currentView) {
       case 'internal-volunteer':
         return <VolunteerView onBack={handleBackToInternalSelector} />;
+      case 'internal-need_coordinator':
+        return <NeedCoordinatorView onBack={handleBackToInternalSelector} />;
       case 'internal-ops':
         return <OpsView />;
       case 'internal-admin':
