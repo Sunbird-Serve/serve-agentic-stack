@@ -1,6 +1,6 @@
 """
-SERVE Onboarding Agent Service - MCP Client
-HTTP client for calling MCP service capabilities
+SERVE Onboarding Agent Service - Domain Client
+HTTP client for calling Domain Service capabilities (data persistence layer)
 """
 import httpx
 import os
@@ -10,18 +10,19 @@ from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
-MCP_SERVICE_URL = os.environ.get("MCP_SERVICE_URL", "http://serve-agentic-mcp-service:8003")
+# Domain service URL (HTTP API for data persistence)
+DOMAIN_SERVICE_URL = os.environ.get("DOMAIN_SERVICE_URL", "http://serve-domain-service:8003")
 
 
-class MCPClient:
-    """HTTP client for MCP service communication"""
+class DomainClient:
+    """HTTP client for Domain Service communication"""
     
     def __init__(self, base_url: str = None):
-        self.base_url = base_url or MCP_SERVICE_URL
+        self.base_url = base_url or DOMAIN_SERVICE_URL
         self.timeout = 30.0
     
     async def call_capability(self, endpoint: str, payload: Dict[str, Any]) -> Dict:
-        """Call an MCP capability endpoint"""
+        """Call a domain service capability endpoint"""
         url = f"{self.base_url}/api/capabilities/onboarding/{endpoint}"
         
         async with httpx.AsyncClient() as client:
@@ -34,7 +35,7 @@ class MCPClient:
                 response.raise_for_status()
                 return response.json()
             except httpx.HTTPError as e:
-                logger.error(f"MCP call failed: {endpoint} - {e}")
+                logger.error(f"Domain service call failed: {endpoint} - {e}")
                 return {"status": "error", "error": str(e)}
     
     async def get_missing_fields(self, session_id: UUID) -> Dict:
@@ -123,4 +124,4 @@ class MCPClient:
 
 
 # Singleton instance
-mcp_client = MCPClient()
+domain_client = DomainClient()

@@ -1,2 +1,2 @@
 # Clients module
-from .mcp_client import mcp_client, MCPClient
+from .domain_client import domain_client, DomainClient

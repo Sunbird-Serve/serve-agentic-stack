@@ -18,7 +18,7 @@ from app.schemas import (
     HandoffEvent, TelemetryEvent, AgentType, WorkflowType,
     OnboardingState, EventType, HandoffType
 )
-from app.clients import mcp_client
+from app.clients import domain_client
 from app.service.llm_adapter import llm_adapter
 
 logger = logging.getLogger(__name__)
@@ -404,7 +404,7 @@ class OnboardingAgentService:
         ))
         
         # Get current profile state from MCP
-        missing_result = await mcp_client.get_missing_fields(request.session_id)
+        missing_result = await domain_client.get_missing_fields(request.session_id)
         missing_fields = missing_result.get("data", {}).get("missing_fields", [])
         confirmed_fields = missing_result.get("data", {}).get("confirmed_fields", {})
         
@@ -412,7 +412,7 @@ class OnboardingAgentService:
         memory_context = await self.memory_service.get_memory_context(
             session_id=str(request.session_id),
             confirmed_fields=confirmed_fields,
-            mcp_client=mcp_client
+            mcp_client=domain_client
         )
         
         if memory_context:
@@ -432,7 +432,7 @@ class OnboardingAgentService:
         
         # Save extracted fields to MCP
         if extracted_fields:
-            await mcp_client.save_confirmed_fields(request.session_id, extracted_fields)
+            await domain_client.save_confirmed_fields(request.session_id, extracted_fields)
             confirmed_fields.update(extracted_fields)
             # Update missing fields list
             missing_fields = [f for f in missing_fields if f not in extracted_fields]
@@ -500,7 +500,7 @@ class OnboardingAgentService:
         summary_result = await self.memory_service.process_conversation_update(
             session_id=str(request.session_id),
             conversation=conversation_with_new,
-            mcp_client=mcp_client
+            mcp_client=domain_client
         )
         
         if summary_result:
@@ -528,7 +528,7 @@ class OnboardingAgentService:
                 final_summary = await self.memory_service.process_conversation_update(
                     session_id=str(request.session_id),
                     conversation=conversation_with_new,
-                    mcp_client=mcp_client
+                    mcp_client=domain_client
                 )
                 
                 handoff_event = HandoffEvent(
@@ -557,7 +557,7 @@ class OnboardingAgentService:
             await self.memory_service.process_conversation_update(
                 session_id=str(request.session_id),
                 conversation=conversation_with_new,
-                mcp_client=mcp_client
+                mcp_client=domain_client
             )
         
         return AgentTurnResponse(
