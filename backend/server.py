@@ -8,13 +8,15 @@ This version includes:
 - WorkflowValidator for state transition validation
 - Structured contracts for clean inter-service communication
 - Enhanced structured logging
+- WhatsApp channel adapter integration
 """
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from contextlib import asynccontextmanager
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from uuid import UUID, uuid4
 from pydantic import BaseModel, Field, field_validator
@@ -1770,6 +1772,105 @@ app.add_middleware(
 )
 
 
+# ============ WhatsApp Channel Adapter ============
+
+# Twilio Configuration
+TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
+TWILIO_WHATSAPP_NUMBER = os.environ.get("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")  # Sandbox default
+
+# Initialize Twilio client if configured
+twilio_client = None
+try:
+    if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+        from twilio.rest import Client
+        twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        logger.info("Twilio WhatsApp client initialized")
+except ImportError:
+    logger.warning("Twilio library not installed - WhatsApp integration disabled")
+except Exception as e:
+    logger.warning(f"Twilio initialization failed: {e}")
+
+
+class PhoneSessionManager:
+    """Maps WhatsApp phone numbers to orchestrator sessions."""
+    
+    def __init__(self):
+        self._sessions: Dict[str, Dict[str, Any]] = {}
+    
+    def get_session(self, phone: str) -> Optional[Dict[str, Any]]:
+        """Get existing session for phone number."""
+        session = self._sessions.get(phone)
+        if session:
+            # Check if session is still valid (24 hour timeout)
+            last_activity = datetime.fromisoformat(session["last_activity"])
+            if datetime.utcnow() - last_activity > timedelta(hours=24):
+                del self._sessions[phone]
+                return None
+        return session
+    
+    def create_session(self, phone: str, session_id: str, workflow: str = "need_coordination") -> Dict:
+        """Create new session mapping."""
+        session = {
+            "phone": phone,
+            "session_id": session_id,
+            "workflow": workflow,
+            "created_at": datetime.utcnow().isoformat(),
+            "last_activity": datetime.utcnow().isoformat(),
+            "message_count": 0
+        }
+        self._sessions[phone] = session
+        logger.info(f"WhatsApp session created: {phone[:6]}*** -> {session_id[:8]}...")
+        return session
+    
+    def update_session(self, phone: str, session_id: str = None) -> Optional[Dict]:
+        """Update session activity."""
+        session = self._sessions.get(phone)
+        if session:
+            session["last_activity"] = datetime.utcnow().isoformat()
+            session["message_count"] += 1
+            if session_id:
+                session["session_id"] = session_id
+        return session
+    
+    def clear_session(self, phone: str) -> bool:
+        """Clear session for restart."""
+        if phone in self._sessions:
+            del self._sessions[phone]
+            return True
+        return False
+    
+    def get_all_sessions(self) -> Dict:
+        """Get all active sessions."""
+        return self._sessions.copy()
+
+
+# Singleton
+whatsapp_sessions = PhoneSessionManager()
+
+
+async def send_whatsapp_reply(to_number: str, message: str) -> bool:
+    """Send WhatsApp message via Twilio."""
+    if not twilio_client:
+        logger.warning("Twilio not configured - cannot send WhatsApp message")
+        return False
+    
+    if not to_number.startswith("whatsapp:"):
+        to_number = f"whatsapp:{to_number}"
+    
+    try:
+        msg = twilio_client.messages.create(
+            body=message,
+            from_=TWILIO_WHATSAPP_NUMBER,
+            to=to_number
+        )
+        logger.info(f"WhatsApp sent: {msg.sid}")
+        return True
+    except Exception as e:
+        logger.error(f"WhatsApp send failed: {e}")
+        return False
+
+
 # ============ Orchestrator Endpoints ============
 
 @app.post("/api/orchestrator/interact", response_model=InteractionResponse)
@@ -1926,6 +2027,135 @@ async def agent_turn(request: AgentTurnRequest):
 @app.get("/api/agents/onboarding/health")
 async def agent_health():
     return {"service": "serve-onboarding-agent-service", "status": "healthy", "version": "1.1.0"}
+
+
+# ============ WhatsApp Channel Endpoints ============
+
+@app.post("/api/whatsapp/webhook")
+async def whatsapp_webhook(request: Request):
+    """
+    Twilio WhatsApp webhook endpoint.
+    
+    Receives incoming messages from Twilio Sandbox and routes through orchestrator.
+    Returns TwiML response with assistant message.
+    
+    Twilio Sandbox Setup:
+    1. Go to https://www.twilio.com/console/sms/whatsapp/sandbox
+    2. Set webhook URL to: https://your-domain.com/api/whatsapp/webhook
+    3. Send "join <sandbox-code>" to +14155238886 from your WhatsApp
+    """
+    try:
+        form_data = await request.form()
+        
+        from_number = form_data.get("From", "")  # whatsapp:+1234567890
+        message_body = form_data.get("Body", "").strip()
+        media_url = form_data.get("MediaUrl0")  # Optional media
+        
+        # Normalize phone number
+        phone = from_number.replace("whatsapp:", "")
+        
+        logger.info(f"WhatsApp message from {phone[:6]}***: {message_body[:50]}...")
+        
+        # Check for reset commands
+        if message_body.lower() in ["reset", "restart", "start over", "new", "quit"]:
+            whatsapp_sessions.clear_session(phone)
+            response_text = "Session reset! Send a message to start fresh. I'm here to help register teaching needs for your school."
+        else:
+            # Get or create session
+            session = whatsapp_sessions.get_session(phone)
+            session_id = UUID(session["session_id"]) if session else None
+            
+            # Route through orchestrator
+            orchestrator_request = InteractionRequest(
+                session_id=session_id,
+                message=message_body,
+                channel=ChannelType.WHATSAPP,
+                persona=PersonaType.NEED_COORDINATOR,
+                channel_metadata={"whatsapp_number": phone, "media_url": media_url}
+            )
+            
+            orchestrator_response = await orchestrator_interact(orchestrator_request)
+            
+            # Update session mapping - convert session_id to string
+            response_session_id = str(orchestrator_response.session_id)
+            if session:
+                whatsapp_sessions.update_session(phone, response_session_id)
+            else:
+                whatsapp_sessions.create_session(
+                    phone=phone,
+                    session_id=response_session_id,
+                    workflow=orchestrator_response.workflow
+                )
+            
+            response_text = orchestrator_response.assistant_message
+        
+        # Return TwiML response
+        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Message>{response_text}</Message>
+</Response>"""
+        
+        return Response(content=twiml, media_type="application/xml")
+        
+    except Exception as e:
+        logger.error(f"WhatsApp webhook error: {e}")
+        twiml = """<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Message>I apologize, but I encountered an issue. Please try again in a moment.</Message>
+</Response>"""
+        return Response(content=twiml, media_type="application/xml")
+
+
+@app.get("/api/whatsapp/webhook")
+async def whatsapp_webhook_verify():
+    """Webhook verification endpoint."""
+    return PlainTextResponse("OK")
+
+
+@app.get("/api/whatsapp/status")
+async def whatsapp_status():
+    """Get WhatsApp integration status."""
+    return {
+        "enabled": twilio_client is not None,
+        "sandbox_number": TWILIO_WHATSAPP_NUMBER,
+        "active_sessions": len(whatsapp_sessions.get_all_sessions()),
+        "configuration": {
+            "account_sid": bool(TWILIO_ACCOUNT_SID),
+            "auth_token": bool(TWILIO_AUTH_TOKEN),
+            "whatsapp_number": TWILIO_WHATSAPP_NUMBER
+        },
+        "setup_instructions": {
+            "1_sandbox_url": "https://www.twilio.com/console/sms/whatsapp/sandbox",
+            "2_webhook_url": "Set 'WHEN A MESSAGE COMES IN' to: https://your-domain/api/whatsapp/webhook",
+            "3_join_sandbox": f"Send 'join <your-sandbox-code>' to {TWILIO_WHATSAPP_NUMBER} from WhatsApp"
+        }
+    }
+
+
+@app.get("/api/whatsapp/sessions")
+async def whatsapp_list_sessions():
+    """List active WhatsApp sessions (admin)."""
+    sessions = whatsapp_sessions.get_all_sessions()
+    masked = {}
+    for phone, data in sessions.items():
+        masked_phone = phone[:6] + "***" + phone[-2:] if len(phone) > 8 else "***"
+        masked[masked_phone] = {
+            "session_id": data["session_id"][:8] + "...",
+            "workflow": data["workflow"],
+            "message_count": data["message_count"],
+            "last_activity": data["last_activity"]
+        }
+    return {"sessions": masked, "total": len(sessions)}
+
+
+@app.post("/api/whatsapp/send")
+async def whatsapp_send_message(to_number: str, message: str):
+    """Send WhatsApp message (admin/testing)."""
+    if not twilio_client:
+        raise HTTPException(503, "Twilio not configured")
+    
+    success = await send_whatsapp_reply(to_number, message)
+    return {"success": success, "to": to_number}
 
 
 # ============ MCP Capability Endpoints ============
