@@ -13,6 +13,7 @@ Tools exposed:
 """
 import os
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from uuid import UUID, uuid4
@@ -42,10 +43,26 @@ session_service = SessionService()
 profile_service = ProfileService()
 memory_service = MemoryService()
 
-# Create FastMCP server
+@asynccontextmanager
+async def _lifespan(server: FastMCP):
+    """Initialize DB tables within the MCP server's own event loop."""
+    from services.database import init_db
+    try:
+        await init_db()
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.warning(f"Database init failed (will use in-memory fallback): {e}")
+    yield
+
+
+# Create FastMCP server - bind on all interfaces on port 8004
+_port = int(os.environ.get("PORT", 8004))
 mcp = FastMCP(
     name="SERVE AI MCP Server",
-    instructions="Model Context Protocol server for eVidyaloka volunteer and need management. Use these tools to manage volunteer onboarding, need coordination, school contexts, and conversation memory."
+    instructions="Model Context Protocol server for eVidyaloka volunteer and need management. Use these tools to manage volunteer onboarding, need coordination, school contexts, and conversation memory.",
+    host="0.0.0.0",
+    port=_port,
+    lifespan=_lifespan,
 )
 
 
@@ -790,27 +807,71 @@ async def emit_need_handoff_event(
     return result
 
 
+# ============ Session Management Tools (additional) ============
+
+@mcp.tool()
+async def emit_handoff_event(
+    session_id: str,
+    from_agent: str,
+    to_agent: str,
+    handoff_type: str,
+    payload: Optional[Dict[str, Any]] = None,
+    reason: Optional[str] = None
+) -> dict:
+    """
+    Record an agent handoff event for a session.
+
+    Args:
+        session_id: The UUID of the session
+        from_agent: Source agent identifier (onboarding, need, etc.)
+        to_agent: Target agent identifier
+        handoff_type: Type of handoff (agent_transition, resume, escalation, pause)
+        payload: Optional handoff payload data
+        reason: Optional reason for the handoff
+
+    Returns:
+        Dictionary with event_id confirming the handoff was logged
+    """
+    result = await session_service.emit_handoff_event(
+        session_id=session_id,
+        from_agent=from_agent,
+        to_agent=to_agent,
+        handoff_type=handoff_type,
+        payload=payload,
+        reason=reason
+    )
+    logger.info(f"MCP Tool: emit_handoff_event {from_agent} -> {to_agent}")
+    return result
+
+
+@mcp.tool()
+async def list_sessions(
+    status: Optional[str] = None,
+    limit: int = 50
+) -> dict:
+    """
+    List sessions, optionally filtered by status.
+
+    Args:
+        status: Optional filter by session status (active, paused, completed, abandoned)
+        limit: Maximum number of sessions to return (default 50)
+
+    Returns:
+        Dictionary containing list of session summaries
+    """
+    result = await session_service.list_sessions(status=status, limit=limit)
+    return result
+
+
 # ============ Server Entry Point ============
 
 if __name__ == "__main__":
     import sys
-    import asyncio
 
     # Check for transport mode
     transport = "stdio"
     if "--http" in sys.argv:
         transport = "sse"
 
-    # Initialize database tables before starting the server
-    async def startup():
-        from services.database import init_db
-        try:
-            await init_db()
-            logger.info("Database initialized successfully")
-        except Exception as e:
-            logger.warning(f"Database init failed (will use in-memory fallback): {e}")
-
-    asyncio.run(startup())
-
-    logger.info(f"Starting SERVE AI MCP Server (transport={transport})")
+    logger.info(f"Starting SERVE AI MCP Server (transport={transport}, port={_port})")
     mcp.run(transport=transport)

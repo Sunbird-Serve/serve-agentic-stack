@@ -10,6 +10,7 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 from sqlalchemy import Column, String, DateTime, JSON, Text, ForeignKey, Integer, Boolean, text
+from sqlalchemy.dialects.postgresql import ARRAY as PGARRAY
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from datetime import datetime
 import uuid
@@ -62,18 +63,23 @@ class Session(Base):
 
 
 class VolunteerProfile(Base):
-    """Volunteer profile model"""
+    """Volunteer profile model - must match the existing PostgreSQL schema."""
     __tablename__ = "volunteer_profiles"
     
     id = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    session_id = Column(PGUUID(as_uuid=True), ForeignKey("sessions.id"), nullable=False)
-    full_name = Column(String(200), nullable=True)
+    session_id = Column(PGUUID(as_uuid=True), ForeignKey("sessions.id"), nullable=True, unique=True)
+    full_name = Column(String(255), nullable=True)
     email = Column(String(255), nullable=True)
     phone = Column(String(50), nullable=True)
-    location = Column(String(200), nullable=True)
-    skills = Column(JSON, default=list, nullable=False)
-    interests = Column(JSON, default=list, nullable=False)
-    availability = Column(String(200), nullable=True)
+    location = Column(String(255), nullable=True)
+    skills = Column(PGARRAY(String), nullable=True)
+    interests = Column(PGARRAY(String), nullable=True)
+    availability = Column(String(100), nullable=True)
+    experience_level = Column(String(50), nullable=True)
+    motivation = Column(Text, nullable=True)
+    preferred_causes = Column(PGARRAY(String), nullable=True)
+    onboarding_completed = Column(Boolean, nullable=True)
+    eligibility_status = Column(String(50), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
@@ -87,7 +93,7 @@ class ConversationMessage(Base):
     role = Column(String(20), nullable=False)  # user, assistant
     content = Column(Text, nullable=False)
     agent = Column(String(50), nullable=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class MemorySummary(Base):

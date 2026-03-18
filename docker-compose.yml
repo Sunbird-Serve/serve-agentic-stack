@@ -24,29 +24,6 @@ services:
     networks:
       - serve-network
 
-  # Domain Service (Database owner, HTTP API) - Port 8003
-  serve-domain-service:
-    build:
-      context: ./serve-domain-service
-      dockerfile: Dockerfile
-    container_name: serve-domain-service
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://serve:servepassword@postgres:5432/serve_db
-      - PORT=8003
-      - CORS_ORIGINS=*
-    ports:
-      - "8003:8003"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8003/api/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - serve-network
-
   # MCP Server (Model Context Protocol) - Port 8004
   serve-mcp-server:
     build:
@@ -73,7 +50,6 @@ services:
     environment:
       - PORT=8002
       - CORS_ORIGINS=*
-      - DOMAIN_SERVICE_URL=http://serve-domain-service:8003
       - MCP_SERVER_URL=http://serve-mcp-server:8004
       - LLM_PROVIDER=claude
       - LLM_MODEL=claude-sonnet-4-5-20250929
@@ -81,7 +57,7 @@ services:
     ports:
       - "8002:8002"
     depends_on:
-      - serve-domain-service
+      - serve-mcp-server
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/api/health"]
       interval: 30s
@@ -99,7 +75,6 @@ services:
     environment:
       - PORT=8005
       - CORS_ORIGINS=*
-      - DOMAIN_SERVICE_URL=http://serve-domain-service:8003
       - MCP_SERVER_URL=http://serve-mcp-server:8004
       - LLM_PROVIDER=claude
       - LLM_MODEL=claude-sonnet-4-5-20250929
@@ -107,7 +82,7 @@ services:
     ports:
       - "8005:8005"
     depends_on:
-      - serve-domain-service
+      - serve-mcp-server
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8005/api/health"]
       interval: 30s
@@ -125,13 +100,13 @@ services:
     environment:
       - PORT=8001
       - CORS_ORIGINS=*
-      - DOMAIN_SERVICE_URL=http://serve-domain-service:8003
+      - MCP_SERVER_URL=http://serve-mcp-server:8004
       - ONBOARDING_AGENT_URL=http://serve-onboarding-agent-service:8002
       - NEED_AGENT_URL=http://serve-need-agent-service:8005
     ports:
       - "8001:8001"
     depends_on:
-      - serve-domain-service
+      - serve-mcp-server
       - serve-onboarding-agent-service
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/api/health"]

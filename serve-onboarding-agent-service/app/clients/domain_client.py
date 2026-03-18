@@ -1,98 +1,137 @@
 """
-SERVE Onboarding Agent Service - Domain Client
-HTTP client for calling Domain Service capabilities (data persistence layer)
+SERVE Onboarding Agent Service - MCP Tool Client
+Calls serve-mcp-server tools via the MCP SSE protocol.
+
+This replaces the former REST-based DomainClient. The public interface is
+identical so onboarding_logic.py and memory_service.py require no changes.
+
+Tool name mapping (former REST endpoint → MCP tool):
+  get-missing-fields        → get_missing_fields
+  save-confirmed-fields     → save_volunteer_fields
+  advance-state             → advance_session_state
+  save-message              → save_message
+  log-event                 → log_event
+  emit-handoff-event        → emit_handoff_event
+  save-memory-summary       → save_memory_summary
+  get-memory-summary        → get_memory_summary
 """
-import httpx
 import os
+import json
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
-# Domain service URL (HTTP API for data persistence)
-DOMAIN_SERVICE_URL = os.environ.get("DOMAIN_SERVICE_URL", "http://serve-domain-service:8003")
+MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://serve-mcp-server:8004")
+
+
+async def _call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict:
+    """Call an MCP server tool via the SSE transport and return its parsed result."""
+    try:
+        from mcp.client.session import ClientSession
+        from mcp.client.sse import sse_client
+
+        sse_url = f"{MCP_SERVER_URL}/sse"
+        async with sse_client(url=sse_url) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(tool_name, arguments=arguments)
+                for item in result.content:
+                    if hasattr(item, "text"):
+                        try:
+                            return json.loads(item.text)
+                        except (json.JSONDecodeError, ValueError):
+                            return {"result": item.text}
+        return {}
+    except Exception as e:
+        logger.error(f"MCP tool call failed [{tool_name}]: {e}")
+        return {"status": "error", "error": str(e)}
 
 
 class DomainClient:
-    """HTTP client for Domain Service communication"""
-    
+    """
+    MCP-backed replacement for the former HTTP DomainClient.
+    All public methods keep the same signatures.
+    """
+
     def __init__(self, base_url: str = None):
-        self.base_url = base_url or DOMAIN_SERVICE_URL
-        self.timeout = 30.0
-    
-    async def call_capability(self, endpoint: str, payload: Dict[str, Any]) -> Dict:
-        """Call a domain service capability endpoint"""
-        url = f"{self.base_url}/api/capabilities/onboarding/{endpoint}"
-        
-        async with httpx.AsyncClient() as client:
-            try:
-                response = await client.post(
-                    url,
-                    json=payload,
-                    timeout=self.timeout
-                )
-                response.raise_for_status()
-                return response.json()
-            except httpx.HTTPError as e:
-                logger.error(f"Domain service call failed: {endpoint} - {e}")
-                return {"status": "error", "error": str(e)}
-    
+        pass
+
     async def get_missing_fields(self, session_id: UUID) -> Dict:
-        """Get missing profile fields"""
-        return await self.call_capability("get-missing-fields", {
+        """Get missing profile fields."""
+        return await _call_mcp_tool("get_missing_fields", {
             "session_id": str(session_id)
         })
-    
+
     async def save_confirmed_fields(self, session_id: UUID, fields: Dict[str, Any]) -> Dict:
-        """Save confirmed profile fields"""
-        return await self.call_capability("save-confirmed-fields", {
+        """Save confirmed profile fields (maps to save_volunteer_fields MCP tool)."""
+        return await _call_mcp_tool("save_volunteer_fields", {
             "session_id": str(session_id),
-            "fields": fields
+            "fields": fields,
         })
-    
-    async def advance_state(self, session_id: UUID, new_state: str, sub_state: str = None) -> Dict:
-        """Advance session state"""
-        return await self.call_capability("advance-state", {
+
+    async def advance_state(
+        self,
+        session_id: UUID,
+        new_state: str,
+        sub_state: str = None
+    ) -> Dict:
+        """Advance session state."""
+        args: Dict[str, Any] = {
             "session_id": str(session_id),
             "new_state": new_state,
-            "sub_state": sub_state
-        })
-    
-    async def save_message(self, session_id: UUID, role: str, content: str, agent: str = None) -> Dict:
-        """Save conversation message"""
-        payload = {
+        }
+        if sub_state:
+            args["sub_state"] = sub_state
+        return await _call_mcp_tool("advance_session_state", args)
+
+    async def save_message(
+        self,
+        session_id: UUID,
+        role: str,
+        content: str,
+        agent: str = None
+    ) -> Dict:
+        """Save conversation message."""
+        args: Dict[str, Any] = {
             "session_id": str(session_id),
             "role": role,
-            "content": content
+            "content": content,
         }
         if agent:
-            payload["agent"] = agent
-        return await self.call_capability("save-message", payload)
-    
-    async def log_event(self, session_id: UUID, event_type: str, agent: str = None, data: Dict = None) -> Dict:
-        """Log telemetry event"""
-        payload = {
+            args["agent"] = agent
+        return await _call_mcp_tool("save_message", args)
+
+    async def log_event(
+        self,
+        session_id: UUID,
+        event_type: str,
+        agent: str = None,
+        data: Dict = None
+    ) -> Dict:
+        """Log telemetry event."""
+        args: Dict[str, Any] = {
             "session_id": str(session_id),
-            "event_type": event_type
+            "event_type": event_type,
         }
         if agent:
-            payload["agent"] = agent
+            args["agent"] = agent
         if data:
-            payload["data"] = data
-        return await self.call_capability("log-event", payload)
-    
+            args["data"] = data
+        return await _call_mcp_tool("log_event", args)
+
     async def emit_handoff_event(
-        self, 
-        session_id: UUID, 
-        from_agent: str, 
-        to_agent: str, 
+        self,
+        session_id: UUID,
+        from_agent: str,
+        to_agent: str,
         handoff_type: str,
         payload: Dict = None,
         reason: str = None
     ) -> Dict:
-        """Emit handoff event"""
-        request_payload = {
+        """Emit handoff event."""
+        args: Dict[str, Any] = {
             "session_id": str(session_id),
             "from_agent": from_agent,
             "to_agent": to_agent,
@@ -100,8 +139,8 @@ class DomainClient:
             "payload": payload or {},
         }
         if reason:
-            request_payload["reason"] = reason
-        return await self.call_capability("emit-handoff-event", request_payload)
+            args["reason"] = reason
+        return await _call_mcp_tool("emit_handoff_event", args)
 
     async def save_memory_summary(
         self,
@@ -110,15 +149,15 @@ class DomainClient:
         key_facts: List[str] = None
     ) -> Dict[str, Any]:
         """Save a memory summary for the session."""
-        return await self.call_capability("save-memory-summary", {
+        return await _call_mcp_tool("save_memory_summary", {
             "session_id": str(session_id),
             "summary_text": summary_text,
-            "key_facts": key_facts or []
+            "key_facts": key_facts or [],
         })
-    
+
     async def get_memory_summary(self, session_id: UUID) -> Dict[str, Any]:
         """Get memory summary for a session."""
-        return await self.call_capability("get-memory-summary", {
+        return await _call_mcp_tool("get_memory_summary", {
             "session_id": str(session_id)
         })
 

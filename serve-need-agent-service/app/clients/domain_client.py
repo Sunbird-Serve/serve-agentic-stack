@@ -1,92 +1,118 @@
 """
-SERVE Need Agent Service - Domain Client
-HTTP client for calling Domain Service capabilities.
+SERVE Need Agent Service - MCP Tool Client
+Calls serve-mcp-server tools via the MCP SSE protocol.
+
+This replaces the former REST-based DomainClient. The public interface is
+identical so need_logic.py requires no changes.
+
+Tool name mapping (former REST endpoint → MCP tool):
+  resolve-coordinator       → resolve_coordinator_identity
+  map-coordinator-school    → map_coordinator_to_school
+  resolve-school            → resolve_school_context
+  create-school             → create_school_context
+  fetch-previous-needs      → fetch_previous_need_context
+  save-need-draft           → create_or_update_need_draft  (dict unpacked to kwargs)
+  get-missing-fields        → get_missing_need_fields
+  evaluate-readiness        → evaluate_need_submission_readiness
+  submit-for-approval       → submit_need_for_approval
+  update-status             → update_need_status
+  start-session (need)      → start_need_session
+  resume-context (need)     → resume_need_context
+  advance-state (need)      → advance_need_state
+  pause-session (need)      → pause_need_session
+  prepare-handoff           → prepare_fulfillment_handoff
+  emit-handoff              → emit_need_handoff_event
+  log-event                 → log_need_event
+  save-message (need)       → save_need_message
+  resume-context (shared)   → resume_session
+  advance-state (shared)    → advance_session_state
+  save-message (shared)     → save_message
+  log-event (shared)        → log_event
+  pause-session (shared)    → pause_need_session
+  emit-handoff-event(shared)→ emit_handoff_event
 """
-import httpx
 import os
+import json
 import logging
 from typing import Dict, Any, List, Optional
 from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
-DOMAIN_SERVICE_URL = os.environ.get("DOMAIN_SERVICE_URL", "http://serve-domain-service:8003")
+MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://serve-mcp-server:8004")
 
-# These endpoints exist under /api/capabilities/onboarding/ in the domain service.
-# Need-specific endpoints that don't yet have domain service routes will fall
-# back to /api/capabilities/need/ and fail gracefully (handled in need_logic.py).
-_ONBOARDING_ROUTE_ENDPOINTS = {
-    "resume-context",
-    "advance-state",
-    "save-message",
-    "log-event",
-    "pause-session",
-    "emit-handoff-event",
-}
+
+async def _call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict:
+    """Call an MCP server tool via the SSE transport and return its parsed result."""
+    try:
+        from mcp.client.session import ClientSession
+        from mcp.client.sse import sse_client
+
+        sse_url = f"{MCP_SERVER_URL}/sse"
+        async with sse_client(url=sse_url) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(tool_name, arguments=arguments)
+                for item in result.content:
+                    if hasattr(item, "text"):
+                        try:
+                            return json.loads(item.text)
+                        except (json.JSONDecodeError, ValueError):
+                            return {"result": item.text}
+        return {}
+    except Exception as e:
+        logger.error(f"MCP tool call failed [{tool_name}]: {e}")
+        return {"status": "error", "error": str(e)}
 
 
 class DomainClient:
-    """HTTP client for Domain Service communication."""
-    
+    """
+    MCP-backed replacement for the former HTTP DomainClient.
+    All public methods keep the same signatures so need_logic.py is unchanged.
+    """
+
     def __init__(self, base_url: str = None):
-        self.base_url = base_url or DOMAIN_SERVICE_URL
-        self.timeout = 30.0
-    
-    async def call_capability(self, endpoint: str, payload: Dict[str, Any]) -> Dict:
-        """Call a domain service capability endpoint."""
-        namespace = "onboarding" if endpoint in _ONBOARDING_ROUTE_ENDPOINTS else "need"
-        url = f"{self.base_url}/api/capabilities/{namespace}/{endpoint}"
-        
-        async with httpx.AsyncClient() as client:
-            try:
-                response = await client.post(
-                    url,
-                    json=payload,
-                    timeout=self.timeout
-                )
-                response.raise_for_status()
-                return response.json()
-            except httpx.HTTPError as e:
-                logger.error(f"Domain service call failed: {endpoint} - {e}")
-                return {"status": "error", "error": str(e)}
-    
+        pass
+
     # ============ Coordinator Operations ============
-    
+
     async def resolve_coordinator_identity(
-        self, 
-        whatsapp_number: str, 
+        self,
+        whatsapp_number: str,
         name: Optional[str] = None
     ) -> Dict:
         """Resolve coordinator identity from WhatsApp number."""
-        return await self.call_capability("resolve-coordinator", {
-            "whatsapp_number": whatsapp_number,
-            "name": name
-        })
-    
+        args: Dict[str, Any] = {"whatsapp_number": whatsapp_number}
+        if name:
+            args["name"] = name
+        return await _call_mcp_tool("resolve_coordinator_identity", args)
+
     async def map_coordinator_to_school(
-        self, 
-        coordinator_id: str, 
+        self,
+        coordinator_id: str,
         school_id: str
     ) -> Dict:
         """Map a coordinator to an existing school."""
-        return await self.call_capability("map-coordinator-school", {
+        return await _call_mcp_tool("map_coordinator_to_school", {
             "coordinator_id": coordinator_id,
-            "school_id": school_id
+            "school_id": school_id,
         })
-    
+
     # ============ School Operations ============
-    
+
     async def resolve_school_context(
         self,
         coordinator_id: Optional[str] = None,
         school_hint: Optional[str] = None
     ) -> Dict:
         """Resolve school context."""
-        return await self.call_capability("resolve-school", {
-            "coordinator_id": coordinator_id,
-            "school_hint": school_hint
-        })
-    
+        args: Dict[str, Any] = {}
+        if coordinator_id:
+            args["coordinator_id"] = coordinator_id
+        if school_hint:
+            args["school_hint"] = school_hint
+        return await _call_mcp_tool("resolve_school_context", args)
+
     async def create_basic_school_context(
         self,
         name: str,
@@ -94,67 +120,78 @@ class DomainClient:
         contact_number: Optional[str] = None
     ) -> Dict:
         """Create a new school context."""
-        return await self.call_capability("create-school", {
-            "name": name,
-            "location": location,
-            "contact_number": contact_number
-        })
-    
-    async def fetch_previous_need_context(
-        self,
-        school_id: str
-    ) -> Dict:
+        args: Dict[str, Any] = {"name": name, "location": location}
+        if contact_number:
+            args["contact_number"] = contact_number
+        return await _call_mcp_tool("create_school_context", args)
+
+    async def fetch_previous_need_context(self, school_id: str) -> Dict:
         """Fetch previous need context for a school."""
-        return await self.call_capability("fetch-previous-needs", {
+        return await _call_mcp_tool("fetch_previous_need_context", {
             "school_id": school_id
         })
-    
+
     # ============ Need Operations ============
-    
+
     async def create_or_update_need_draft(
         self,
         session_id: str,
         need_data: Dict[str, Any]
     ) -> Dict:
-        """Create or update a need draft."""
-        return await self.call_capability("save-need-draft", {
-            "session_id": session_id,
-            "need_data": need_data
-        })
-    
+        """Create or update a need draft.
+        
+        The MCP tool accepts individual fields rather than a dict,
+        so we unpack need_data into keyword arguments.
+        """
+        args: Dict[str, Any] = {"session_id": session_id}
+        # Unpack need_data fields that the MCP tool accepts
+        field_map = {
+            "subjects": "subjects",
+            "grade_levels": "grade_levels",
+            "student_count": "student_count",
+            "time_slots": "time_slots",
+            "start_date": "start_date",
+            "duration_weeks": "duration_weeks",
+            "schedule_preference": "schedule_preference",
+            "special_requirements": "special_requirements",
+        }
+        for src_key, dst_key in field_map.items():
+            if src_key in need_data and need_data[src_key] is not None:
+                args[dst_key] = need_data[src_key]
+        return await _call_mcp_tool("create_or_update_need_draft", args)
+
     async def get_missing_need_fields(self, session_id: str) -> Dict:
         """Get missing fields for a need draft."""
-        return await self.call_capability("get-missing-fields", {
+        return await _call_mcp_tool("get_missing_need_fields", {
             "session_id": session_id
         })
-    
+
     async def evaluate_need_readiness(self, session_id: str) -> Dict:
         """Evaluate if need is ready for submission."""
-        return await self.call_capability("evaluate-readiness", {
+        return await _call_mcp_tool("evaluate_need_submission_readiness", {
             "session_id": session_id
         })
-    
+
     async def submit_need_for_approval(self, need_id: str) -> Dict:
         """Submit need for approval."""
-        return await self.call_capability("submit-for-approval", {
+        return await _call_mcp_tool("submit_need_for_approval", {
             "need_id": need_id
         })
-    
+
     async def update_need_status(
-        self, 
-        need_id: str, 
+        self,
+        need_id: str,
         status: str,
         comments: Optional[str] = None
     ) -> Dict:
         """Update need status."""
-        return await self.call_capability("update-status", {
-            "need_id": need_id,
-            "status": status,
-            "comments": comments
-        })
-    
+        args: Dict[str, Any] = {"need_id": need_id, "status": status}
+        if comments:
+            args["comments"] = comments
+        return await _call_mcp_tool("update_need_status", args)
+
     # ============ Session Operations ============
-    
+
     async def start_need_session(
         self,
         channel: str,
@@ -162,18 +199,19 @@ class DomainClient:
         channel_metadata: Optional[Dict] = None
     ) -> Dict:
         """Start a new need session."""
-        return await self.call_capability("start-session", {
-            "channel": channel,
-            "whatsapp_number": whatsapp_number,
-            "channel_metadata": channel_metadata
-        })
-    
+        args: Dict[str, Any] = {"channel": channel}
+        if whatsapp_number:
+            args["whatsapp_number"] = whatsapp_number
+        if channel_metadata:
+            args["channel_metadata"] = channel_metadata
+        return await _call_mcp_tool("start_need_session", args)
+
     async def resume_need_context(self, session_id: str) -> Dict:
         """Resume an existing need session."""
-        return await self.call_capability("resume-context", {
+        return await _call_mcp_tool("resume_need_context", {
             "session_id": session_id
         })
-    
+
     async def advance_need_state(
         self,
         session_id: str,
@@ -181,31 +219,33 @@ class DomainClient:
         sub_state: Optional[str] = None
     ) -> Dict:
         """Advance need session state."""
-        return await self.call_capability("advance-state", {
+        args: Dict[str, Any] = {
             "session_id": session_id,
             "new_state": new_state,
-            "sub_state": sub_state
-        })
-    
+        }
+        if sub_state:
+            args["sub_state"] = sub_state
+        return await _call_mcp_tool("advance_need_state", args)
+
     async def pause_need_session(
         self,
         session_id: str,
         reason: Optional[str] = None
     ) -> Dict:
         """Pause a need session."""
-        return await self.call_capability("pause-session", {
-            "session_id": session_id,
-            "reason": reason
-        })
-    
+        args: Dict[str, Any] = {"session_id": session_id}
+        if reason:
+            args["reason"] = reason
+        return await _call_mcp_tool("pause_need_session", args)
+
     # ============ Handoff Operations ============
-    
+
     async def prepare_fulfillment_handoff(self, need_id: str) -> Dict:
         """Prepare handoff payload for fulfillment."""
-        return await self.call_capability("prepare-handoff", {
+        return await _call_mcp_tool("prepare_fulfillment_handoff", {
             "need_id": need_id
         })
-    
+
     async def emit_handoff_event(
         self,
         session_id: str,
@@ -213,16 +253,16 @@ class DomainClient:
         to_agent: str,
         payload: Dict[str, Any]
     ) -> Dict:
-        """Emit handoff event."""
-        return await self.call_capability("emit-handoff", {
+        """Emit handoff event for need workflow."""
+        return await _call_mcp_tool("emit_need_handoff_event", {
             "session_id": session_id,
             "from_agent": from_agent,
             "to_agent": to_agent,
-            "payload": payload
+            "payload": payload,
         })
-    
+
     # ============ Telemetry ============
-    
+
     async def log_need_event(
         self,
         session_id: str,
@@ -230,12 +270,14 @@ class DomainClient:
         data: Optional[Dict] = None
     ) -> Dict:
         """Log a need lifecycle event."""
-        return await self.call_capability("log-event", {
+        args: Dict[str, Any] = {
             "session_id": session_id,
             "event_type": event_type,
-            "data": data or {}
-        })
-    
+        }
+        if data:
+            args["data"] = data
+        return await _call_mcp_tool("log_need_event", args)
+
     async def save_message(
         self,
         session_id: str,
@@ -243,13 +285,36 @@ class DomainClient:
         content: str,
         agent: Optional[str] = None
     ) -> Dict:
-        """Save a conversation message."""
-        return await self.call_capability("save-message", {
+        """Save a conversation message for a need session."""
+        args: Dict[str, Any] = {
             "session_id": session_id,
             "role": role,
             "content": content,
-            "agent": agent
-        })
+        }
+        if agent:
+            args["agent"] = agent
+        return await _call_mcp_tool("save_need_message", args)
+
+    # ============ Shared Session Operations (used by need_logic via domain_client) ============
+
+    async def call_capability(self, endpoint: str, payload: Dict[str, Any]) -> Dict:
+        """
+        Generic fallback for any endpoint not yet mapped to a dedicated method.
+        Routes shared session endpoints to the general MCP session tools.
+        """
+        shared_endpoint_map = {
+            "resume-context": "resume_session",
+            "advance-state": "advance_session_state",
+            "save-message": "save_message",
+            "log-event": "log_event",
+            "pause-session": "pause_need_session",
+            "emit-handoff-event": "emit_handoff_event",
+        }
+        tool_name = shared_endpoint_map.get(endpoint)
+        if tool_name:
+            return await _call_mcp_tool(tool_name, payload)
+        logger.warning(f"Unmapped endpoint: {endpoint}; returning graceful error")
+        return {"status": "error", "error": f"Endpoint '{endpoint}' not implemented in MCP client"}
 
 
 # Singleton instance
