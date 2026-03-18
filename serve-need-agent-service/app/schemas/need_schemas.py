@@ -127,7 +127,7 @@ class NeedSessionState(BaseModel):
     """Current state of a need session."""
     id: UUID
     channel: str
-    workflow: str = "need_lifecycle"
+    workflow: str = "need_coordination"
     active_agent: str = "need"
     status: str = "active"
     stage: str = NeedWorkflowState.INITIATED.value
@@ -156,7 +156,7 @@ class NeedAgentTurnResponse(BaseModel):
     """Response from need agent turn."""
     assistant_message: str
     active_agent: str = "need"
-    workflow: str = "need_lifecycle"
+    workflow: str = "need_coordination"
     state: str
     sub_state: Optional[str] = None
     completion_status: Optional[str] = None

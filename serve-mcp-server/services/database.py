@@ -9,7 +9,7 @@ import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import declarative_base
-from sqlalchemy import Column, String, DateTime, JSON, Text, ForeignKey, Integer, Boolean
+from sqlalchemy import Column, String, DateTime, JSON, Text, ForeignKey, Integer, Boolean, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from datetime import datetime
 import uuid
@@ -154,7 +154,7 @@ async def test_connection() -> bool:
     global _using_memory_fallback
     try:
         async with get_db() as db:
-            await db.execute("SELECT 1")
+            await db.execute(text("SELECT 1"))
         _using_memory_fallback = False
         return True
     except Exception as e:

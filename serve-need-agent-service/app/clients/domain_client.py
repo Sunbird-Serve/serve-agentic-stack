@@ -12,6 +12,18 @@ logger = logging.getLogger(__name__)
 
 DOMAIN_SERVICE_URL = os.environ.get("DOMAIN_SERVICE_URL", "http://serve-domain-service:8003")
 
+# These endpoints exist under /api/capabilities/onboarding/ in the domain service.
+# Need-specific endpoints that don't yet have domain service routes will fall
+# back to /api/capabilities/need/ and fail gracefully (handled in need_logic.py).
+_ONBOARDING_ROUTE_ENDPOINTS = {
+    "resume-context",
+    "advance-state",
+    "save-message",
+    "log-event",
+    "pause-session",
+    "emit-handoff-event",
+}
+
 
 class DomainClient:
     """HTTP client for Domain Service communication."""
@@ -22,7 +34,8 @@ class DomainClient:
     
     async def call_capability(self, endpoint: str, payload: Dict[str, Any]) -> Dict:
         """Call a domain service capability endpoint."""
-        url = f"{self.base_url}/api/capabilities/need/{endpoint}"
+        namespace = "onboarding" if endpoint in _ONBOARDING_ROUTE_ENDPOINTS else "need"
+        url = f"{self.base_url}/api/capabilities/{namespace}/{endpoint}"
         
         async with httpx.AsyncClient() as client:
             try:

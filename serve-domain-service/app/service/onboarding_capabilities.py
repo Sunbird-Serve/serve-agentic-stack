@@ -33,14 +33,28 @@ class OnboardingCapabilityService:
     ) -> MCPResponse:
         """Start a new onboarding session"""
         try:
+            # Derive workflow, agent, and initial stage from persona
+            persona_config = {
+                "need_coordinator": {
+                    "workflow": "need_coordination",
+                    "active_agent": "need",
+                    "stage": "initiated",
+                },
+            }
+            config = persona_config.get(request.persona.value, {
+                "workflow": "new_volunteer_onboarding",
+                "active_agent": "onboarding",
+                "stage": OnboardingState.INIT.value,
+            })
+
             # Create session
             session = Session(
                 channel=request.channel.value,
                 persona=request.persona.value,
-                workflow="new_volunteer_onboarding",
-                active_agent="onboarding",
+                workflow=config["workflow"],
+                active_agent=config["active_agent"],
                 status="active",
-                stage=OnboardingState.INIT.value,
+                stage=config["stage"],
                 channel_metadata=request.channel_metadata
             )
             db.add(session)

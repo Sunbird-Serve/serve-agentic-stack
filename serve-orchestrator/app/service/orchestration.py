@@ -331,7 +331,7 @@ class OrchestrationService:
             workflow=workflow.value,
             active_agent=initial_agent.value,
             status=SessionStatus.ACTIVE.value,
-            current_stage=OnboardingState.INIT.value,
+            current_stage=start_result["data"].get("stage", OnboardingState.INIT.value),
             created_at=now,
             updated_at=now
         )

@@ -464,7 +464,7 @@ class NeedAgentService:
         # Log user message event
         telemetry_events.append({
             "session_id": str(request.session_id),
-            "event_type": NeedEventType.SESSION_START.value if current_state == NeedWorkflowState.INITIATED.value else "user_message",
+            "event_type": "session_start" if current_state == NeedWorkflowState.INITIATED.value else "user_message",
             "agent": "need",
             "data": {"message_length": len(request.user_message)}
         })
@@ -549,7 +549,7 @@ class NeedAgentService:
                 
                 telemetry_events.append({
                     "session_id": str(request.session_id),
-                    "event_type": NeedEventType.NEED_DRAFT_UPDATED.value,
+                    "event_type": "mcp_call",
                     "agent": "need",
                     "data": {"fields_updated": list(extracted.keys())}
                 })
@@ -572,7 +572,7 @@ class NeedAgentService:
         if next_state != current_state:
             telemetry_events.append({
                 "session_id": str(request.session_id),
-                "event_type": NeedEventType.STATUS_CHANGED.value,
+                    "event_type": "state_transition",
                 "agent": "need",
                 "data": {
                     "from_state": current_state,
@@ -617,7 +617,7 @@ class NeedAgentService:
                 
                 telemetry_events.append({
                     "session_id": str(request.session_id),
-                    "event_type": NeedEventType.HANDOFF_PREPARED.value,
+                    "event_type": "handoff",
                     "agent": "need",
                     "data": {"target_agent": "fulfillment"}
                 })
@@ -626,7 +626,7 @@ class NeedAgentService:
             completion_status = "paused"
             telemetry_events.append({
                 "session_id": str(request.session_id),
-                "event_type": NeedEventType.SESSION_PAUSED.value,
+                    "event_type": "session_end",
                 "agent": "need",
                 "data": {}
             })
@@ -635,7 +635,7 @@ class NeedAgentService:
             completion_status = "human_review"
             telemetry_events.append({
                 "session_id": str(request.session_id),
-                "event_type": NeedEventType.HUMAN_REVIEW_ESCALATED.value,
+                    "event_type": "error",
                 "agent": "need",
                 "data": {"reason": transition_reason}
             })

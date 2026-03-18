@@ -412,7 +412,7 @@ class OnboardingAgentService:
         memory_context = await self.memory_service.get_memory_context(
             session_id=str(request.session_id),
             confirmed_fields=confirmed_fields,
-            mcp_client=domain_client
+            domain_client=domain_client
         )
         
         if memory_context:
@@ -500,7 +500,7 @@ class OnboardingAgentService:
         summary_result = await self.memory_service.process_conversation_update(
             session_id=str(request.session_id),
             conversation=conversation_with_new,
-            mcp_client=domain_client
+            domain_client=domain_client
         )
         
         if summary_result:
@@ -528,7 +528,7 @@ class OnboardingAgentService:
                 final_summary = await self.memory_service.process_conversation_update(
                     session_id=str(request.session_id),
                     conversation=conversation_with_new,
-                    mcp_client=domain_client
+                    domain_client=domain_client
                 )
                 
                 handoff_event = HandoffEvent(
@@ -557,7 +557,7 @@ class OnboardingAgentService:
             await self.memory_service.process_conversation_update(
                 session_id=str(request.session_id),
                 conversation=conversation_with_new,
-                mcp_client=domain_client
+                domain_client=domain_client
             )
         
         return AgentTurnResponse(

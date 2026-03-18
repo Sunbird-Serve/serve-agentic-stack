@@ -794,11 +794,23 @@ async def emit_need_handoff_event(
 
 if __name__ == "__main__":
     import sys
-    
+    import asyncio
+
     # Check for transport mode
     transport = "stdio"
     if "--http" in sys.argv:
         transport = "sse"
-    
+
+    # Initialize database tables before starting the server
+    async def startup():
+        from services.database import init_db
+        try:
+            await init_db()
+            logger.info("Database initialized successfully")
+        except Exception as e:
+            logger.warning(f"Database init failed (will use in-memory fallback): {e}")
+
+    asyncio.run(startup())
+
     logger.info(f"Starting SERVE AI MCP Server (transport={transport})")
     mcp.run(transport=transport)

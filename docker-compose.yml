@@ -126,7 +126,6 @@ services:
       - PORT=8001
       - CORS_ORIGINS=*
       - DOMAIN_SERVICE_URL=http://serve-domain-service:8003
-      - MCP_SERVER_URL=http://serve-mcp-server:8004
       - ONBOARDING_AGENT_URL=http://serve-onboarding-agent-service:8002
       - NEED_AGENT_URL=http://serve-need-agent-service:8005
     ports:

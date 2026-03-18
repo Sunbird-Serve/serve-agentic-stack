@@ -2,7 +2,7 @@
  * eVidyaloka - Header Component (Internal Staff Use)
  * Navigation header for internal staff views
  */
-import { Users, Settings, MessageSquare, ChevronDown, BookOpen } from 'lucide-react';
+import { Users, Settings, MessageSquare, ChevronDown, BookOpen, School } from 'lucide-react';
 import { Button } from '../ui/button';
 import {
   DropdownMenu,
@@ -13,6 +13,7 @@ import {
 
 const ROLES = {
   volunteer: { label: 'Volunteer Preview', icon: MessageSquare, color: 'text-blue-600' },
+  need_coordinator: { label: 'Need Coordinator', icon: School, color: 'text-amber-500' },
   ops: { label: 'Operations', icon: Users, color: 'text-emerald-600' },
   admin: { label: 'Tech Admin', icon: Settings, color: 'text-slate-600' },
 };
