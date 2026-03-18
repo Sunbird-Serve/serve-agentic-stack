@@ -58,6 +58,7 @@ class Session(Base):
     stage = Column(String(50), nullable=False, default="init")
     sub_state = Column(String(50), nullable=True)
     context_summary = Column(Text, nullable=True)
+    channel_metadata = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

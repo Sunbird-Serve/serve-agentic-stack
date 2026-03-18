@@ -7,6 +7,7 @@ The AgentRouter abstracts away the complexity of:
 2. Managing agent service URLs and health
 3. Providing fallback behavior when agents are unavailable
 """
+import asyncio
 import httpx
 import os
 import logging
@@ -16,7 +17,7 @@ from uuid import UUID
 
 from app.schemas import (
     AgentTurnRequest, AgentTurnResponse, AgentType, WorkflowType,
-    SessionState
+    SessionState, IntentType, IntentResult,
 )
 from app.schemas.contracts import (
     RoutingDecision, AgentInvocationContext, AgentInvocationResult,
@@ -25,65 +26,142 @@ from app.schemas.contracts import (
 
 logger = logging.getLogger(__name__)
 
+# How often (seconds) the background health-probe loop runs
+_HEALTH_PROBE_INTERVAL = int(os.environ.get("AGENT_HEALTH_PROBE_INTERVAL", "30"))
+# Connect + read timeout for health probes (seconds)
+_HEALTH_PROBE_TIMEOUT = float(os.environ.get("AGENT_HEALTH_PROBE_TIMEOUT", "3"))
+
 
 class AgentRegistry:
     """
     Registry of available agent services and their configurations.
+
+    Health state is kept inside each agent's config dict under the 'healthy' key.
+    A background asyncio task (started from main.py startup) calls
+    start_health_probing() which probes each agent's /health endpoint and
+    updates the 'healthy' flag so make_routing_decision always has fresh data.
     """
-    
+
     def __init__(self):
         self._agents: Dict[str, Dict] = {}
         self._load_from_environment()
-    
+
     def _load_from_environment(self):
         """Load agent configurations from environment variables."""
-        # Onboarding Agent
+        # ── Primary agents ──────────────────────────────────────────────────
         self._agents['onboarding'] = {
             'url': os.environ.get('ONBOARDING_AGENT_URL', 'http://serve-onboarding-agent-service:8002'),
+            'health_path': '/api/health',
             'endpoint': '/api/turn',
             'timeout': 60.0,
-            'healthy': True,
+            'healthy': True,   # Optimistic until first probe
             'last_check': None,
             'workflows': ['new_volunteer_onboarding'],
-            'stages': ['init', 'intent_discovery', 'purpose_orientation', 
-                      'eligibility_confirmation', 'capability_discovery', 
-                      'profile_confirmation', 'onboarding_complete', 'paused']
+            'stages': ['init', 'intent_discovery', 'purpose_orientation',
+                       'eligibility_confirmation', 'capability_discovery',
+                       'profile_confirmation', 'onboarding_complete', 'paused'],
         }
-        
-        # Need Agent
+
         self._agents['need'] = {
             'url': os.environ.get('NEED_AGENT_URL', 'http://serve-need-agent-service:8005'),
+            'health_path': '/api/health',
             'endpoint': '/api/turn',
             'timeout': 60.0,
-            'healthy': True,
+            'healthy': True,   # Optimistic until first probe
             'last_check': None,
             'workflows': ['need_coordination'],
             'stages': ['initiated', 'resolving_coordinator', 'resolving_school',
-                      'drafting_need', 'pending_approval', 'refinement_required',
-                      'approved', 'paused', 'rejected', 'human_review',
-                      'fulfillment_handoff_ready']
+                       'drafting_need', 'pending_approval', 'refinement_required',
+                       'approved', 'paused', 'rejected', 'human_review',
+                       'fulfillment_handoff_ready'],
         }
-        
-        # Future agents would be registered here
-        # self._agents['selection'] = {...}
-        # self._agents['fulfillment'] = {...}
-    
+
+        # ── Engagement agent — re-engages returning volunteers ───────────────
+        # This agent is not yet deployed; it starts unhealthy and the router
+        # falls back gracefully to onboarding until the service is available.
+        self._agents['engagement'] = {
+            'url': os.environ.get('ENGAGEMENT_AGENT_URL', 'http://serve-engagement-agent-service:8006'),
+            'health_path': '/api/health',
+            'endpoint': '/api/turn',
+            'timeout': 60.0,
+            'healthy': False,  # Conservative — undeployed; first probe may flip to True
+            'last_check': None,
+            'workflows': ['returning_volunteer', 'volunteer_engagement'],
+            'stages': ['re_engaging', 'profile_refresh', 'matching_ready', 'paused'],
+        }
+
+        # ── Helpline agent — cross-cutting support queries ───────────────────
+        self._agents['helpline'] = {
+            'url': os.environ.get('HELPLINE_AGENT_URL', 'http://serve-helpline-agent-service:8007'),
+            'health_path': '/api/health',
+            'endpoint': '/api/turn',
+            'timeout': 60.0,
+            'healthy': False,  # Conservative — undeployed
+            'last_check': None,
+            'workflows': [],   # Cross-cutting — activated by intent, not workflow
+            'stages': [],
+        }
+
+    # ── Health probing ───────────────────────────────────────────────────────
+
+    async def _probe_health(self, agent_id: str, config: Dict) -> None:
+        """Probe a single agent's /health endpoint and update config['healthy']."""
+        url = f"{config['url']}{config.get('health_path', '/api/health')}"
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, timeout=_HEALTH_PROBE_TIMEOUT)
+                is_healthy = resp.status_code < 400
+        except Exception:
+            is_healthy = False
+
+        previous = config.get('healthy')
+        config['healthy'] = is_healthy
+        config['last_check'] = datetime.utcnow()
+
+        if previous != is_healthy:
+            level = logger.info if is_healthy else logger.warning
+            level(
+                f"Agent '{agent_id}' health changed: "
+                f"{'HEALTHY' if is_healthy else 'UNHEALTHY'} ({url})"
+            )
+
+    async def start_health_probing(self, interval_seconds: int = _HEALTH_PROBE_INTERVAL) -> None:
+        """
+        Background loop — probe every agent every `interval_seconds` seconds.
+
+        Start this as an asyncio task from the FastAPI startup event:
+            asyncio.create_task(agent_router.registry.start_health_probing())
+        """
+        logger.info(
+            f"Agent health-probe loop starting — interval={interval_seconds}s, "
+            f"agents={list(self._agents)}"
+        )
+        while True:
+            for agent_id, config in self._agents.items():
+                try:
+                    await self._probe_health(agent_id, config)
+                except Exception as exc:
+                    logger.warning(f"Health probe for '{agent_id}' raised unexpectedly: {exc}")
+            await asyncio.sleep(interval_seconds)
+
+    # ── Registry queries ─────────────────────────────────────────────────────
+
     def get_agent_config(self, agent_id: str) -> Optional[Dict]:
         """Get configuration for a specific agent."""
         return self._agents.get(agent_id)
-    
+
     def is_agent_available(self, agent_id: str) -> bool:
-        """Check if an agent is registered and marked as healthy."""
+        """Check if an agent is registered and currently healthy."""
         config = self._agents.get(agent_id)
         return config is not None and config.get('healthy', False)
-    
+
     def get_agents_for_workflow(self, workflow: str) -> list:
         """Get all agents that can handle a given workflow."""
         return [
             agent_id for agent_id, config in self._agents.items()
             if workflow in config.get('workflows', [])
         ]
-    
+
     def get_agent_for_stage(self, stage: str) -> Optional[str]:
         """Get the agent responsible for a given stage."""
         for agent_id, config in self._agents.items():
@@ -110,61 +188,127 @@ class AgentRouter:
     def make_routing_decision(
         self,
         session_context: SessionState,
-        user_message: str
+        user_message: str,
+        intent: Optional[IntentResult] = None,
     ) -> RoutingDecision:
         """
         Determine which agent should handle the current request.
-        
+
+        Intent is now factored in:
+          - SEEK_HELP  → route to current agent with reduced confidence so it
+                         knows to slow down and be more explanatory.
+          - RESUME_SESSION → same as CONTINUE but flagged in routing_context.
+          - All others → standard stage/workflow routing.
+
         Args:
-            session_context: Current session state
-            user_message: The user's message
-            
+            session_context: Current session state.
+            user_message:    The user's message text.
+            intent:          Resolved IntentResult (may be None for legacy callers).
+
         Returns:
-            RoutingDecision with target agent and reasoning
+            RoutingDecision with target agent and reasoning.
         """
         current_agent = session_context.active_agent
         current_stage = session_context.stage
         workflow = session_context.workflow
-        
-        # Check if current agent can continue handling
+        intent_value = intent.intent.value if intent else "unknown"
+
+        # ── SEEK_HELP: route to current agent but signal lower confidence so the
+        #    agent knows to be more patient and explanatory in its response.
+        if intent and intent.intent == IntentType.SEEK_HELP:
+            if self.registry.is_agent_available(current_agent):
+                return RoutingDecision(
+                    target_agent=current_agent,
+                    confidence=0.75,
+                    reason=f"User needs help at stage '{current_stage}' — routing to {current_agent} with help hint",
+                    routing_context={
+                        'decision_type': 'help',
+                        'stage': current_stage,
+                        'workflow': workflow,
+                        'intent': intent_value,
+                    }
+                )
+
+        # ── Returning-volunteer workflow: prefer engagement agent, fall back to
+        #    onboarding if engagement is not yet deployed / unhealthy.
+        if workflow == 'returning_volunteer':
+            if self.registry.is_agent_available('engagement'):
+                return RoutingDecision(
+                    target_agent='engagement',
+                    confidence=1.0,
+                    reason=f"Returning volunteer workflow — routing to engagement agent (stage '{current_stage}')",
+                    fallback_agent='onboarding',
+                    routing_context={
+                        'decision_type': 'returning_volunteer',
+                        'stage': current_stage,
+                        'workflow': workflow,
+                        'intent': intent_value,
+                    }
+                )
+            else:
+                # Engagement service not yet deployed — graceful degradation
+                logger.warning(
+                    f"Engagement agent unavailable for returning_volunteer workflow "
+                    f"(session stage='{current_stage}'). Falling back to onboarding."
+                )
+                return RoutingDecision(
+                    target_agent='onboarding',
+                    confidence=0.6,
+                    reason="Returning-volunteer: engagement agent unavailable, gracefully routing to onboarding",
+                    routing_context={
+                        'decision_type': 'returning_volunteer_fallback',
+                        'stage': current_stage,
+                        'workflow': workflow,
+                        'intent': intent_value,
+                    }
+                )
+
+        # ── Standard routing: current agent can handle this stage
         if self.registry.is_agent_available(current_agent):
             config = self.registry.get_agent_config(current_agent)
             if current_stage in config.get('stages', []):
+                decision_type = (
+                    'resume' if intent and intent.intent == IntentType.RESUME_SESSION
+                    else 'continue'
+                )
                 return RoutingDecision(
                     target_agent=current_agent,
                     confidence=1.0,
-                    reason=f"Continuing with {current_agent} for stage {current_stage}",
+                    reason=f"Continuing with {current_agent} for stage '{current_stage}'",
                     routing_context={
-                        'decision_type': 'continue',
+                        'decision_type': decision_type,
                         'stage': current_stage,
-                        'workflow': workflow
+                        'workflow': workflow,
+                        'intent': intent_value,
                     }
                 )
-        
-        # Find agent for current stage
+
+        # ── Stage-based lookup: find the right agent for this stage
         stage_agent = self.registry.get_agent_for_stage(current_stage)
         if stage_agent and self.registry.is_agent_available(stage_agent):
             return RoutingDecision(
                 target_agent=stage_agent,
                 confidence=0.9,
-                reason=f"Routing to {stage_agent} as handler for stage {current_stage}",
+                reason=f"Routing to {stage_agent} as handler for stage '{current_stage}'",
                 fallback_agent=current_agent,
                 routing_context={
                     'decision_type': 'stage_based',
                     'stage': current_stage,
-                    'workflow': workflow
+                    'workflow': workflow,
+                    'intent': intent_value,
                 }
             )
-        
-        # Fallback to current agent
+
+        # ── Fallback: stay with current agent
         return RoutingDecision(
             target_agent=current_agent,
             confidence=0.5,
-            reason=f"Fallback to {current_agent} - no specific handler found",
+            reason=f"Fallback to {current_agent} — no specific handler found for stage '{current_stage}'",
             routing_context={
                 'decision_type': 'fallback',
                 'stage': current_stage,
-                'workflow': workflow
+                'workflow': workflow,
+                'intent': intent_value,
             }
         )
     

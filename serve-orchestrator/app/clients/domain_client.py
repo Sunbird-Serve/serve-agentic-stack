@@ -8,6 +8,7 @@ identical so orchestration.py requires no changes.
 Response adaptation: MCP tools return flat dicts; the orchestrator expects
 {"status": "success", "data": {...}}, so we wrap results here.
 """
+import asyncio
 import os
 import json
 import logging
@@ -17,29 +18,49 @@ from uuid import UUID
 logger = logging.getLogger(__name__)
 
 MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://serve-mcp-server:8004")
+_MCP_RETRIES = int(os.environ.get("MCP_RETRIES", "3"))
 
 
 async def _call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict:
-    """Call an MCP server tool via the SSE transport and return its parsed result."""
-    try:
-        from mcp.client.session import ClientSession
-        from mcp.client.sse import sse_client
+    """
+    Call an MCP server tool via the SSE transport with exponential-backoff retry.
 
-        sse_url = f"{MCP_SERVER_URL}/sse"
-        async with sse_client(url=sse_url) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                result = await session.call_tool(tool_name, arguments=arguments)
-                for item in result.content:
-                    if hasattr(item, "text"):
-                        try:
-                            return json.loads(item.text)
-                        except (json.JSONDecodeError, ValueError):
-                            return {"result": item.text}
-        return {}
-    except Exception as e:
-        logger.error(f"MCP tool call failed [{tool_name}]: {e}")
-        return {"status": "error", "error": str(e)}
+    Retries up to _MCP_RETRIES times on transient connection failures (0.5s, 1s, 2s).
+    Returns {"status": "error", ...} on permanent failure so callers can inspect
+    without catching exceptions.
+    """
+    last_error: Exception | None = None
+
+    for attempt in range(_MCP_RETRIES):
+        try:
+            from mcp.client.session import ClientSession
+            from mcp.client.sse import sse_client
+
+            sse_url = f"{MCP_SERVER_URL}/sse"
+            async with sse_client(url=sse_url) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.call_tool(tool_name, arguments=arguments)
+                    for item in result.content:
+                        if hasattr(item, "text"):
+                            try:
+                                return json.loads(item.text)
+                            except (json.JSONDecodeError, ValueError):
+                                return {"result": item.text}
+            return {}
+
+        except Exception as e:
+            last_error = e
+            if attempt < _MCP_RETRIES - 1:
+                wait = 0.5 * (2 ** attempt)  # 0.5s → 1s → 2s
+                logger.warning(
+                    f"MCP tool [{tool_name}] attempt {attempt + 1}/{_MCP_RETRIES} failed: {e}. "
+                    f"Retrying in {wait}s..."
+                )
+                await asyncio.sleep(wait)
+
+    logger.error(f"MCP tool [{tool_name}] failed after {_MCP_RETRIES} attempts: {last_error}")
+    return {"status": "error", "error": str(last_error)}
 
 
 class DomainClient:
@@ -62,11 +83,11 @@ class DomainClient:
         persona: str,
         channel_metadata: Optional[Dict] = None
     ) -> Dict:
-        """Start a new session via MCP."""
-        result = await _call_mcp_tool("start_session", {
-            "channel": channel,
-            "persona": persona,
-        })
+        """Start a new session via MCP, persisting channel_metadata (actor_id, trigger_type, …)."""
+        args: Dict[str, Any] = {"channel": channel, "persona": persona}
+        if channel_metadata:
+            args["channel_metadata"] = channel_metadata
+        result = await _call_mcp_tool("start_session", args)
         if result.get("status") != "success":
             return result
         # Wrap in the "data" envelope the orchestrator expects
@@ -100,15 +121,23 @@ class DomainClient:
         self,
         session_id: UUID,
         new_state: str,
-        sub_state: str = None
+        sub_state: str = None,
+        active_agent: Optional[str] = None,
     ) -> Dict:
-        """Advance session state via MCP."""
+        """
+        Advance session state via MCP.
+
+        active_agent — when provided, also updates the session's active_agent so the
+        next turn is routed to the correct agent after a handoff.
+        """
         args: Dict[str, Any] = {
             "session_id": str(session_id),
             "new_state": new_state,
         }
         if sub_state:
             args["sub_state"] = sub_state
+        if active_agent:
+            args["active_agent"] = active_agent
         return await _call_mcp_tool("advance_session_state", args)
 
     async def save_message(

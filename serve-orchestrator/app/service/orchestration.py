@@ -1,30 +1,69 @@
 """
-SERVE Orchestrator Service - Orchestration Logic (Refactored)
+SERVE Orchestrator Service - Orchestration Logic
 Central coordination layer for SERVE AI with clean abstractions.
 
-This module integrates:
-- AgentRouter for intelligent request routing
-- WorkflowValidator for state transition validation
-- Structured contracts for inter-service communication
+Architecture:
+  Channel Input (InteractionRequest)
+      ↓  [Channel Adapter layer — app/channel/]
+  NormalizedEvent  (actor_id, channel, trigger_type, payload, …)
+      ↓  [process_event — this module]
+  Session resolve/create  →  AgentRouter  →  Agent  →  WorkflowValidator
+      ↓
+  InteractionResponse
+
+Public interface:
+  process_interaction(request)  — thin wrapper that normalises then calls process_event
+  process_event(event)          — main orchestration logic; testable directly
 """
-from uuid import UUID
-from datetime import datetime
+from typing import Optional, Tuple, Dict
+from uuid import UUID, uuid4
+from datetime import datetime, timedelta
 import logging
 
 from app.schemas import (
     InteractionRequest, InteractionResponse, SessionState,
     AgentTurnRequest, AgentTurnResponse,
-    PersonaType, WorkflowType, AgentType, SessionStatus, OnboardingState
+    PersonaType, WorkflowType, AgentType, SessionStatus, OnboardingState,
+    NormalizedEvent, TriggerType, IntentType, IntentResult,
 )
 from app.schemas.contracts import (
     RoutingDecision, TransitionValidation, SessionContext,
     OrchestrationEvent, OrchestrationEventType
 )
 from app.clients import domain_client
+from app.channel.registry import get_adapter
 from app.service.agent_router import agent_router
+from app.service.intent_resolver import intent_resolver
 from app.service.workflow_validator import workflow_validator
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Idempotency cache — prevents duplicate processing of WhatsApp (or other
+# channel) messages that arrive more than once.  Keyed on the idempotency_key
+# set by the channel adapter.  A simple in-memory dict is sufficient for a
+# single-instance deployment; swap for Redis in Phase 6 for multi-replica.
+# ---------------------------------------------------------------------------
+_seen_keys: Dict[str, datetime] = {}
+_DEDUP_TTL = timedelta(minutes=5)
+
+
+def _is_duplicate_event(key: Optional[str]) -> bool:
+    """Return True and record the key if it has been seen within the TTL window."""
+    if not key:
+        return False
+
+    now = datetime.utcnow()
+    # Bounded cleanup: evict expired entries on every check
+    expired = [k for k, t in _seen_keys.items() if (now - t) > _DEDUP_TTL]
+    for k in expired:
+        del _seen_keys[k]
+
+    if key in _seen_keys:
+        return True
+
+    _seen_keys[key] = now
+    return False
 
 
 def determine_workflow(persona: PersonaType) -> WorkflowType:
@@ -74,51 +113,138 @@ class OrchestrationService:
     
     async def process_interaction(self, request: InteractionRequest) -> InteractionResponse:
         """
-        Process an incoming user interaction.
-        
-        This is the main entry point from channel adapters. The flow:
-        1. Resolve or create session
-        2. Route request to appropriate agent
-        3. Validate and apply state transitions
-        4. Return structured response
+        Public entry point for all channel clients.
+
+        Selects the right ChannelAdapter for `request.channel`, normalises the
+        raw InteractionRequest into a NormalizedEvent, then delegates to
+        process_event for all orchestration logic.
         """
+        adapter = get_adapter(request.channel)
+        event = adapter.normalize(request)
+        return await self.process_event(event)
+
+    async def process_event(self, event: NormalizedEvent) -> InteractionResponse:
+        """
+        Core orchestration loop operating on a canonical NormalizedEvent.
+
+        Flow:
+          1. Resume or create session
+          2. Save incoming user message
+          3. Route to appropriate agent
+          4. Invoke agent
+          5. Validate & persist state transition
+          6. Save agent reply
+          7. Emit handoff (if any)
+          8. Build and return InteractionResponse
+
+        Never raises — all failures produce a graceful InteractionResponse so every
+        channel always receives a usable reply rather than an HTTP 5xx.
+        """
+        # ── Idempotency guard — reject duplicate webhook deliveries early so we
+        #    never double-charge the LLM or produce double replies to the user.
+        if _is_duplicate_event(event.idempotency_key):
+            logger.warning(
+                f"Duplicate event suppressed: idempotency_key={event.idempotency_key!r} "
+                f"actor={event.actor_id!r}"
+            )
+            return InteractionResponse(
+                session_id=event.session_id,
+                assistant_message="",   # empty — channel adapter should NOT forward to user
+                active_agent=AgentType.ONBOARDING,
+                workflow=WorkflowType.NEW_VOLUNTEER_ONBOARDING,
+                state="",
+                is_complete=False,
+                is_duplicate=True,
+                debug_info={"duplicate": True, "idempotency_key": event.idempotency_key},
+            )
+
         start_time = datetime.utcnow()
         session_context = None
         conversation = []
-        
+
         # Step 1: Resolve or create session
-        if request.session_id:
-            session_context, conversation = await self._resume_session(request)
-        
+        if event.session_id:
+            session_context, conversation = await self._resume_session(event)
+
         if not session_context:
-            session_context = await self._create_session(request)
-        
+            session_context = await self._create_session(event)
+
+        if not session_context:
+            logger.error(
+                f"Session creation failed for actor={event.actor_id!r} "
+                f"channel={event.channel.value} — MCP server may be unavailable"
+            )
+            return self._fallback_response(
+                session_id=event.session_id,
+                message="I'm having trouble connecting right now. Please try again in a moment.",
+                persona=event.persona,
+            )
+
         # Log session context established
         self._log_event(
             session_id=session_context.session_id,
-            event_type=OrchestrationEventType.SESSION_RESUMED if request.session_id 
+            event_type=OrchestrationEventType.SESSION_RESUMED if event.session_id
                        else OrchestrationEventType.SESSION_CREATED,
             workflow=session_context.workflow,
             stage=session_context.current_stage,
-            details={'channel': session_context.channel, 'persona': session_context.persona}
+            details={
+                'channel': session_context.channel,
+                'persona': session_context.persona,
+                'actor_id': event.actor_id,
+                'trigger_type': event.trigger_type.value,
+            }
         )
-        
-        # Step 2: Save user message
-        await domain_client.save_message(
+
+        # Step 2: Resolve intent — before saving message so terminal intents
+        #         (pause, escalate, restart) can short-circuit without wasting
+        #         storage writes.
+        intent_result = intent_resolver.resolve(event, session_context)
+        self._log_event(
+            session_id=session_context.session_id,
+            event_type=OrchestrationEventType.INTENT_RESOLVED,
+            details={
+                'intent': intent_result.intent.value,
+                'confidence': intent_result.confidence,
+                'signal': intent_result.metadata.get('signal'),
+                'matched': intent_result.metadata.get('matched'),
+            }
+        )
+
+        # Step 2a: Short-circuit on terminal intents handled at orchestrator level
+        if intent_result.intent == IntentType.PAUSE_SESSION:
+            return await self._handle_pause(session_context, event, intent_result)
+
+        if intent_result.intent == IntentType.ESCALATE:
+            return await self._handle_escalation(session_context, event, intent_result)
+
+        if intent_result.intent == IntentType.RESTART:
+            return await self._handle_restart(event, intent_result)
+
+        # Step 3: Save user message (non-critical — log warning on failure but continue)
+        save_result = await domain_client.save_message(
             session_id=session_context.session_id,
             role="user",
-            content=request.message,
+            content=event.payload,
             agent=session_context.active_agent
         )
-        
+        if save_result.get("status") == "error":
+            logger.warning(
+                f"[{session_context.session_id}] Failed to save user message: "
+                f"{save_result.get('error')}"
+            )
+
         # Log message received
         self._log_event(
             session_id=session_context.session_id,
             event_type=OrchestrationEventType.MESSAGE_RECEIVED,
-            details={'message_length': len(request.message)}
+            details={
+                'message_length': len(event.payload),
+                'trigger_type': event.trigger_type.value,
+                'intent': intent_result.intent.value,
+            }
         )
-        
-        # Step 3: Make routing decision
+
+        # Step 4: Make routing decision (intent-aware)
         session_state = SessionState(
             id=session_context.session_id,
             channel=session_context.channel,
@@ -132,33 +258,39 @@ class OrchestrationService:
             created_at=session_context.created_at.isoformat() if session_context.created_at else None,
             updated_at=session_context.updated_at.isoformat() if session_context.updated_at else None
         )
-        
-        routing_decision = agent_router.make_routing_decision(session_state, request.message)
-        
-        # Log routing decision
+
+        routing_decision = agent_router.make_routing_decision(
+            session_context=session_state,
+            user_message=event.payload,
+            intent=intent_result,
+        )
+
         agent_router.log_routing_event(
             session_id=session_context.session_id,
             decision=routing_decision
         )
-        
-        # Step 4: Invoke agent
+
+        # Step 5: Invoke agent, passing the resolved intent as a hint
         agent_request = AgentTurnRequest(
             session_id=session_context.session_id,
             session_state=session_state,
-            user_message=request.message,
-            conversation_history=conversation
+            user_message=event.payload,
+            conversation_history=conversation,
+            intent_hint=intent_result.intent.value,
         )
-        
+
         self._log_event(
             session_id=session_context.session_id,
             event_type=OrchestrationEventType.AGENT_INVOKED,
             agent=routing_decision.target_agent,
-            details={'confidence': routing_decision.confidence}
+            details={
+                'confidence': routing_decision.confidence,
+                'intent': intent_result.intent.value,
+            }
         )
-        
+
         agent_response = await agent_router.invoke_agent(routing_decision, agent_request)
-        
-        # Log agent response
+
         agent_duration = (datetime.utcnow() - start_time).total_seconds() * 1000
         self._log_event(
             session_id=session_context.session_id,
@@ -171,8 +303,9 @@ class OrchestrationService:
                 'completion_status': agent_response.completion_status
             }
         )
-        
-        # Step 5: Validate and apply state transition
+
+        # Step 6: Validate and apply state transition
+        # (was Step 5 before intent resolution was added)
         if agent_response.state != session_context.current_stage:
             validation = workflow_validator.validate_transition(
                 workflow_id=session_context.workflow,
@@ -181,64 +314,104 @@ class OrchestrationService:
                 confirmed_fields=agent_response.confirmed_fields,
                 session_id=session_context.session_id
             )
-            
+
             workflow_validator.log_validation_event(
                 session_id=session_context.session_id,
                 validation=validation,
                 workflow_id=session_context.workflow
             )
-            
+
             if validation.is_valid:
-                await domain_client.advance_state(
+                advance_result = await domain_client.advance_state(
                     session_id=session_context.session_id,
                     new_state=agent_response.state,
                     sub_state=agent_response.sub_state
                 )
+                if advance_result.get("status") == "error":
+                    logger.warning(
+                        f"[{session_context.session_id}] State advance "
+                        f"({session_context.current_stage} → {agent_response.state}) "
+                        f"failed: {advance_result.get('error')}"
+                    )
             else:
-                logger.warning(f"Invalid transition blocked: {validation.reason}")
-        
-        # Step 6: Save assistant message
-        await domain_client.save_message(
+                logger.warning(
+                    f"[{session_context.session_id}] Transition blocked "
+                    f"({session_context.current_stage} → {agent_response.state}): "
+                    f"{validation.reason}"
+                )
+
+        # Step 6: Save assistant message (non-critical — log warning on failure)
+        save_result = await domain_client.save_message(
             session_id=session_context.session_id,
             role="assistant",
             content=agent_response.assistant_message,
             agent=agent_response.active_agent.value
         )
-        
+        if save_result.get("status") == "error":
+            logger.warning(
+                f"[{session_context.session_id}] Failed to save assistant message: "
+                f"{save_result.get('error')}"
+            )
+
         # Step 7: Handle handoff if present
         if agent_response.handoff_event:
-            await domain_client.emit_handoff_event(
+            to_agent_value = agent_response.handoff_event.to_agent.value
+
+            handoff_result = await domain_client.emit_handoff_event(
                 session_id=session_context.session_id,
                 from_agent=agent_response.handoff_event.from_agent.value,
-                to_agent=agent_response.handoff_event.to_agent.value,
+                to_agent=to_agent_value,
                 handoff_type=agent_response.handoff_event.handoff_type.value,
                 payload=agent_response.handoff_event.payload,
                 reason=agent_response.handoff_event.reason
             )
-            
+            if handoff_result.get("status") == "error":
+                logger.warning(
+                    f"[{session_context.session_id}] Handoff event emit failed: "
+                    f"{handoff_result.get('error')}"
+                )
+
+            # Critical: persist the new active_agent so the *next* turn routes to
+            # the correct agent instead of looping back to the one that just handed off.
+            handoff_advance = await domain_client.advance_state(
+                session_id=session_context.session_id,
+                new_state=agent_response.state,   # keep state unchanged; only agent changes
+                active_agent=to_agent_value,
+            )
+            if handoff_advance.get("status") == "error":
+                logger.warning(
+                    f"[{session_context.session_id}] Failed to persist active_agent "
+                    f"after handoff to {to_agent_value!r}: {handoff_advance.get('error')}"
+                )
+            else:
+                logger.info(
+                    f"[{session_context.session_id}] active_agent updated → {to_agent_value!r}"
+                )
+
             self._log_event(
                 session_id=session_context.session_id,
                 event_type=OrchestrationEventType.HANDOFF_INITIATED,
-                agent=agent_response.handoff_event.to_agent.value,
+                agent=to_agent_value,
                 details={
                     'from_agent': agent_response.handoff_event.from_agent.value,
-                    'reason': agent_response.handoff_event.reason
+                    'to_agent': to_agent_value,
+                    'reason': agent_response.handoff_event.reason,
                 }
             )
-        
+
         # Step 8: Calculate progress and build response
         progress_percent = workflow_validator.get_completion_percentage(
             workflow_id=session_context.workflow,
             current_stage=agent_response.state
         )
-        
+
         is_complete = workflow_validator.is_terminal_stage(
             workflow_id=session_context.workflow,
             stage=agent_response.state
         )
-        
+
         total_duration = (datetime.utcnow() - start_time).total_seconds() * 1000
-        
+
         return InteractionResponse(
             session_id=session_context.session_id,
             assistant_message=agent_response.assistant_message,
@@ -247,6 +420,7 @@ class OrchestrationService:
             state=agent_response.state,
             sub_state=agent_response.sub_state,
             status=SessionStatus.COMPLETED if is_complete else SessionStatus.ACTIVE,
+            is_complete=is_complete,
             journey_progress={
                 "current_state": agent_response.state,
                 "progress_percent": progress_percent,
@@ -254,6 +428,11 @@ class OrchestrationService:
                 "missing_fields": agent_response.missing_fields,
             },
             debug_info={
+                "intent": {
+                    "type": intent_result.intent.value,
+                    "confidence": intent_result.confidence,
+                    "signal": intent_result.metadata.get("signal"),
+                },
                 "routing": {
                     "target_agent": routing_decision.target_agent,
                     "confidence": routing_decision.confidence,
@@ -261,31 +440,33 @@ class OrchestrationService:
                 },
                 "timing_ms": total_duration,
                 "telemetry_events": [e.model_dump(mode="json") for e in agent_response.telemetry_events]
-            } if agent_response.telemetry_events else None
+            }
         )
-    
-    async def _resume_session(self, request: InteractionRequest) -> tuple:
+
+    async def _resume_session(self, event: NormalizedEvent) -> Tuple[Optional[SessionContext], list]:
         """
-        Resume an existing session.
-        
-        Returns:
-            Tuple of (SessionContext, conversation_history)
+        Resume an existing session by its ID.
+
+        Returns (SessionContext, conversation_history) on success, (None, []) on any failure.
         """
-        resume_result = await domain_client.resume_context(request.session_id)
-        
+        resume_result = await domain_client.resume_context(event.session_id)
+
         if resume_result.get("status") != "success":
             return None, []
-        
+
         data = resume_result.get("data", {})
         session_data = data.get("session")
-        
+
         if not session_data:
             return None, []
-        
+
         session_context = SessionContext(
             session_id=UUID(session_data["id"]),
-            channel=request.channel.value,
-            persona=request.persona.value if request.persona else session_data.get("persona", "new_volunteer"),
+            channel=event.channel.value,
+            persona=(
+                event.persona.value if event.persona
+                else session_data.get("persona", "new_volunteer")
+            ),
             workflow=session_data["workflow"],
             active_agent=session_data["active_agent"],
             status=session_data["status"],
@@ -296,37 +477,47 @@ class OrchestrationService:
             created_at=datetime.fromisoformat(session_data["created_at"]) if session_data.get("created_at") else None,
             updated_at=datetime.fromisoformat(session_data["updated_at"]) if session_data.get("updated_at") else None
         )
-        
-        conversation = data.get("conversation_history", [])
-        
-        return session_context, conversation
-    
-    async def _create_session(self, request: InteractionRequest) -> SessionContext:
+
+        return session_context, data.get("conversation_history", [])
+
+    async def _create_session(self, event: NormalizedEvent) -> Optional[SessionContext]:
         """
-        Create a new session.
-        
-        Returns:
-            SessionContext for the new session
+        Create a new session via the MCP server.
+
+        Passes actor_id and trigger_type in channel_metadata so the MCP server
+        can persist them against the session record for future persona resolution.
+        Returns None on failure so the caller can issue a graceful fallback response.
         """
-        persona = request.persona or PersonaType.NEW_VOLUNTEER
+        persona = event.persona or PersonaType.NEW_VOLUNTEER
         workflow = determine_workflow(persona)
         initial_agent = determine_initial_agent(workflow)
-        
+
+        # Merge actor_id + trigger_type into channel_metadata
+        channel_metadata = {
+            "actor_id": event.actor_id,
+            "trigger_type": event.trigger_type.value,
+            **event.raw_metadata,
+        }
+
         start_result = await domain_client.start_session(
-            channel=request.channel.value,
+            channel=event.channel.value,
             persona=persona.value,
-            channel_metadata=request.channel_metadata
+            channel_metadata=channel_metadata,
         )
-        
+
         if start_result.get("status") != "success":
-            raise Exception("Failed to create session")
-        
+            logger.error(
+                f"MCP start_session failed for actor={event.actor_id!r}: "
+                f"status={start_result.get('status')!r} error={start_result.get('error')!r}"
+            )
+            return None
+
         session_id = UUID(start_result["data"]["session_id"])
         now = datetime.utcnow()
-        
+
         return SessionContext(
             session_id=session_id,
-            channel=request.channel.value,
+            channel=event.channel.value,
             persona=persona.value,
             workflow=workflow.value,
             active_agent=initial_agent.value,
@@ -334,6 +525,183 @@ class OrchestrationService:
             current_stage=start_result["data"].get("stage", OnboardingState.INIT.value),
             created_at=now,
             updated_at=now
+        )
+
+    # ------------------------------------------------------------------ #
+    #  Terminal intent handlers — short-circuit without invoking agents  #
+    # ------------------------------------------------------------------ #
+
+    async def _handle_pause(
+        self,
+        session_context: SessionContext,
+        event: NormalizedEvent,
+        intent_result: IntentResult,
+    ) -> InteractionResponse:
+        """
+        Pause the session and return a farewell response.
+        Advances the session state to 'paused' so a future resume restores context.
+        """
+        await domain_client.save_message(
+            session_id=session_context.session_id,
+            role="user",
+            content=event.payload,
+            agent=session_context.active_agent,
+        )
+        await domain_client.advance_state(
+            session_id=session_context.session_id,
+            new_state="paused",
+        )
+        msg = (
+            intent_result.suggested_response
+            or "No problem! I've saved your progress. Come back anytime and we'll pick up right where you left off."
+        )
+        await domain_client.save_message(
+            session_id=session_context.session_id,
+            role="assistant",
+            content=msg,
+            agent=session_context.active_agent,
+        )
+        self._log_event(
+            session_id=session_context.session_id,
+            event_type=OrchestrationEventType.STATE_TRANSITION,
+            stage="paused",
+            details={"intent": "pause_session", "from_stage": session_context.current_stage},
+        )
+        return InteractionResponse(
+            session_id=session_context.session_id,
+            assistant_message=msg,
+            active_agent=AgentType(session_context.active_agent),
+            workflow=WorkflowType(session_context.workflow),
+            state="paused",
+            status=SessionStatus.PAUSED,
+        )
+
+    async def _handle_escalation(
+        self,
+        session_context: SessionContext,
+        event: NormalizedEvent,
+        intent_result: IntentResult,
+    ) -> InteractionResponse:
+        """
+        Mark session for human review and return a handoff acknowledgement.
+        Uses 'paused' state + 'human_review' sub_state so both onboarding and
+        need workflows are handled gracefully without requiring new workflow states.
+        """
+        await domain_client.save_message(
+            session_id=session_context.session_id,
+            role="user",
+            content=event.payload,
+            agent=session_context.active_agent,
+        )
+        await domain_client.advance_state(
+            session_id=session_context.session_id,
+            new_state="paused",
+            sub_state="human_review",
+        )
+        msg = (
+            intent_result.suggested_response
+            or (
+                "I understand you'd like to speak with a person. "
+                "I've flagged your session for our support team and someone will be in touch shortly. "
+                "Your progress has been saved."
+            )
+        )
+        await domain_client.save_message(
+            session_id=session_context.session_id,
+            role="assistant",
+            content=msg,
+            agent=session_context.active_agent,
+        )
+        self._log_event(
+            session_id=session_context.session_id,
+            event_type=OrchestrationEventType.HANDOFF_INITIATED,
+            details={"intent": "escalate", "sub_state": "human_review"},
+        )
+        return InteractionResponse(
+            session_id=session_context.session_id,
+            assistant_message=msg,
+            active_agent=AgentType(session_context.active_agent),
+            workflow=WorkflowType(session_context.workflow),
+            state="paused",
+            sub_state="human_review",
+            status=SessionStatus.ESCALATED,
+        )
+
+    async def _handle_restart(
+        self,
+        event: NormalizedEvent,
+        intent_result: IntentResult,
+    ) -> InteractionResponse:
+        """
+        Discard session_id and create a completely fresh session for the actor.
+        The old session remains in Postgres for audit purposes.
+        """
+        fresh_event = NormalizedEvent(
+            actor_id=event.actor_id,
+            channel=event.channel,
+            trigger_type=event.trigger_type,
+            payload=event.payload,
+            session_id=None,
+            persona=event.persona,
+            raw_metadata={**event.raw_metadata, "restart": True},
+        )
+        new_context = await self._create_session(fresh_event)
+        if not new_context:
+            return self._fallback_response(
+                session_id=None,
+                message="I'm having trouble starting a new session. Please try again in a moment.",
+                persona=event.persona,
+            )
+        msg = (
+            intent_result.suggested_response
+            or (
+                "Of course! Let's start fresh. "
+                "Welcome — I'm here to help you join eVidyaloka as a volunteer. "
+                "What would you like to do today?"
+            )
+        )
+        await domain_client.save_message(
+            session_id=new_context.session_id,
+            role="assistant",
+            content=msg,
+            agent=new_context.active_agent,
+        )
+        self._log_event(
+            session_id=new_context.session_id,
+            event_type=OrchestrationEventType.SESSION_CREATED,
+            workflow=new_context.workflow,
+            stage=new_context.current_stage,
+            details={"intent": "restart", "actor_id": event.actor_id},
+        )
+        return InteractionResponse(
+            session_id=new_context.session_id,
+            assistant_message=msg,
+            active_agent=AgentType(new_context.active_agent),
+            workflow=WorkflowType(new_context.workflow),
+            state=new_context.current_stage,
+            status=SessionStatus.ACTIVE,
+        )
+
+    def _fallback_response(
+        self,
+        session_id: Optional[UUID],
+        message: str,
+        persona: Optional[PersonaType] = None,
+    ) -> InteractionResponse:
+        """
+        Construct a safe fallback InteractionResponse when the orchestrator cannot
+        complete the normal flow (e.g. MCP server is down).
+        """
+        _persona = persona or PersonaType.NEW_VOLUNTEER
+        _workflow = determine_workflow(_persona)
+        _agent = determine_initial_agent(_workflow)
+        return InteractionResponse(
+            session_id=session_id or uuid4(),
+            assistant_message=message,
+            active_agent=_agent,
+            workflow=_workflow,
+            state=OnboardingState.INIT.value,
+            status=SessionStatus.ACTIVE,
         )
     
     def _log_event(

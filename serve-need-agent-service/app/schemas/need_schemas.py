@@ -75,7 +75,7 @@ class Coordinator(BaseModel):
     """Coordinator profile."""
     id: Optional[str] = None
     name: str
-    whatsapp_number: str
+    whatsapp_number: Optional[str] = None  # not always available via web UI channel
     email: Optional[str] = None
     school_ids: List[str] = Field(default_factory=list)
     is_verified: bool = False
@@ -85,7 +85,7 @@ class School(BaseModel):
     """School context."""
     id: Optional[str] = None
     name: str
-    location: str
+    location: Optional[str] = None  # not always provided during initial drafting
     contact_number: Optional[str] = None
     coordinator_ids: List[str] = Field(default_factory=list)
     previous_needs: List[str] = Field(default_factory=list)

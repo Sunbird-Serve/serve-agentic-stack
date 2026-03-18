@@ -15,6 +15,17 @@ class ChannelType(str, Enum):
     WEB_UI = "web_ui"
     WHATSAPP = "whatsapp"
     API = "api"
+    SCHEDULER = "scheduler"
+    MOBILE = "mobile"
+
+
+class TriggerType(str, Enum):
+    """What caused this event to enter the orchestrator."""
+    USER_MESSAGE = "user_message"       # Human typed a message
+    SYSTEM_TRIGGER = "system_trigger"   # Internal orchestration event
+    SCHEDULED = "scheduled"             # Scheduler-triggered (cron/timer)
+    WEBHOOK = "webhook"                 # Inbound webhook notification
+    RESUME = "resume"                   # Explicit re-open of a paused session
 
 
 class PersonaType(str, Enum):
@@ -76,6 +87,21 @@ class NeedWorkflowState(str, Enum):
     FULFILLMENT_HANDOFF_READY = "fulfillment_handoff_ready"
 
 
+class IntentType(str, Enum):
+    """
+    What the user intends to do with this message.
+    Resolved before agent routing so the orchestrator can short-circuit
+    workflow-control signals (pause, escalate, restart) without touching agents.
+    """
+    START_WORKFLOW = "start_workflow"        # First contact — no session exists
+    CONTINUE_WORKFLOW = "continue_workflow"  # Normal progression through a workflow
+    RESUME_SESSION = "resume_session"        # Re-engaging a paused session
+    SEEK_HELP = "seek_help"                  # User is confused or stuck
+    PAUSE_SESSION = "pause_session"          # User wants to stop for now
+    RESTART = "restart"                      # User wants to begin from scratch
+    ESCALATE = "escalate"                    # User requests a human agent
+
+
 class HandoffType(str, Enum):
     AGENT_TRANSITION = "agent_transition"
     RESUME = "resume"
@@ -92,6 +118,58 @@ class EventType(str, Enum):
     HANDOFF = "handoff"
     ERROR = "error"
     USER_MESSAGE = "user_message"
+
+
+# ============ Channel Adapter Model ============
+
+class NormalizedEvent(BaseModel):
+    """
+    Canonical internal representation of any inbound event, regardless of channel.
+
+    Every channel adapter transforms its raw input into this model. All downstream
+    orchestration logic operates exclusively on NormalizedEvent so it stays
+    decoupled from channel-specific concerns.
+
+    Fields:
+        actor_id:        Stable identifier for who triggered the event.
+                         WhatsApp → phone number, Web UI → user_id / session stub,
+                         Scheduler → job_id, API → client_id.
+        channel:         Which channel the event arrived on.
+        trigger_type:    Nature of the trigger (message, scheduled, webhook, etc.).
+        payload:         The actual message text or content.
+        session_id:      Present when this is a continuation of an existing session.
+        persona:         Explicit persona override from the channel; resolved by the
+                         orchestrator if absent.
+        raw_metadata:    Original channel-specific data preserved verbatim.
+        idempotency_key: Deduplication key (e.g. WhatsApp message_id / wamid).
+        timestamp:       When the event was received.
+    """
+    actor_id: str
+    channel: ChannelType
+    trigger_type: TriggerType
+    payload: str
+    session_id: Optional[UUID] = None
+    persona: Optional["PersonaType"] = None
+    raw_metadata: Dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: Optional[str] = None
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+class IntentResult(BaseModel):
+    """
+    Output of the IntentResolver.
+
+    intent:            Classified intent type.
+    confidence:        Resolver confidence [0–1]; lower values indicate ambiguity.
+    suggested_response: Optional canned text for terminal intents (pause, escalate,
+                       restart) that the orchestrator returns directly without
+                       invoking an agent.
+    metadata:          Diagnostic info (which signal fired, matched keyword, etc.).
+    """
+    intent: "IntentType"
+    confidence: float = Field(ge=0.0, le=1.0, default=1.0)
+    suggested_response: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ============ Session State Model ============
@@ -125,13 +203,15 @@ class InteractionRequest(BaseModel):
 
 class InteractionResponse(BaseModel):
     """Response from orchestrator to channel"""
-    session_id: UUID
+    session_id: Optional[UUID] = None
     assistant_message: str
     active_agent: AgentType
     workflow: WorkflowType
     state: str
     sub_state: Optional[str] = None
-    status: SessionStatus
+    status: SessionStatus = SessionStatus.ACTIVE
+    is_complete: bool = False
+    is_duplicate: bool = False          # True when idempotency check rejects a repeat event
     journey_progress: Optional[Dict[str, Any]] = None
     debug_info: Optional[Dict[str, Any]] = None
 
@@ -144,6 +224,7 @@ class AgentTurnRequest(BaseModel):
     session_state: SessionState
     user_message: str
     conversation_history: List[Dict[str, str]] = []
+    intent_hint: Optional[str] = None  # resolved intent value, e.g. "seek_help"
 
 
 class HandoffEvent(BaseModel):

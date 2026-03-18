@@ -40,11 +40,19 @@ class SessionService:
     async def create_session(
         self,
         channel: str = "web_ui",
-        persona: str = "new_volunteer"
+        persona: str = "new_volunteer",
+        channel_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Create a new session with persona-aware workflow and stage."""
+        """
+        Create a new session with persona-aware workflow and stage.
+
+        channel_metadata is persisted to the sessions.channel_metadata JSON column
+        so downstream services can access actor_id, trigger_type, and any other
+        channel-specific context associated with this session.
+        """
         session_id = str(uuid4())
         now = datetime.utcnow()
+        meta = channel_metadata or {}
 
         # Derive workflow, agent, and initial stage from persona
         if persona == "need_coordinator":
@@ -69,6 +77,7 @@ class SessionService:
                         active_agent=active_agent,
                         status="active",
                         stage=stage,
+                        channel_metadata=meta if meta else None,
                         created_at=now,
                         updated_at=now
                     )
@@ -87,7 +96,10 @@ class SessionService:
 
                     await db.flush()
 
-                logger.info(f"Session created in Postgres: {session_id} (persona={persona})")
+                logger.info(
+                    f"Session created in Postgres: {session_id} "
+                    f"(persona={persona}, actor_id={meta.get('actor_id', 'unknown')})"
+                )
                 return {
                     "status": "success",
                     "session_id": session_id,
@@ -109,6 +121,7 @@ class SessionService:
             "stage": stage,
             "sub_state": None,
             "context_summary": None,
+            "channel_metadata": meta,
             "created_at": now.isoformat(),
             "updated_at": now.isoformat(),
         }
@@ -116,7 +129,10 @@ class SessionService:
         _memory_store.messages[session_id] = []
         _memory_store.telemetry[session_id] = []
 
-        logger.info(f"Session created in memory: {session_id}")
+        logger.info(
+            f"Session created in memory: {session_id} "
+            f"(actor_id={meta.get('actor_id', 'unknown')})"
+        )
         return {
             "status": "success",
             "session_id": session_id,
@@ -231,9 +247,16 @@ class SessionService:
         self,
         session_id: str,
         new_state: str,
-        sub_state: Optional[str] = None
+        sub_state: Optional[str] = None,
+        active_agent: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Advance session to new state, persisting to PostgreSQL if available."""
+        """
+        Advance session to a new state, persisting to PostgreSQL if available.
+
+        active_agent — when provided, the session's active_agent column is also
+        updated.  This is critical after an agent handoff so the next turn routes
+        to the correct agent rather than the one that just finished.
+        """
         if await self._check_postgres():
             try:
                 from .database import get_db, Session
@@ -246,25 +269,34 @@ class SessionService:
                     if session_obj:
                         old_state = session_obj.stage
                         new_status = session_obj.status
-                        if new_state in ("onboarding_complete", "need_submitted"):
+                        if new_state in ("onboarding_complete", "need_submitted", "fulfillment_handoff_ready", "approved"):
                             new_status = "completed"
+
+                        update_values: Dict[str, Any] = {
+                            "stage": new_state,
+                            "sub_state": sub_state,
+                            "status": new_status,
+                            "updated_at": datetime.utcnow(),
+                        }
+                        if active_agent is not None:
+                            update_values["active_agent"] = active_agent
 
                         await db.execute(
                             update(Session)
                             .where(Session.id == UUID(session_id))
-                            .values(
-                                stage=new_state,
-                                sub_state=sub_state,
-                                status=new_status,
-                                updated_at=datetime.utcnow()
-                            )
+                            .values(**update_values)
                         )
-                        logger.info(f"State advanced in Postgres: {session_id} {old_state} -> {new_state}")
+                        logger.info(
+                            f"State advanced in Postgres: {session_id} "
+                            f"{old_state} -> {new_state}"
+                            + (f" (agent -> {active_agent})" if active_agent else "")
+                        )
                         return {
                             "status": "success",
                             "previous_state": old_state,
                             "current_state": new_state,
-                            "is_valid": True
+                            "active_agent": active_agent or session_obj.active_agent,
+                            "is_valid": True,
                         }
             except Exception as e:
                 logger.warning(f"Postgres advance_state failed, using memory: {e}")
@@ -275,13 +307,16 @@ class SessionService:
             _memory_store.sessions[session_id]["stage"] = new_state
             _memory_store.sessions[session_id]["sub_state"] = sub_state
             _memory_store.sessions[session_id]["updated_at"] = datetime.utcnow().isoformat()
-            if new_state in ("onboarding_complete", "need_submitted"):
+            if new_state in ("onboarding_complete", "need_submitted", "fulfillment_handoff_ready", "approved"):
                 _memory_store.sessions[session_id]["status"] = "completed"
+            if active_agent is not None:
+                _memory_store.sessions[session_id]["active_agent"] = active_agent
             return {
                 "status": "success",
                 "previous_state": old_state,
                 "current_state": new_state,
-                "is_valid": True
+                "active_agent": active_agent,
+                "is_valid": True,
             }
 
         return {"status": "error", "error": f"Session {session_id} not found"}

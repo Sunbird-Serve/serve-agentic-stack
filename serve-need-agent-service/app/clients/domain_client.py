@@ -31,6 +31,7 @@ Tool name mapping (former REST endpoint → MCP tool):
   pause-session (shared)    → pause_need_session
   emit-handoff-event(shared)→ emit_handoff_event
 """
+import asyncio
 import os
 import json
 import logging
@@ -40,29 +41,49 @@ from uuid import UUID
 logger = logging.getLogger(__name__)
 
 MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://serve-mcp-server:8004")
+_MCP_RETRIES = int(os.environ.get("MCP_RETRIES", "3"))
 
 
 async def _call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict:
-    """Call an MCP server tool via the SSE transport and return its parsed result."""
-    try:
-        from mcp.client.session import ClientSession
-        from mcp.client.sse import sse_client
+    """
+    Call an MCP server tool via the SSE transport with exponential-backoff retry.
 
-        sse_url = f"{MCP_SERVER_URL}/sse"
-        async with sse_client(url=sse_url) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                result = await session.call_tool(tool_name, arguments=arguments)
-                for item in result.content:
-                    if hasattr(item, "text"):
-                        try:
-                            return json.loads(item.text)
-                        except (json.JSONDecodeError, ValueError):
-                            return {"result": item.text}
-        return {}
-    except Exception as e:
-        logger.error(f"MCP tool call failed [{tool_name}]: {e}")
-        return {"status": "error", "error": str(e)}
+    Retries up to _MCP_RETRIES times on transient connection failures (0.5s, 1s, 2s).
+    Returns {"status": "error", ...} on permanent failure so callers can inspect
+    without catching exceptions.
+    """
+    last_error: Exception | None = None
+
+    for attempt in range(_MCP_RETRIES):
+        try:
+            from mcp.client.session import ClientSession
+            from mcp.client.sse import sse_client
+
+            sse_url = f"{MCP_SERVER_URL}/sse"
+            async with sse_client(url=sse_url) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.call_tool(tool_name, arguments=arguments)
+                    for item in result.content:
+                        if hasattr(item, "text"):
+                            try:
+                                return json.loads(item.text)
+                            except (json.JSONDecodeError, ValueError):
+                                return {"result": item.text}
+            return {}
+
+        except Exception as e:
+            last_error = e
+            if attempt < _MCP_RETRIES - 1:
+                wait = 0.5 * (2 ** attempt)  # 0.5s → 1s → 2s
+                logger.warning(
+                    f"MCP tool [{tool_name}] attempt {attempt + 1}/{_MCP_RETRIES} failed: {e}. "
+                    f"Retrying in {wait}s..."
+                )
+                await asyncio.sleep(wait)
+
+    logger.error(f"MCP tool [{tool_name}] failed after {_MCP_RETRIES} attempts: {last_error}")
+    return {"status": "error", "error": str(last_error)}
 
 
 class DomainClient:

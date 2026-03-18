@@ -210,10 +210,57 @@ NEED_COORDINATION_WORKFLOW = WorkflowDefinition(
 )
 
 
+# Define the Returning Volunteer Engagement workflow
+RETURNING_VOLUNTEER_WORKFLOW = WorkflowDefinition(
+    workflow_id='returning_volunteer',
+    display_name='Returning Volunteer Re-engagement',
+    description='Re-engages returning volunteers, refreshes their profile, and prepares them for matching',
+    initial_stage='re_engaging',
+    terminal_stages=['matching_ready'],
+    stages={
+        're_engaging': WorkflowStageDefinition(
+            stage_id='re_engaging',
+            display_name='Welcome Back',
+            responsible_agent='engagement',
+            valid_next_stages=['profile_refresh', 'paused'],
+            required_fields=[],
+            can_pause=True,
+        ),
+        'profile_refresh': WorkflowStageDefinition(
+            stage_id='profile_refresh',
+            display_name='Update Your Profile',
+            responsible_agent='engagement',
+            valid_next_stages=['matching_ready', 'paused'],
+            required_fields=['availability'],
+            optional_fields=['skills', 'interests', 'preferred_causes'],
+            can_pause=True,
+        ),
+        'matching_ready': WorkflowStageDefinition(
+            stage_id='matching_ready',
+            display_name='Ready for Matching',
+            responsible_agent='engagement',
+            valid_next_stages=[],  # Terminal — hand off to selection agent
+            required_fields=['availability'],
+            can_pause=False,
+            can_skip=False,
+        ),
+        'paused': WorkflowStageDefinition(
+            stage_id='paused',
+            display_name='Paused',
+            responsible_agent='engagement',
+            valid_next_stages=['re_engaging', 'profile_refresh'],
+            required_fields=[],
+            can_pause=False,
+        ),
+    }
+)
+
+
 # Registry of all workflows
 WORKFLOW_REGISTRY: Dict[str, WorkflowDefinition] = {
     'new_volunteer_onboarding': NEW_VOLUNTEER_ONBOARDING_WORKFLOW,
     'need_coordination': NEED_COORDINATION_WORKFLOW,
+    'returning_volunteer': RETURNING_VOLUNTEER_WORKFLOW,
 }
 
 
@@ -385,7 +432,10 @@ class WorkflowValidator:
                 'initiated', 'resolving_coordinator', 'resolving_school',
                 'drafting_need', 'pending_approval', 'approved',
                 'fulfillment_handoff_ready'
-            ]
+            ],
+            'returning_volunteer': [
+                're_engaging', 'profile_refresh', 'matching_ready'
+            ],
         }
         
         stage_order = stage_orders.get(workflow_id, [])

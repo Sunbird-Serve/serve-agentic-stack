@@ -71,19 +71,27 @@ mcp = FastMCP(
 @mcp.tool()
 async def start_session(
     channel: str = "web_ui",
-    persona: str = "new_volunteer"
+    persona: str = "new_volunteer",
+    channel_metadata: Optional[Dict[str, Any]] = None,
 ) -> dict:
     """
     Start a new volunteer onboarding session.
-    
+
     Args:
-        channel: The channel through which the volunteer is interacting (web_ui, whatsapp, api)
+        channel: The channel through which the user is interacting
+                 (web_ui, whatsapp, api, scheduler, mobile)
         persona: The type of user (new_volunteer, returning_volunteer, need_coordinator)
-    
+        channel_metadata: Optional channel-specific context, e.g.
+                          {"actor_id": "+919876543210", "trigger_type": "user_message"}
+
     Returns:
         Dictionary containing session_id, initial stage, and status
     """
-    result = await session_service.create_session(channel=channel, persona=persona)
+    result = await session_service.create_session(
+        channel=channel,
+        persona=persona,
+        channel_metadata=channel_metadata,
+    )
     logger.info(f"MCP Tool: start_session created session {result.get('session_id', 'unknown')}")
     return result
 
@@ -123,25 +131,30 @@ async def resume_session(session_id: str) -> dict:
 async def advance_session_state(
     session_id: str,
     new_state: str,
-    sub_state: Optional[str] = None
+    sub_state: Optional[str] = None,
+    active_agent: Optional[str] = None,
 ) -> dict:
     """
-    Advance a session to a new state in the onboarding workflow.
-    
+    Advance a session to a new state in the workflow.
+
     Args:
-        session_id: The UUID of the session
-        new_state: The target state (init, intent_discovery, purpose_orientation, etc.)
-        sub_state: Optional sub-state for more granular tracking
-    
+        session_id:   The UUID of the session.
+        new_state:    The target workflow stage.
+        sub_state:    Optional sub-state for finer-grained tracking.
+        active_agent: When provided, updates which agent owns this session.
+                      Must be set after a handoff so the next turn routes correctly.
+
     Returns:
-        Dictionary with previous_state, current_state, and validation result
+        Dictionary with previous_state, current_state, active_agent, and is_valid.
     """
     result = await session_service.advance_state(
         session_id=session_id,
         new_state=new_state,
-        sub_state=sub_state
+        sub_state=sub_state,
+        active_agent=active_agent,
     )
-    logger.info(f"MCP Tool: advance_state {session_id[:8]}... -> {new_state}")
+    log_suffix = f" (agent -> {active_agent})" if active_agent else ""
+    logger.info(f"MCP Tool: advance_state {session_id[:8]}... -> {new_state}{log_suffix}")
     return result
 
 

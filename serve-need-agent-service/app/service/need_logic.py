@@ -644,7 +644,7 @@ class NeedAgentService:
         return NeedAgentTurnResponse(
             assistant_message=assistant_message,
             active_agent="need",
-            workflow="need_lifecycle",
+            workflow="need_coordination",
             state=next_state,
             completion_status=completion_status,
             coordinator_resolved=Coordinator(**coordinator_context) if coordinator_context and coordinator_context.get("name") else None,

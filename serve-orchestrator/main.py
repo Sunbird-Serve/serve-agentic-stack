@@ -10,8 +10,10 @@ import logging
 import httpx
 from datetime import datetime
 
+import asyncio
 from app.api import orchestrator_router
 from app.schemas import HealthResponse
+from app.service.agent_router import agent_router
 
 MCP_SERVICE_URL = os.environ.get("MCP_SERVICE_URL", "http://serve-agentic-mcp-service:8003")
 
@@ -100,6 +102,10 @@ async def root():
 @app.on_event("startup")
 async def startup_event():
     logger.info("Starting SERVE Orchestrator Service...")
+    # Launch background agent health-probe loop.
+    # Probes every AGENT_HEALTH_PROBE_INTERVAL seconds (default 30s) and
+    # updates each agent's 'healthy' flag so the router always has fresh data.
+    asyncio.create_task(agent_router.registry.start_health_probing())
 
 
 @app.on_event("shutdown")
