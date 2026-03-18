@@ -174,6 +174,27 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
   - "What We Need to Know" guide
   - Captured details display
 
+### Phase 11: WhatsApp Channel Adapter ✅ (Dec 2025)
+- [x] **Twilio WhatsApp Sandbox Integration** (`/app/backend/channels/whatsapp_adapter.py`)
+  - Webhook endpoint for incoming messages: `POST /api/whatsapp/webhook`
+  - Phone-to-session mapping (phone number as session identifier)
+  - 24-hour session timeout with automatic cleanup
+  - TwiML response format for Twilio
+- [x] **Session Management**
+  - `PhoneSessionManager` class for phone-to-orchestrator session mapping
+  - Reset commands: "reset", "restart", "start over", "new", "quit"
+  - Automatic session creation on first message
+  - Session continuity across multiple messages
+- [x] **Admin Endpoints**
+  - `GET /api/whatsapp/status` - Integration status and setup instructions
+  - `GET /api/whatsapp/sessions` - List active WhatsApp sessions
+  - `POST /api/whatsapp/send` - Test message sending
+- [x] **Setup Requirements**
+  - Twilio Account SID: `TWILIO_ACCOUNT_SID`
+  - Twilio Auth Token: `TWILIO_AUTH_TOKEN`
+  - WhatsApp Sandbox Number: `TWILIO_WHATSAPP_NUMBER` (default: +14155238886)
+  - Webhook URL: `https://<domain>/api/whatsapp/webhook`
+
 ## Key Files Reference
 
 ### Frontend (Volunteer-Facing)
