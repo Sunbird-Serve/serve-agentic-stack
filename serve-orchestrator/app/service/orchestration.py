@@ -24,7 +24,7 @@ from app.schemas import (
     InteractionRequest, InteractionResponse, SessionState,
     AgentTurnRequest, AgentTurnResponse,
     PersonaType, WorkflowType, AgentType, SessionStatus, OnboardingState,
-    NormalizedEvent, TriggerType, IntentType, IntentResult,
+    NormalizedEvent, TriggerType, IntentType, IntentResult, PersonaResolutionResult,
 )
 from app.schemas.contracts import (
     RoutingDecision, TransitionValidation, SessionContext,
@@ -34,6 +34,7 @@ from app.clients import domain_client
 from app.channel.registry import get_adapter
 from app.service.agent_router import agent_router
 from app.service.intent_resolver import intent_resolver
+from app.service.persona_resolver import persona_resolver
 from app.service.workflow_validator import workflow_validator
 
 logger = logging.getLogger(__name__)
@@ -162,7 +163,16 @@ class OrchestrationService:
         session_context = None
         conversation = []
 
-        # Step 1: Resolve or create session
+        # Step 1: Resolve persona — only needed for new sessions.
+        # Resumed sessions restore persona from persistent storage in _resume_session.
+        persona_result: Optional[PersonaResolutionResult] = None
+        if not event.session_id:
+            persona_result = await persona_resolver.resolve(event)
+            # Stamp the resolved persona back onto the event so all downstream
+            # code (session creation, fallback response) sees a consistent value.
+            event = event.model_copy(update={'persona': persona_result.persona})
+
+        # Step 2: Resolve or create session
         if event.session_id:
             session_context, conversation = await self._resume_session(event)
 
@@ -180,7 +190,7 @@ class OrchestrationService:
                 persona=event.persona,
             )
 
-        # Log session context established
+        # Log session context established (Step 3)
         self._log_event(
             session_id=session_context.session_id,
             event_type=OrchestrationEventType.SESSION_RESUMED if event.session_id
@@ -194,6 +204,21 @@ class OrchestrationService:
                 'trigger_type': event.trigger_type.value,
             }
         )
+
+        # Log persona resolution for new sessions now that we have a session_id
+        if persona_result is not None:
+            self._log_event(
+                session_id=session_context.session_id,
+                event_type=OrchestrationEventType.PERSONA_RESOLVED,
+                details={
+                    'persona': persona_result.persona.value,
+                    'confidence': persona_result.confidence,
+                    'source': persona_result.source,
+                    'actor_id': event.actor_id,
+                    **{k: v for k, v in persona_result.metadata.items()
+                       if k != 'error'},
+                }
+            )
 
         # Step 2: Resolve intent — before saving message so terminal intents
         #         (pause, escalate, restart) can short-circuit without wasting
@@ -428,6 +453,11 @@ class OrchestrationService:
                 "missing_fields": agent_response.missing_fields,
             },
             debug_info={
+                "persona": {
+                    "value": persona_result.persona.value if persona_result else session_context.persona,
+                    "confidence": persona_result.confidence if persona_result else None,
+                    "source": persona_result.source if persona_result else "resumed_from_session",
+                },
                 "intent": {
                     "type": intent_result.intent.value,
                     "confidence": intent_result.confidence,

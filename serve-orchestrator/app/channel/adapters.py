@@ -42,15 +42,18 @@ class WebUIAdapter(ChannelAdapter):
     """
     Adapter for the React/Web UI channel.
 
-    actor_id priority: channel_metadata.user_id → actor_id → web_<session_id>
+    In SERVE, the user's email address is the canonical, stable identity across
+    all channels.  actor_id priority:
+      channel_metadata.email → channel_metadata.user_id → web_<session_id>
+
     trigger_type is always USER_MESSAGE for the web UI.
     """
 
     def normalize(self, request: InteractionRequest) -> NormalizedEvent:
         meta = request.channel_metadata or {}
         actor_id = (
-            meta.get("user_id")
-            or meta.get("actor_id")
+            meta.get("email")
+            or meta.get("user_id")
             or (f"web_{request.session_id}" if request.session_id else "web_anonymous")
         )
         return NormalizedEvent(
@@ -158,14 +161,21 @@ class MobileAdapter(ChannelAdapter):
     """
     Adapter for the mobile app channel.
 
-    actor_id priority: channel_metadata.user_id → device_id → mobile_<session_id>.
+    In SERVE, the user's email address is the canonical, stable identity across
+    all channels.  Using email (rather than device_id) ensures that a volunteer
+    who switches phones or reinstalls the app is still recognised as the same
+    person.  actor_id priority:
+      channel_metadata.email → channel_metadata.user_id → mobile_<session_id>
+
+    Device-scoped identifiers (device_id) are intentionally excluded because
+    they represent the hardware, not the authenticated user.
     """
 
     def normalize(self, request: InteractionRequest) -> NormalizedEvent:
         meta = request.channel_metadata or {}
         actor_id = (
-            meta.get("user_id")
-            or meta.get("device_id")
+            meta.get("email")
+            or meta.get("user_id")
             or (f"mobile_{request.session_id}" if request.session_id else "mobile_anonymous")
         )
         return NormalizedEvent(

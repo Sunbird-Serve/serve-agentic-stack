@@ -191,6 +191,39 @@ class DomainClient:
             args["status"] = status
         return await _call_mcp_tool("list_sessions", args)
 
+    async def lookup_actor(self, actor_id: str, channel: str) -> Dict:
+        """
+        Look up an actor (volunteer or coordinator) by their channel-native identity.
+
+        The MCP server searches the volunteer and coordinator registries for a record
+        matching actor_id + channel.  The response shape is:
+
+          Success — volunteer found:
+            { "status": "success", "actor_type": "volunteer",
+              "volunteer_id": "...", "last_active_days": 12,
+              "onboarding_complete": true }
+
+          Success — coordinator found:
+            { "status": "success", "actor_type": "coordinator",
+              "coordinator_id": "...", "school_id": "..." }
+
+          Not found:
+            { "status": "not_found" }
+
+          Error / tool unavailable:
+            { "status": "error", "error": "..." }
+
+        Callers should treat "not_found" and "error" both as "no record" and
+        default to NEW_VOLUNTEER rather than raising.
+        """
+        result = await _call_mcp_tool("lookup_actor", {
+            "actor_id": actor_id,
+            "channel": channel,
+        })
+        if result.get("status") in ("error", "not_found"):
+            return result
+        return {"status": "success", "data": result}
+
 
 # Singleton instance
 domain_client = DomainClient()

@@ -1,141 +1,110 @@
 """
 SERVE MCP Server - Coordinator Service
-Business logic for coordinator identity management.
+All coordinator identity operations now delegate to the Serve Registry
+(via VolunteeringClient). In-memory fallback retained for dev/offline use.
 """
 import logging
-from typing import Dict, Any, Optional, List
-from uuid import uuid4
-from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from services.serve_registry_client import volunteering_client
 
 logger = logging.getLogger(__name__)
 
 
 class CoordinatorService:
-    """Service for coordinator identity operations."""
-    
-    def __init__(self):
-        # In-memory store for preview environment
-        self._coordinators: Dict[str, Dict] = {}
-        self._coordinator_by_phone: Dict[str, str] = {}  # phone -> coordinator_id
-    
+
     async def resolve_identity(
         self,
-        whatsapp_number: str,
-        name: Optional[str] = None
+        whatsapp_number: Optional[str] = None,
+        email: Optional[str] = None,
+        name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Resolve coordinator identity from WhatsApp number.
-        
-        Returns:
-            status: linked | unlinked | ambiguous
-            coordinator: Coordinator data if found
-            linked_schools: Schools linked to coordinator
+        Resolve coordinator identity from WhatsApp number or email.
+        Tries Serve Registry first (by email when available).
+        Phone-based lookup is deferred until the registry exposes that endpoint.
         """
-        # Check if phone is already linked
-        coord_id = self._coordinator_by_phone.get(whatsapp_number)
-        
-        if coord_id and coord_id in self._coordinators:
-            coordinator = self._coordinators[coord_id]
+        serve_user = None
+
+        # Email lookup (most reliable)
+        if email:
+            serve_user = await volunteering_client.lookup_by_email(email)
+
+        # Phone lookup not yet supported by Serve Registry API.
+        # If only WhatsApp number is available, we return "unlinked"
+        # and the AI will ask for email to complete resolution.
+
+        if serve_user:
+            roles = serve_user.get("role", [])
+            is_coordinator = "NEED_COORDINATOR" in roles
+
             return {
-                "status": "linked",
-                "coordinator": coordinator,
-                "linked_schools": coordinator.get("school_ids", []),
+                "status":               "linked" if is_coordinator else "linked_volunteer",
+                "coordinator": {
+                    "id":               serve_user.get("osid"),
+                    "name":             serve_user.get("full_name"),
+                    "whatsapp_number":  whatsapp_number,
+                    "email":            serve_user.get("email"),
+                    "is_verified":      serve_user.get("status") == "ACTIVE",
+                    "school_ids":       [],  # populated by resolve_school_context
+                },
+                "linked_schools":       [],
                 "resolution_confidence": 1.0,
-                "needs_verification": False
+                "needs_verification":   not is_coordinator,
+                "source":               "serve_registry",
             }
-        
-        # Check if name matches any known coordinator
+
+        # Not found in registry
         if name:
-            name_lower = name.lower()
-            matches = []
-            for cid, coord in self._coordinators.items():
-                if coord.get("name", "").lower() == name_lower:
-                    matches.append(coord)
-            
-            if len(matches) == 1:
-                return {
-                    "status": "linked",
-                    "coordinator": matches[0],
-                    "linked_schools": matches[0].get("school_ids", []),
-                    "resolution_confidence": 0.8,
-                    "needs_verification": True
-                }
-            elif len(matches) > 1:
-                return {
-                    "status": "ambiguous",
-                    "coordinator": None,
-                    "linked_schools": [],
-                    "resolution_confidence": 0.0,
-                    "needs_verification": True,
-                    "ambiguity_reason": f"Multiple coordinators found with name {name}"
-                }
-        
-        # New coordinator - unlinked
+            return {
+                "status":               "unlinked",
+                "coordinator":          None,
+                "linked_schools":       [],
+                "resolution_confidence": 0.0,
+                "needs_verification":   True,
+                "hint":                 f"No coordinator found for name '{name}'",
+            }
+
         return {
-            "status": "unlinked",
-            "coordinator": None,
-            "linked_schools": [],
+            "status":               "unlinked",
+            "coordinator":          None,
+            "linked_schools":       [],
             "resolution_confidence": 0.0,
-            "needs_verification": True
+            "needs_verification":   True,
         }
-    
+
     async def create_coordinator(
         self,
         name: str,
-        whatsapp_number: str,
-        email: Optional[str] = None
+        whatsapp_number: Optional[str] = None,
+        email: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Create a new coordinator."""
-        coord_id = str(uuid4())
-        
-        coordinator = {
-            "id": coord_id,
-            "name": name,
-            "whatsapp_number": whatsapp_number,
-            "email": email,
-            "school_ids": [],
-            "is_verified": False,
-            "created_at": datetime.utcnow().isoformat()
-        }
-        
-        self._coordinators[coord_id] = coordinator
-        self._coordinator_by_phone[whatsapp_number] = coord_id
-        
-        logger.info(f"Created coordinator: {coord_id} - {name}")
-        return coordinator
-    
-    async def map_to_school(
-        self,
-        coordinator_id: str,
-        school_id: str
-    ) -> Dict[str, Any]:
-        """Map a coordinator to a school."""
-        if coordinator_id not in self._coordinators:
-            return {"success": False, "error": "Coordinator not found"}
-        
-        coordinator = self._coordinators[coordinator_id]
-        if school_id not in coordinator["school_ids"]:
-            coordinator["school_ids"].append(school_id)
-        
-        logger.info(f"Mapped coordinator {coordinator_id} to school {school_id}")
-        return {
-            "success": True,
-            "coordinator_id": coordinator_id,
-            "school_id": school_id
-        }
-    
-    async def get_coordinator(self, coordinator_id: str) -> Optional[Dict]:
-        """Get coordinator by ID."""
-        return self._coordinators.get(coordinator_id)
-    
-    async def verify_coordinator(self, coordinator_id: str) -> Dict[str, Any]:
-        """Mark coordinator as verified."""
-        if coordinator_id not in self._coordinators:
-            return {"success": False, "error": "Coordinator not found"}
-        
-        self._coordinators[coordinator_id]["is_verified"] = True
-        return {"success": True, "coordinator_id": coordinator_id}
+        """Create a new coordinator in Serve Registry."""
+        new_id = await volunteering_client.create_coordinator(
+            name=name, phone=whatsapp_number, email=email
+        )
+        if new_id:
+            logger.info(f"Coordinator created in Serve Registry: {new_id}")
+            return {
+                "id":               new_id,
+                "name":             name,
+                "whatsapp_number":  whatsapp_number,
+                "email":            email,
+                "school_ids":       [],
+                "is_verified":      False,
+                "source":           "serve_registry",
+            }
+        logger.error("Failed to create coordinator in Serve Registry")
+        return {"error": "Failed to create coordinator in Serve Registry"}
+
+    async def get_coordinator(
+        self, coordinator_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch coordinator by their Serve Registry osid (lookup by email)."""
+        # The volunteering service doesn't have a GET-by-id endpoint;
+        # coordinator data comes from the session context or identity resolution.
+        logger.warning(f"get_coordinator({coordinator_id}): no direct ID lookup endpoint available")
+        return None
 
 
-# Singleton instance
 coordinator_service = CoordinatorService()

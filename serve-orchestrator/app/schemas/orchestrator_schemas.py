@@ -172,6 +172,25 @@ class IntentResult(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class PersonaResolutionResult(BaseModel):
+    """
+    Output of the PersonaResolver.
+
+    persona:    The resolved persona type for this actor.
+    confidence: Resolver confidence [0–1].
+    source:     How the persona was determined:
+                  "explicit"        — channel sent an explicit persona override
+                  "trigger_type"    — inferred from trigger (e.g. SCHEDULED → SYSTEM)
+                  "actor_lookup"    — looked up in the volunteer/coordinator registry
+                  "default"         — no record found; defaulting to NEW_VOLUNTEER
+    metadata:   Diagnostic info (actor_type, last_active_days, etc.).
+    """
+    persona: "PersonaType"
+    confidence: float = Field(ge=0.0, le=1.0, default=1.0)
+    source: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 # ============ Session State Model ============
 
 class SessionState(BaseModel):

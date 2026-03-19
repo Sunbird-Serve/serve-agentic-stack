@@ -1,155 +1,145 @@
 """
 SERVE MCP Server - School Service
-Business logic for school context management.
+All school (entity) operations delegate to the Serve Need Service
+via NeedServiceClient. Schools are entities owned by the Serve DB.
 """
 import logging
-from typing import Dict, Any, Optional, List
-from uuid import uuid4
-from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from services.serve_registry_client import need_service_client
 
 logger = logging.getLogger(__name__)
 
 
 class SchoolService:
-    """Service for school context operations."""
-    
-    def __init__(self):
-        # In-memory store for preview environment
-        self._schools: Dict[str, Dict] = {}
-        self._school_by_name: Dict[str, str] = {}  # normalized_name -> school_id
-    
+
     async def resolve_context(
         self,
         coordinator_id: Optional[str] = None,
-        school_hint: Optional[str] = None
+        school_hint: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Resolve school context.
-        
-        Args:
-            coordinator_id: ID of linked coordinator
-            school_hint: Partial school name or hint
-            
-        Returns:
-            status: existing | new | ambiguous
-            school: School data if found
-            previous_needs: List of previous needs for this school
+        Resolve school context for a coordinator.
+        1. If coordinator_id → fetch their linked entities from Serve Need Service
+        2. If school_hint → search all entities and filter by name
         """
-        # If coordinator is linked, check their schools
+        # Try coordinator's linked entities first
         if coordinator_id:
-            for school_id, school in self._schools.items():
-                if coordinator_id in school.get("coordinator_ids", []):
+            entities = await need_service_client.get_entities_for_user(coordinator_id)
+            if entities:
+                if len(entities) == 1:
                     return {
-                        "status": "existing",
-                        "school": school,
-                        "previous_needs": school.get("previous_needs", []),
-                        "needs_creation": False
+                        "status":         "existing",
+                        "school":         entities[0],
+                        "previous_needs": [],
+                        "needs_creation": False,
+                        "source":         "serve_need_service",
                     }
-        
-        # Try to match by name hint
-        if school_hint:
-            normalized = school_hint.lower().strip()
-            
-            # Exact match
-            if normalized in self._school_by_name:
-                school_id = self._school_by_name[normalized]
-                school = self._schools[school_id]
+                # Multiple schools — return list for disambiguation
                 return {
-                    "status": "existing",
-                    "school": school,
-                    "previous_needs": school.get("previous_needs", []),
-                    "needs_creation": False
-                }
-            
-            # Partial match
-            matches = []
-            for name, sid in self._school_by_name.items():
-                if normalized in name or name in normalized:
-                    matches.append(self._schools[sid])
-            
-            if len(matches) == 1:
-                return {
-                    "status": "existing",
-                    "school": matches[0],
-                    "previous_needs": matches[0].get("previous_needs", []),
-                    "needs_creation": False
-                }
-            elif len(matches) > 1:
-                return {
-                    "status": "ambiguous",
-                    "school": None,
+                    "status":         "multiple",
+                    "schools":        entities,
+                    "school":         None,
                     "previous_needs": [],
                     "needs_creation": False,
-                    "ambiguity_reason": f"Multiple schools match '{school_hint}'"
+                    "source":         "serve_need_service",
                 }
-        
-        # No match found - new school needed
+
+        # Try name-based search
+        if school_hint:
+            all_entities = await need_service_client.search_entities()
+            hint_lower   = school_hint.lower().strip()
+            matches = [
+                e for e in all_entities
+                if hint_lower in e.get("name", "").lower()
+            ]
+            if len(matches) == 1:
+                return {
+                    "status":         "existing",
+                    "school":         matches[0],
+                    "previous_needs": [],
+                    "needs_creation": False,
+                    "source":         "serve_need_service",
+                }
+            if len(matches) > 1:
+                return {
+                    "status":         "ambiguous",
+                    "schools":        matches,
+                    "school":         None,
+                    "previous_needs": [],
+                    "needs_creation": True,
+                    "source":         "serve_need_service",
+                }
+
+        # Nothing found — needs to be created
         return {
-            "status": "new",
-            "school": None,
+            "status":         "new",
+            "school":         None,
             "previous_needs": [],
-            "needs_creation": True
+            "needs_creation": True,
+            "source":         "serve_need_service",
         }
-    
+
     async def create_school(
         self,
         name: str,
         location: str,
         contact_number: Optional[str] = None,
-        coordinator_id: Optional[str] = None
+        coordinator_id: Optional[str] = None,
+        district: Optional[str] = None,
+        state: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Create a new school context."""
-        school_id = str(uuid4())
-        
-        school = {
-            "id": school_id,
-            "name": name,
-            "location": location,
-            "contact_number": contact_number,
-            "coordinator_ids": [coordinator_id] if coordinator_id else [],
-            "previous_needs": [],
-            "created_at": datetime.utcnow().isoformat()
-        }
-        
-        self._schools[school_id] = school
-        self._school_by_name[name.lower().strip()] = school_id
-        
-        logger.info(f"Created school: {school_id} - {name}")
-        return school
-    
-    async def get_school(self, school_id: str) -> Optional[Dict]:
-        """Get school by ID."""
-        return self._schools.get(school_id)
-    
-    async def add_coordinator(self, school_id: str, coordinator_id: str) -> Dict[str, Any]:
-        """Add a coordinator to a school."""
-        if school_id not in self._schools:
-            return {"success": False, "error": "School not found"}
-        
-        school = self._schools[school_id]
-        if coordinator_id not in school["coordinator_ids"]:
-            school["coordinator_ids"].append(coordinator_id)
-        
-        return {"success": True, "school_id": school_id}
-    
+        """
+        Create a new entity (school) in Serve Need Service.
+        Optionally links the coordinator to the new entity.
+        """
+        entity = await need_service_client.create_entity(
+            name=name,
+            location=location,
+            contact_number=contact_number,
+            district=district,
+            state=state,
+        )
+        if not entity:
+            return {"error": "Failed to create school in Serve Need Service"}
+
+        # Auto-link coordinator if provided
+        if coordinator_id and entity.get("id"):
+            linked = await need_service_client.assign_user_to_entity(
+                entity_id=entity["id"],
+                user_id=coordinator_id,
+            )
+            entity["coordinator_linked"] = linked
+
+        logger.info(f"School created in Serve Need Service: {entity.get('id')} — {name}")
+        return entity
+
     async def fetch_previous_needs(self, school_id: str) -> Dict[str, Any]:
-        """Fetch previous need context for a school."""
-        if school_id not in self._schools:
-            return {"success": False, "needs": [], "error": "School not found"}
-        
-        school = self._schools[school_id]
+        """Fetch entity details + previous needs from Serve Need Service."""
+        entity = await need_service_client.get_entity(school_id)
+        needs  = await need_service_client.get_needs_for_entity(school_id)
         return {
-            "success": True,
-            "school": school,
-            "needs": school.get("previous_needs", [])
+            "status":         "success",
+            "school":         entity or {"id": school_id},
+            "previous_needs": needs,
+            "needs_count":    len(needs),
         }
-    
-    async def add_need_reference(self, school_id: str, need_id: str) -> None:
-        """Add a need reference to school's history."""
-        if school_id in self._schools:
-            if need_id not in self._schools[school_id]["previous_needs"]:
-                self._schools[school_id]["previous_needs"].append(need_id)
+
+    async def link_coordinator(
+        self,
+        school_id: str,
+        coordinator_id: str,
+    ) -> Dict[str, Any]:
+        """Link an existing coordinator to an existing school."""
+        ok = await need_service_client.assign_user_to_entity(
+            entity_id=school_id,
+            user_id=coordinator_id,
+        )
+        return {
+            "success":        ok,
+            "school_id":      school_id,
+            "coordinator_id": coordinator_id,
+        }
 
 
-# Singleton instance
 school_service = SchoolService()

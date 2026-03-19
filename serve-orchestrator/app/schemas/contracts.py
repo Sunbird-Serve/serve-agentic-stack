@@ -163,6 +163,7 @@ class OrchestrationEventType(str, Enum):
     SESSION_CREATED = 'session_created'
     SESSION_RESUMED = 'session_resumed'
     MESSAGE_RECEIVED = 'message_received'
+    PERSONA_RESOLVED = 'persona_resolved'
     INTENT_RESOLVED = 'intent_resolved'
     AGENT_INVOKED = 'agent_invoked'
     AGENT_RESPONDED = 'agent_responded'
