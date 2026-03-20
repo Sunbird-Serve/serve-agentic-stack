@@ -37,6 +37,23 @@ from services.need_service        import need_service
 from services.identity_service    import identity_service
 from services.serve_registry_client import volunteering_client
 
+# ── Import Pydantic input schemas ─────────────────────────────────────────────
+from schemas import (
+    LookupActorInput,
+    StartSessionInput, GetSessionInput, ResumeSessionInput,
+    AdvanceSessionStateInput, ListSessionsInput,
+    GetMissingFieldsInput, SaveVolunteerFieldsInput, EvaluateReadinessInput,
+    SaveMessageInput, GetConversationInput,
+    SaveMemorySummaryInput, GetMemorySummaryInput,
+    LogEventInput, EmitHandoffEventInput,
+    ResolveCoordinatorInput, CreateCoordinatorInput, MapCoordinatorToSchoolInput,
+    ResolveSchoolContextInput, CreateSchoolContextInput, FetchPreviousNeedContextInput,
+    CreateOrUpdateNeedDraftInput, SubmitNeedInput, UpdateNeedStatusInput,
+    PrepareHandoffInput, PauseNeedSessionInput,
+    SaveNeedMessageInput, LogNeedEventInput, EmitNeedHandoffInput,
+    GetSessionAnalyticsInput,
+)
+
 session_service = SessionService()
 profile_service = ProfileService()
 memory_service  = MemoryService()
@@ -74,12 +91,7 @@ mcp = FastMCP(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def lookup_actor(
-    actor_id: str,
-    channel: str,
-    identity_type: Optional[str] = None,
-    session_id: Optional[str] = None,
-) -> dict:
+async def lookup_actor(params: LookupActorInput) -> dict:
     """
     Resolve who this actor is across all systems (Serve Registry + MCP history).
     MUST be called at session start before any workflow tool.
@@ -102,10 +114,10 @@ async def lookup_actor(
                             | need_coordination | system_triggered
     """
     result = await identity_service.resolve(
-        actor_id=actor_id,
-        channel=channel,
-        identity_type=identity_type,
-        session_id=session_id,
+        actor_id=params.actor_id,
+        channel=params.channel,
+        identity_type=params.identity_type,
+        session_id=params.session_id,
     )
     return result.to_dict()
 
@@ -115,17 +127,7 @@ async def lookup_actor(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def start_session(
-    channel: str = "web_ui",
-    persona: str = "new_volunteer",
-    channel_metadata: Optional[Dict[str, Any]] = None,
-    actor_id: Optional[str] = None,
-    identity_type: Optional[str] = None,
-    user_type: Optional[str] = None,
-    volunteer_id: Optional[str] = None,
-    coordinator_id: Optional[str] = None,
-    idempotency_key: Optional[str] = None,
-) -> dict:
+async def start_session(params: StartSessionInput) -> dict:
     """
     Start a new conversation session.
 
@@ -145,32 +147,32 @@ async def start_session(
         session_id, stage, workflow
     """
     result = await session_service.create_session(
-        channel=channel,
-        persona=persona,
-        channel_metadata=channel_metadata,
-        actor_id=actor_id,
-        identity_type=identity_type,
-        user_type=user_type,
-        volunteer_id=volunteer_id,
-        coordinator_id=coordinator_id,
-        idempotency_key=idempotency_key,
+        channel=params.channel,
+        persona=params.persona,
+        channel_metadata=params.channel_metadata,
+        actor_id=params.actor_id,
+        identity_type=params.identity_type,
+        user_type=params.user_type,
+        volunteer_id=params.volunteer_id,
+        coordinator_id=params.coordinator_id,
+        idempotency_key=params.idempotency_key,
     )
 
     # For S2/S3 users with existing Serve Registry profile → pre-populate profile cache
     session_id = result.get("session_id")
-    if session_id and volunteer_id and user_type in ("registry_known", "returning_ai_user"):
+    if session_id and params.volunteer_id and params.user_type in ("registry_known", "returning_ai_user"):
         await profile_service.prefetch_from_registry(
             session_id=session_id,
-            volunteer_id=volunteer_id,
+            volunteer_id=params.volunteer_id,
         )
         result["profile_prefetched"] = True
 
-    logger.info(f"start_session: {session_id} (persona={persona}, user_type={user_type})")
+    logger.info(f"start_session: {session_id} (persona={params.persona}, user_type={params.user_type})")
     return result
 
 
 @mcp.tool()
-async def get_session(session_id: str) -> dict:
+async def get_session(params: GetSessionInput) -> dict:
     """
     Retrieve current state of a session.
 
@@ -180,11 +182,11 @@ async def get_session(session_id: str) -> dict:
     Returns:
         Full session object including user_type, volunteer_id, stage, status
     """
-    return await session_service.get_session(session_id)
+    return await session_service.get_session(params.session_id)
 
 
 @mcp.tool()
-async def resume_session(session_id: str) -> dict:
+async def resume_session(params: ResumeSessionInput) -> dict:
     """
     Resume an existing session with full context (session state + conversation history).
 
@@ -194,23 +196,18 @@ async def resume_session(session_id: str) -> dict:
     Returns:
         session, conversation_history (last 10 messages), memory_summary
     """
-    result = await session_service.resume_context(session_id)
+    result = await session_service.resume_context(params.session_id)
 
     # Enrich with memory summary
-    memory = await memory_service.get_summary(session_id)
+    memory = await memory_service.get_summary(params.session_id)
     result["memory_summary"] = memory.get("data")
 
-    logger.info(f"resume_session: {session_id[:8]}…")
+    logger.info(f"resume_session: {params.session_id[:8]}…")
     return result
 
 
 @mcp.tool()
-async def advance_session_state(
-    session_id: str,
-    new_state: str,
-    sub_state: Optional[str] = None,
-    active_agent: Optional[str] = None,
-) -> dict:
+async def advance_session_state(params: AdvanceSessionStateInput) -> dict:
     """
     Advance a session to a new workflow stage.
 
@@ -228,20 +225,24 @@ async def advance_session_state(
         automatically synced back to Serve Registry.
     """
     result = await session_service.advance_state(
-        session_id=session_id,
-        new_state=new_state,
-        sub_state=sub_state,
-        active_agent=active_agent,
+        session_id=params.session_id,
+        new_state=params.new_state,
+        sub_state=params.sub_state,
+        active_agent=params.active_agent,
     )
 
     # Write-back to Serve Registry on onboarding completion
-    if new_state == "onboarding_complete":
-        session_result = await session_service.get_session(session_id)
+    if params.new_state == "onboarding_complete":
+        from services.database import get_db, Session as DBSession, is_db_healthy
+        from sqlalchemy import update as sa_update
+        from uuid import UUID
+
+        session_result = await session_service.get_session(params.session_id)
         volunteer_id   = session_result.get("session", {}).get("volunteer_id")
 
         if not volunteer_id:
             # New user — create volunteer stub in Serve Registry first
-            profile_result = await profile_service.get_profile(session_id)
+            profile_result = await profile_service.get_profile(params.session_id)
             profile        = profile_result.get("profile", {})
             new_vid = await volunteering_client.create_volunteer(
                 full_name=profile.get("full_name", ""),
@@ -251,16 +252,12 @@ async def advance_session_state(
             )
             if new_vid:
                 volunteer_id = new_vid
-                # Update session with the new volunteer_id
-                from services.database import get_db, Session as DBSession
-                from sqlalchemy import update
-                from uuid import UUID
-                if __import__("services.database", fromlist=["is_db_healthy"]).is_db_healthy():
+                if is_db_healthy():
                     try:
                         async with get_db() as db:
                             await db.execute(
-                                update(DBSession)
-                                .where(DBSession.id == UUID(session_id))
+                                sa_update(DBSession)
+                                .where(DBSession.id == UUID(params.session_id))
                                 .values(volunteer_id=volunteer_id)
                             )
                     except Exception as e:
@@ -268,7 +265,7 @@ async def advance_session_state(
 
         if volunteer_id:
             sync_result = await profile_service.sync_to_registry(
-                session_id=session_id,
+                session_id=params.session_id,
                 volunteer_id=volunteer_id,
             )
             result["registry_sync"] = sync_result
@@ -278,10 +275,7 @@ async def advance_session_state(
 
 
 @mcp.tool()
-async def list_sessions(
-    status: Optional[str] = None,
-    limit: int = 50,
-) -> dict:
+async def list_sessions(params: ListSessionsInput) -> dict:
     """
     List sessions, optionally filtered by status.
 
@@ -289,7 +283,7 @@ async def list_sessions(
         status: active | paused | completed | abandoned (omit for all)
         limit:  Max sessions to return (default 50)
     """
-    return await session_service.list_sessions(status=status, limit=limit)
+    return await session_service.list_sessions(status=params.status, limit=params.limit)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -297,7 +291,7 @@ async def list_sessions(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def get_missing_fields(session_id: str) -> dict:
+async def get_missing_fields(params: GetMissingFieldsInput) -> dict:
     """
     Get fields still needed from the volunteer.
     Reads from MCP DB profile cache (fast, no API call).
@@ -305,53 +299,45 @@ async def get_missing_fields(session_id: str) -> dict:
     Returns:
         missing_fields, confirmed_fields, completion_percentage
     """
-    return await profile_service.get_missing_fields(session_id)
+    return await profile_service.get_missing_fields(params.session_id)
 
 
 @mcp.tool()
-async def save_volunteer_fields(
-    session_id: str,
-    fields: Dict[str, Any],
-) -> dict:
+async def save_volunteer_fields(params: SaveVolunteerFieldsInput) -> dict:
     """
     Save confirmed volunteer profile fields to MCP DB working copy.
     Does NOT call Serve Registry — that happens automatically at onboarding_complete.
 
     Args:
         session_id: UUID of the session
-        fields:     Dict of field names → values
-                    Supported: full_name, first_name, gender, dob, email, phone,
-                    location, skills (list), skill_levels (dict), interests (list),
-                    languages (list), availability, days_preferred (list),
-                    time_preferred (list), qualification, years_of_experience,
-                    employment_status, motivation, experience_level
+        fields:     Dict of field names → values (see schema for supported keys)
 
     Returns:
         saved_fields list
     """
-    return await profile_service.save_fields(session_id=session_id, fields=fields)
+    return await profile_service.save_fields(session_id=params.session_id, fields=params.fields)
 
 
 @mcp.tool()
-async def get_volunteer_profile(session_id: str) -> dict:
+async def get_volunteer_profile(params: GetSessionInput) -> dict:
     """
     Get the complete volunteer profile from MCP DB cache.
 
     Returns:
         Full profile dict including Serve Registry source info
     """
-    return await profile_service.get_profile(session_id)
+    return await profile_service.get_profile(params.session_id)
 
 
 @mcp.tool()
-async def evaluate_readiness(session_id: str) -> dict:
+async def evaluate_readiness(params: EvaluateReadinessInput) -> dict:
     """
     Evaluate if a volunteer is ready for the selection phase.
 
     Returns:
         ready_for_selection (bool), missing_fields, recommendation, reason
     """
-    return await profile_service.evaluate_readiness(session_id)
+    return await profile_service.evaluate_readiness(params.session_id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -359,13 +345,7 @@ async def evaluate_readiness(session_id: str) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def save_message(
-    session_id: str,
-    role: str,
-    content: str,
-    agent: Optional[str] = None,
-    message_metadata: Optional[Dict[str, Any]] = None,
-) -> dict:
+async def save_message(params: SaveMessageInput) -> dict:
     """
     Save a conversation message to MCP DB.
 
@@ -377,19 +357,16 @@ async def save_message(
         message_metadata: Optional {token_count, latency_ms, model}
     """
     return await session_service.save_message(
-        session_id=session_id,
-        role=role,
-        content=content,
-        agent=agent,
-        message_metadata=message_metadata,
+        session_id=params.session_id,
+        role=params.role,
+        content=params.content,
+        agent=params.agent,
+        message_metadata=params.message_metadata,
     )
 
 
 @mcp.tool()
-async def get_conversation(
-    session_id: str,
-    limit: int = 50,
-) -> dict:
+async def get_conversation(params: GetConversationInput) -> dict:
     """
     Get conversation history for a session.
 
@@ -397,7 +374,7 @@ async def get_conversation(
         session_id: UUID of the session
         limit:      Max messages to return (default 50)
     """
-    return await session_service.get_conversation(session_id=session_id, limit=limit)
+    return await session_service.get_conversation(session_id=params.session_id, limit=params.limit)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -405,12 +382,7 @@ async def get_conversation(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def save_memory_summary(
-    session_id: str,
-    summary_text: str,
-    key_facts: Optional[List[str]] = None,
-    volunteer_id: Optional[str] = None,
-) -> dict:
+async def save_memory_summary(params: SaveMemorySummaryInput) -> dict:
     """
     Save a compressed conversation memory summary (persisted to DB).
 
@@ -424,15 +396,15 @@ async def save_memory_summary(
         summary_id, version, key_facts_count
     """
     return await memory_service.save_summary(
-        session_id=session_id,
-        summary_text=summary_text,
-        key_facts=key_facts or [],
-        volunteer_id=volunteer_id,
+        session_id=params.session_id,
+        summary_text=params.summary_text,
+        key_facts=params.key_facts or [],
+        volunteer_id=params.volunteer_id,
     )
 
 
 @mcp.tool()
-async def get_memory_summary(session_id: str) -> dict:
+async def get_memory_summary(params: GetMemorySummaryInput) -> dict:
     """
     Retrieve the latest memory summary for a session (from DB).
 
@@ -440,7 +412,7 @@ async def get_memory_summary(session_id: str) -> dict:
         data: {summary_id, summary_text, key_facts, version, created_at}
               or null if no summary exists
     """
-    return await memory_service.get_summary(session_id)
+    return await memory_service.get_summary(params.session_id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -448,15 +420,7 @@ async def get_memory_summary(session_id: str) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def log_event(
-    session_id: str,
-    event_type: str,
-    agent: Optional[str] = None,
-    data: Optional[Dict[str, Any]] = None,
-    domain: Optional[str] = None,
-    source_service: Optional[str] = None,
-    duration_ms: Optional[int] = None,
-) -> dict:
+async def log_event(params: LogEventInput) -> dict:
     """
     Log a telemetry/audit event (persisted to DB).
 
@@ -470,25 +434,18 @@ async def log_event(
         duration_ms:    Operation duration for performance tracking
     """
     return await session_service.log_event(
-        session_id=session_id,
-        event_type=event_type,
-        agent=agent,
-        data=data or {},
-        domain=domain,
-        source_service=source_service,
-        duration_ms=duration_ms,
+        session_id=params.session_id,
+        event_type=params.event_type,
+        agent=params.agent,
+        data=params.data or {},
+        domain=params.domain,
+        source_service=params.source_service,
+        duration_ms=params.duration_ms,
     )
 
 
 @mcp.tool()
-async def emit_handoff_event(
-    session_id: str,
-    from_agent: str,
-    to_agent: str,
-    handoff_type: str,
-    payload: Optional[Dict[str, Any]] = None,
-    reason: Optional[str] = None,
-) -> dict:
+async def emit_handoff_event(params: EmitHandoffEventInput) -> dict:
     """
     Record an agent handoff in the dedicated agent_handoff_log table.
 
@@ -501,12 +458,12 @@ async def emit_handoff_event(
         reason:       Human-readable reason
     """
     return await session_service.emit_handoff_event(
-        session_id=session_id,
-        from_agent=from_agent,
-        to_agent=to_agent,
-        handoff_type=handoff_type,
-        payload=payload,
-        reason=reason,
+        session_id=params.session_id,
+        from_agent=params.from_agent,
+        to_agent=params.to_agent,
+        handoff_type=params.handoff_type,
+        payload=params.payload,
+        reason=params.reason,
     )
 
 
@@ -515,11 +472,7 @@ async def emit_handoff_event(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def resolve_coordinator_identity(
-    whatsapp_number: Optional[str] = None,
-    email: Optional[str] = None,
-    name: Optional[str] = None,
-) -> dict:
+async def resolve_coordinator_identity(params: ResolveCoordinatorInput) -> dict:
     """
     Resolve coordinator identity from Serve Registry.
     Provide email for reliable lookup. WhatsApp-only resolution requires email
@@ -536,18 +489,14 @@ async def resolve_coordinator_identity(
         linked_schools: List of linked entity IDs
     """
     return await coordinator_service.resolve_identity(
-        whatsapp_number=whatsapp_number,
-        email=email,
-        name=name,
+        whatsapp_number=params.whatsapp_number,
+        email=params.email,
+        name=params.name,
     )
 
 
 @mcp.tool()
-async def create_coordinator(
-    name: str,
-    whatsapp_number: Optional[str] = None,
-    email: Optional[str] = None,
-) -> dict:
+async def create_coordinator(params: CreateCoordinatorInput) -> dict:
     """
     Register a new coordinator in Serve Registry.
 
@@ -560,17 +509,14 @@ async def create_coordinator(
         Created coordinator profile with Serve Registry ID
     """
     return await coordinator_service.create_coordinator(
-        name=name,
-        whatsapp_number=whatsapp_number,
-        email=email,
+        name=params.name,
+        whatsapp_number=params.whatsapp_number,
+        email=params.email,
     )
 
 
 @mcp.tool()
-async def map_coordinator_to_school(
-    coordinator_id: str,
-    school_id: str,
-) -> dict:
+async def map_coordinator_to_school(params: MapCoordinatorToSchoolInput) -> dict:
     """
     Link a coordinator to a school (entity) in Serve Need Service.
 
@@ -579,8 +525,8 @@ async def map_coordinator_to_school(
         school_id:      Serve Need Service entity UUID
     """
     return await school_service.link_coordinator(
-        school_id=school_id,
-        coordinator_id=coordinator_id,
+        school_id=params.school_id,
+        coordinator_id=params.coordinator_id,
     )
 
 
@@ -589,10 +535,7 @@ async def map_coordinator_to_school(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def resolve_school_context(
-    coordinator_id: Optional[str] = None,
-    school_hint: Optional[str] = None,
-) -> dict:
+async def resolve_school_context(params: ResolveSchoolContextInput) -> dict:
     """
     Resolve school context from Serve Need Service.
 
@@ -606,20 +549,13 @@ async def resolve_school_context(
         previous_needs: List of past needs for this school
     """
     return await school_service.resolve_context(
-        coordinator_id=coordinator_id,
-        school_hint=school_hint,
+        coordinator_id=params.coordinator_id,
+        school_hint=params.school_hint,
     )
 
 
 @mcp.tool()
-async def create_school_context(
-    name: str,
-    location: str,
-    contact_number: Optional[str] = None,
-    coordinator_id: Optional[str] = None,
-    district: Optional[str] = None,
-    state: Optional[str] = None,
-) -> dict:
+async def create_school_context(params: CreateSchoolContextInput) -> dict:
     """
     Create a new school (entity) in Serve Need Service.
 
@@ -635,17 +571,17 @@ async def create_school_context(
         Created entity with Serve Need Service ID
     """
     return await school_service.create_school(
-        name=name,
-        location=location,
-        contact_number=contact_number,
-        coordinator_id=coordinator_id,
-        district=district,
-        state=state,
+        name=params.name,
+        location=params.location,
+        contact_number=params.contact_number,
+        coordinator_id=params.coordinator_id,
+        district=params.district,
+        state=params.state,
     )
 
 
 @mcp.tool()
-async def fetch_previous_need_context(school_id: str) -> dict:
+async def fetch_previous_need_context(params: FetchPreviousNeedContextInput) -> dict:
     """
     Fetch school details and previous needs from Serve Need Service.
 
@@ -655,7 +591,7 @@ async def fetch_previous_need_context(school_id: str) -> dict:
     Returns:
         school, previous_needs (list), needs_count
     """
-    return await school_service.fetch_previous_needs(school_id)
+    return await school_service.fetch_previous_needs(params.school_id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -679,39 +615,23 @@ async def start_need_session(
 
 
 @mcp.tool()
-async def resume_need_context(session_id: str) -> dict:
+async def resume_need_context(params: ResumeSessionInput) -> dict:
     """Resume a need session with its current draft."""
-    return await need_service.resume_context(session_id)
+    return await need_service.resume_context(params.session_id)
 
 
 @mcp.tool()
-async def advance_need_state(
-    session_id: str,
-    new_state: str,
-    sub_state: Optional[str] = None,
-) -> dict:
+async def advance_need_state(params: AdvanceSessionStateInput) -> dict:
     """Advance a need session to a new workflow state."""
     return await need_service.advance_state(
-        session_id=session_id,
-        new_state=new_state,
-        sub_state=sub_state,
+        session_id=params.session_id,
+        new_state=params.new_state,
+        sub_state=params.sub_state,
     )
 
 
 @mcp.tool()
-async def create_or_update_need_draft(
-    session_id: str,
-    subjects: Optional[List[str]] = None,
-    grade_levels: Optional[List[str]] = None,
-    student_count: Optional[int] = None,
-    time_slots: Optional[List[Any]] = None,
-    start_date: Optional[str] = None,
-    duration_weeks: Optional[int] = None,
-    schedule_preference: Optional[str] = None,
-    special_requirements: Optional[str] = None,
-    coordinator_osid: Optional[str] = None,
-    entity_id: Optional[str] = None,
-) -> dict:
+async def create_or_update_need_draft(params: CreateOrUpdateNeedDraftInput) -> dict:
     """
     Create or update the working need draft (stored in MCP DB).
     The draft is only pushed to Serve Need Service when submit_need_for_approval is called.
@@ -722,7 +642,7 @@ async def create_or_update_need_draft(
         grade_levels:         List of grades ("1"-"12")
         student_count:        Number of students
         time_slots:           [{day, startTime, endTime}] or simple string list
-        start_date:           ISO date string
+        start_date:           ISO date string (YYYY-MM-DD)
         duration_weeks:       Number of weeks
         schedule_preference:  Schedule description / frequency
         special_requirements: Any special notes
@@ -730,47 +650,47 @@ async def create_or_update_need_draft(
         entity_id:            Serve Need Service entity UUID (set when school resolved)
     """
     need_data: Dict[str, Any] = {}
-    if subjects           is not None: need_data["subjects"]             = subjects
-    if grade_levels       is not None: need_data["grade_levels"]         = grade_levels
-    if student_count      is not None: need_data["student_count"]        = student_count
-    if time_slots         is not None: need_data["time_slots"]           = time_slots
-    if start_date         is not None: need_data["start_date"]           = start_date
-    if duration_weeks     is not None: need_data["duration_weeks"]       = duration_weeks
-    if schedule_preference is not None: need_data["schedule_preference"] = schedule_preference
-    if special_requirements is not None: need_data["special_requirements"] = special_requirements
-    if coordinator_osid   is not None: need_data["coordinator_osid"]     = coordinator_osid
-    if entity_id          is not None: need_data["entity_id"]            = entity_id
+    if params.subjects            is not None: need_data["subjects"]             = params.subjects
+    if params.grade_levels        is not None: need_data["grade_levels"]         = params.grade_levels
+    if params.student_count       is not None: need_data["student_count"]        = params.student_count
+    if params.time_slots          is not None: need_data["time_slots"]           = params.time_slots
+    if params.start_date          is not None: need_data["start_date"]           = params.start_date
+    if params.duration_weeks      is not None: need_data["duration_weeks"]       = params.duration_weeks
+    if params.schedule_preference is not None: need_data["schedule_preference"]  = params.schedule_preference
+    if params.special_requirements is not None: need_data["special_requirements"] = params.special_requirements
+    if params.coordinator_osid    is not None: need_data["coordinator_osid"]     = params.coordinator_osid
+    if params.entity_id           is not None: need_data["entity_id"]            = params.entity_id
 
     return await need_service.save_need_draft(
-        session_id=session_id,
+        session_id=params.session_id,
         need_data=need_data,
     )
 
 
 @mcp.tool()
-async def get_missing_need_fields(session_id: str) -> dict:
+async def get_missing_need_fields(params: GetMissingFieldsInput) -> dict:
     """
     Get mandatory need fields still missing from the draft.
 
     Returns:
         missing_fields, confirmed_fields, completion_percentage
     """
-    return await need_service.get_missing_fields(session_id)
+    return await need_service.get_missing_fields(params.session_id)
 
 
 @mcp.tool()
-async def evaluate_need_submission_readiness(session_id: str) -> dict:
+async def evaluate_need_submission_readiness(params: GetMissingFieldsInput) -> dict:
     """
     Evaluate whether the need draft is ready for submission.
 
     Returns:
         is_ready (bool), missing_fields, warnings, completion_percentage, recommendation
     """
-    return await need_service.evaluate_readiness(session_id)
+    return await need_service.evaluate_readiness(params.session_id)
 
 
 @mcp.tool()
-async def submit_need_for_approval(need_id: str) -> dict:
+async def submit_need_for_approval(params: SubmitNeedInput) -> dict:
     """
     Submit the completed need draft to Serve Need Service (POST /need/raise).
     The draft must have coordinator_osid and entity_id set.
@@ -781,15 +701,11 @@ async def submit_need_for_approval(need_id: str) -> dict:
     Returns:
         serve_need_id (Serve Need Service UUID), status, need details
     """
-    return await need_service.submit_for_approval(need_id)
+    return await need_service.submit_for_approval(params.need_id)
 
 
 @mcp.tool()
-async def update_need_status(
-    need_id: str,
-    status: str,
-    comments: Optional[str] = None,
-) -> dict:
+async def update_need_status(params: UpdateNeedStatusInput) -> dict:
     """
     Update the status of a need in both MCP DB and Serve Need Service.
 
@@ -800,14 +716,14 @@ async def update_need_status(
         comments: Admin/reviewer comments
     """
     return await need_service.update_status(
-        need_id=need_id,
-        status=status,
-        comments=comments,
+        need_id=params.need_id,
+        status=params.status,
+        comments=params.comments,
     )
 
 
 @mcp.tool()
-async def prepare_fulfillment_handoff(need_id: str) -> dict:
+async def prepare_fulfillment_handoff(params: PrepareHandoffInput) -> dict:
     """
     Prepare a handoff payload for the fulfillment agent.
     Assembles need details + school + coordinator from Serve Need Service.
@@ -818,56 +734,40 @@ async def prepare_fulfillment_handoff(need_id: str) -> dict:
     Returns:
         Complete handoff payload: need_details, school, coordinator_osid, approval_status
     """
-    return await need_service.prepare_fulfillment_handoff(need_id)
+    return await need_service.prepare_fulfillment_handoff(params.need_id)
 
 
 @mcp.tool()
-async def pause_need_session(
-    session_id: str,
-    reason: Optional[str] = None,
-) -> dict:
+async def pause_need_session(params: PauseNeedSessionInput) -> dict:
     """Pause a need session for later resumption."""
-    return await need_service.pause_session(session_id=session_id, reason=reason)
+    return await need_service.pause_session(session_id=params.session_id, reason=params.reason)
 
 
 @mcp.tool()
-async def save_need_message(
-    session_id: str,
-    role: str,
-    content: str,
-    agent: Optional[str] = None,
-) -> dict:
-    """Save a conversation message in a need session."""
+async def save_need_message(params: SaveNeedMessageInput) -> dict:
+    """Save a conversation message in a need session (persisted to DB)."""
     return await need_service.save_message(
-        session_id=session_id, role=role, content=content, agent=agent
+        session_id=params.session_id, role=params.role,
+        content=params.content, agent=params.agent
     )
 
 
 @mcp.tool()
-async def log_need_event(
-    session_id: str,
-    event_type: str,
-    data: Optional[Dict[str, Any]] = None,
-) -> dict:
-    """Log a need lifecycle audit event."""
+async def log_need_event(params: LogNeedEventInput) -> dict:
+    """Log a need lifecycle audit event (persisted to telemetry_events table)."""
     return await need_service.log_event(
-        session_id=session_id, event_type=event_type, data=data
+        session_id=params.session_id, event_type=params.event_type, data=params.data
     )
 
 
 @mcp.tool()
-async def emit_need_handoff_event(
-    session_id: str,
-    from_agent: str,
-    to_agent: str,
-    payload: Dict[str, Any],
-) -> dict:
-    """Emit a handoff event in the need workflow."""
+async def emit_need_handoff_event(params: EmitNeedHandoffInput) -> dict:
+    """Emit a handoff event in the need workflow (persisted to agent_handoff_log)."""
     return await need_service.emit_handoff_event(
-        session_id=session_id,
-        from_agent=from_agent,
-        to_agent=to_agent,
-        payload=payload,
+        session_id=params.session_id,
+        from_agent=params.from_agent,
+        to_agent=params.to_agent,
+        payload=params.payload,
     )
 
 
@@ -886,7 +786,6 @@ async def get_server_health() -> dict:
 
     db_ok = await check_db_health()
 
-    # Quick check on Serve Registry
     registry_ok = False
     try:
         async with httpx.AsyncClient(timeout=5) as client:
@@ -897,11 +796,309 @@ async def get_server_health() -> dict:
         registry_ok = False
 
     return {
-        "status":           "healthy" if db_ok else "degraded",
-        "db_healthy":       db_ok,
+        "status":             "healthy" if db_ok else "degraded",
+        "db_healthy":         db_ok,
         "registry_reachable": registry_ok,
-        "mcp_port":         MCP_PORT,
+        "mcp_port":           MCP_PORT,
     }
+
+
+@mcp.tool()
+async def get_session_analytics(params: GetSessionAnalyticsInput) -> dict:
+    """
+    Session analytics summary: counts by status, channel, persona and user_type.
+    Useful for monitoring platform adoption and engagement trends.
+
+    Args:
+        date_from: ISO date YYYY-MM-DD (defaults to last 30 days)
+        date_to:   ISO date YYYY-MM-DD (defaults to today)
+
+    Returns:
+        total_sessions, by_status, by_channel, by_persona, by_user_type,
+        avg_messages_per_session, onboarding_completion_rate
+    """
+    from datetime import date, timedelta
+    from services.database import get_db, is_db_healthy, Session as DBSession
+    from services.database import ConversationMessage
+    from sqlalchemy import select, func, and_
+
+    date_to_val   = date.fromisoformat(params.date_to)   if params.date_to   else date.today()
+    date_from_val = date.fromisoformat(params.date_from) if params.date_from else date_to_val - timedelta(days=30)
+
+    if not is_db_healthy():
+        return {"status": "error", "error_message": "Database not available"}
+
+    try:
+        from datetime import datetime
+        dt_from = datetime.combine(date_from_val, datetime.min.time())
+        dt_to   = datetime.combine(date_to_val,   datetime.max.time())
+
+        async with get_db() as db:
+            # Total sessions in window
+            total_q = await db.execute(
+                select(func.count()).select_from(DBSession)
+                .where(and_(DBSession.created_at >= dt_from, DBSession.created_at <= dt_to))
+            )
+            total = total_q.scalar() or 0
+
+            # Group by status
+            status_q = await db.execute(
+                select(DBSession.status, func.count().label("cnt"))
+                .where(and_(DBSession.created_at >= dt_from, DBSession.created_at <= dt_to))
+                .group_by(DBSession.status)
+            )
+            by_status = {row.status: row.cnt for row in status_q.fetchall()}
+
+            # Group by channel
+            channel_q = await db.execute(
+                select(DBSession.channel, func.count().label("cnt"))
+                .where(and_(DBSession.created_at >= dt_from, DBSession.created_at <= dt_to))
+                .group_by(DBSession.channel)
+            )
+            by_channel = {row.channel: row.cnt for row in channel_q.fetchall()}
+
+            # Group by persona
+            persona_q = await db.execute(
+                select(DBSession.persona, func.count().label("cnt"))
+                .where(and_(DBSession.created_at >= dt_from, DBSession.created_at <= dt_to))
+                .group_by(DBSession.persona)
+            )
+            by_persona = {row.persona: row.cnt for row in persona_q.fetchall()}
+
+            # Group by user_type
+            utype_q = await db.execute(
+                select(DBSession.user_type, func.count().label("cnt"))
+                .where(and_(DBSession.created_at >= dt_from, DBSession.created_at <= dt_to))
+                .group_by(DBSession.user_type)
+            )
+            by_user_type = {(row.user_type or "unknown"): row.cnt for row in utype_q.fetchall()}
+
+            # Average messages per session
+            msg_q = await db.execute(
+                select(
+                    ConversationMessage.session_id,
+                    func.count().label("msg_cnt")
+                )
+                .where(and_(
+                    ConversationMessage.created_at >= dt_from,
+                    ConversationMessage.created_at <= dt_to,
+                ))
+                .group_by(ConversationMessage.session_id)
+            )
+            msg_counts = [row.msg_cnt for row in msg_q.fetchall()]
+            avg_messages = round(sum(msg_counts) / len(msg_counts), 1) if msg_counts else 0.0
+
+            completed = by_status.get("completed", 0)
+            completion_rate = round((completed / total * 100), 1) if total else 0.0
+
+        return {
+            "status":                   "success",
+            "period":                   {"from": str(date_from_val), "to": str(date_to_val)},
+            "total_sessions":           total,
+            "by_status":                by_status,
+            "by_channel":               by_channel,
+            "by_persona":               by_persona,
+            "by_user_type":             by_user_type,
+            "avg_messages_per_session": avg_messages,
+            "onboarding_completion_rate_pct": completion_rate,
+        }
+    except Exception as e:
+        logger.error(f"get_session_analytics error: {e}")
+        return {"status": "error", "error_message": str(e)}
+
+
+@mcp.tool()
+async def get_registry_sync_status() -> dict:
+    """
+    Show volunteer sessions where profile has not yet been synced to Serve Registry.
+    Helps detect stuck onboarding flows.
+
+    Returns:
+        unsynced_count, sessions (list of session_id, actor_id, created_at, stage),
+        synced_today_count
+    """
+    from services.database import get_db, is_db_healthy
+    from services.database import VolunteerProfile, Session as DBSession
+    from sqlalchemy import select, and_, func
+    from datetime import date, datetime
+
+    if not is_db_healthy():
+        return {"status": "error", "error_message": "Database not available"}
+
+    try:
+        async with get_db() as db:
+            # Profiles never synced
+            unsynced_q = await db.execute(
+                select(
+                    VolunteerProfile.session_id,
+                    VolunteerProfile.created_at,
+                )
+                .where(VolunteerProfile.registry_synced_at.is_(None))
+                .order_by(VolunteerProfile.created_at.desc())
+                .limit(100)
+            )
+            unsynced_rows = unsynced_q.fetchall()
+
+            # Enrich with session data
+            unsynced_sessions = []
+            for row in unsynced_rows:
+                sess_q = await db.execute(
+                    select(DBSession.actor_id, DBSession.stage, DBSession.status)
+                    .where(DBSession.id == row.session_id)
+                )
+                sess = sess_q.fetchone()
+                unsynced_sessions.append({
+                    "session_id": str(row.session_id),
+                    "actor_id":   sess.actor_id if sess else None,
+                    "stage":      sess.stage    if sess else None,
+                    "status":     sess.status   if sess else None,
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                })
+
+            # Synced today
+            today_start = datetime.combine(date.today(), datetime.min.time())
+            synced_today_q = await db.execute(
+                select(func.count()).select_from(VolunteerProfile)
+                .where(VolunteerProfile.registry_synced_at >= today_start)
+            )
+            synced_today = synced_today_q.scalar() or 0
+
+        return {
+            "status":           "success",
+            "unsynced_count":   len(unsynced_sessions),
+            "synced_today_count": synced_today,
+            "unsynced_sessions": unsynced_sessions,
+        }
+    except Exception as e:
+        logger.error(f"get_registry_sync_status error: {e}")
+        return {"status": "error", "error_message": str(e)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MCP PROMPTS  — reusable system prompt templates for each agent
+# ─────────────────────────────────────────────────────────────────────────────
+
+@mcp.prompt()
+def volunteer_onboarding_prompt() -> str:
+    """
+    System prompt for the Volunteer Onboarding Agent.
+    Guides LLMs through collecting volunteer profile data conversationally.
+    """
+    return """You are the Serve Volunteer Onboarding Assistant.
+
+Your goal is to warmly and conversationally collect the volunteer's profile information.
+Always call `lookup_actor` first to identify the user, then `start_session` before proceeding.
+
+## Required fields to collect (in natural conversation order):
+1. full_name — "What is your full name?"
+2. email — "What is your email address?"
+3. phone — "What is your mobile number?"
+4. location — City or district they are based in
+5. skills — Subjects or skills they can teach (e.g. mathematics, science, english, coding)
+6. availability — How many hours per week, which days/times
+
+## Optional enrichment (ask after required fields):
+- gender, dob, languages, interests, qualification, years_of_experience,
+  employment_status, motivation, experience_level
+
+## Rules:
+- Ask ONE question at a time. Do not ask multiple questions in one message.
+- Confirm values before saving: "Just to confirm, your name is [X] — is that right?"
+- After confirmation call `save_volunteer_fields` with ONLY the confirmed fields.
+- Call `get_missing_fields` before each question to know what is still needed.
+- When all required fields are done call `advance_session_state` with new_state="onboarding_complete".
+- Never make up or assume field values.
+- If the user wants to stop, call `advance_session_state` with new_state="paused".
+"""
+
+
+@mcp.prompt()
+def need_coordinator_prompt() -> str:
+    """
+    System prompt for the Need Coordination Agent.
+    Guides LLMs through collecting school need information conversationally.
+    """
+    return """You are the Serve Need Coordination Assistant.
+
+Your goal is to help school coordinators raise a teaching need for their school.
+Always call `start_session` with persona="need_coordinator" at the beginning.
+
+## Workflow:
+1. **Identify coordinator** → call `resolve_coordinator_identity` with email or WhatsApp number.
+   - If not found → call `create_coordinator` and note the returned ID.
+2. **Identify school** → call `resolve_school_context` with coordinator_id.
+   - If not found → call `create_school_context` after collecting name and location.
+   - Call `fetch_previous_need_context` to show history.
+3. **Collect need details** → call `create_or_update_need_draft` incrementally.
+   - subjects: which subjects are needed
+   - grade_levels: which grades (e.g. ["6", "7", "8"])
+   - student_count: approx number of students
+   - time_slots: preferred days/times
+   - start_date: when to start (YYYY-MM-DD)
+   - duration_weeks: for how many weeks
+4. **Review & submit** → call `evaluate_need_submission_readiness`.
+   - If ready → call `submit_need_for_approval`.
+5. **Handoff** → call `prepare_fulfillment_handoff` and `emit_need_handoff_event`.
+
+## Rules:
+- Ask ONE question at a time.
+- Confirm critical details (student_count, subjects) before saving.
+- Never invent data. If unsure, ask the coordinator to confirm.
+- The needTypeId for Online Teaching is fixed — the system sets it automatically.
+"""
+
+
+@mcp.prompt()
+def memory_summarizer_prompt() -> str:
+    """
+    System prompt for the Memory Summarizer Agent.
+    Guides LLMs in compressing conversation history into a reusable summary.
+    """
+    return """You are the Serve Conversation Memory Summarizer.
+
+Given a conversation history, create a concise summary for future sessions.
+
+## Output format — call `save_memory_summary` with:
+- summary_text: 2-4 sentences covering the key outcome and volunteer/coordinator intent.
+- key_facts: A list of 5-10 bullet-point facts (name, skills, availability, location,
+  school name, grade levels, subjects raised, current workflow stage, etc.)
+
+## Rules:
+- Only include facts explicitly stated in the conversation. Do not infer.
+- Include the current workflow stage and what the next step should be.
+- Keep summary_text under 150 words.
+- Include any blockers or reasons for pausing if the session was paused.
+
+## When to summarize:
+- When the session state advances to "paused", "completed", or "handoff_pending".
+- When the agent is about to be replaced by a different agent.
+"""
+
+
+@mcp.prompt()
+def returning_volunteer_prompt() -> str:
+    """
+    System prompt for the Returning Volunteer Engagement Agent.
+    Guides LLMs in re-engaging volunteers who have previously onboarded.
+    """
+    return """You are the Serve Volunteer Engagement Assistant.
+
+The volunteer you are speaking with has already completed onboarding.
+Always call `resume_session` or `get_memory_summary` first to load their profile context.
+
+## Your goals:
+1. Welcome the volunteer back warmly. Reference their name and skills from the loaded context.
+2. Understand why they are returning (new availability, want to change skills, find opportunities).
+3. If they want to update their profile → collect new values and call `save_volunteer_fields`.
+4. If they need to see opportunities → use the selection/fulfillment workflow.
+5. If they want to pause → call `advance_session_state` with new_state="paused"
+   and then `save_memory_summary`.
+
+## Rules:
+- Do not ask for information already in their profile unless they indicate it has changed.
+- Confirm any changes before saving.
+- Be encouraging and appreciate their commitment to volunteering.
+"""
 
 
 # ─────────────────────────────────────────────────────────────────────────────

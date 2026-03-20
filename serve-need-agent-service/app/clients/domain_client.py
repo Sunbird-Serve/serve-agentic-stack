@@ -51,8 +51,12 @@ async def _call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict:
     Retries up to _MCP_RETRIES times on transient connection failures (0.5s, 1s, 2s).
     Returns {"status": "error", ...} on permanent failure so callers can inspect
     without catching exceptions.
+
+    MCP tools that accept a Pydantic model expect arguments wrapped under the
+    "params" key.  Tools with no parameters receive an empty dict as-is.
     """
     last_error: Exception | None = None
+    wire_args = {"params": arguments} if arguments else {}
 
     for attempt in range(_MCP_RETRIES):
         try:
@@ -63,7 +67,7 @@ async def _call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict:
             async with sse_client(url=sse_url) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
-                    result = await session.call_tool(tool_name, arguments=arguments)
+                    result = await session.call_tool(tool_name, arguments=wire_args)
                     for item in result.content:
                         if hasattr(item, "text"):
                             try:

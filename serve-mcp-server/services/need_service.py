@@ -13,6 +13,8 @@ from sqlalchemy import select, update
 
 from services.database import NeedDraft, get_db, is_db_healthy
 from services.serve_registry_client import need_service_client
+# Imported lazily inside methods to avoid circular import
+# from services.session_service import SessionService
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +26,8 @@ MANDATORY_FIELDS = [
 # In-memory fallback
 _mem_drafts:   Dict[str, Dict] = {}
 _mem_sessions: Dict[str, Dict] = {}
-_mem_messages: Dict[str, List] = {}
-_mem_events:   Dict[str, List] = {}
+# Messages and events are now persisted via SessionService → DB
+# (no in-memory fallback needed here)
 
 
 class NeedService:
@@ -272,7 +274,7 @@ class NeedService:
             "priority":           "normal",
         }
 
-    # ── Messages & Events ─────────────────────────────────────────────────────
+    # ── Messages & Events (delegate to SessionService → DB) ──────────────────
 
     async def save_message(
         self,
@@ -281,14 +283,11 @@ class NeedService:
         content: str,
         agent: Optional[str] = None,
     ) -> Dict[str, Any]:
-        msg_id = str(uuid4())
-        if session_id not in _mem_messages:
-            _mem_messages[session_id] = []
-        _mem_messages[session_id].append({
-            "id": msg_id, "role": role, "content": content,
-            "agent": agent, "timestamp": datetime.utcnow().isoformat(),
-        })
-        return {"status": "success", "message_id": msg_id}
+        """Persist via SessionService so messages go to conversation_messages table."""
+        from services.session_service import SessionService
+        return await SessionService().save_message(
+            session_id=session_id, role=role, content=content, agent=agent
+        )
 
     async def log_event(
         self,
@@ -296,14 +295,15 @@ class NeedService:
         event_type: str,
         data: Optional[Dict] = None,
     ) -> Dict[str, Any]:
-        event_id = str(uuid4())
-        if session_id not in _mem_events:
-            _mem_events[session_id] = []
-        _mem_events[session_id].append({
-            "id": event_id, "event_type": event_type,
-            "data": data or {}, "timestamp": datetime.utcnow().isoformat(),
-        })
-        return {"status": "success", "event_id": event_id}
+        """Persist via SessionService so events go to telemetry_events table."""
+        from services.session_service import SessionService
+        return await SessionService().log_event(
+            session_id=session_id,
+            event_type=event_type,
+            data=data or {},
+            domain="need",
+            source_service="need_agent",
+        )
 
     async def emit_handoff_event(
         self,
@@ -312,10 +312,14 @@ class NeedService:
         to_agent: str,
         payload: Dict[str, Any],
     ) -> Dict[str, Any]:
-        return await self.log_event(
-            session_id,
-            "handoff",
-            data={"from": from_agent, "to": to_agent, "payload": payload},
+        """Persist handoff via dedicated agent_handoff_log table."""
+        from services.session_service import SessionService
+        return await SessionService().emit_handoff_event(
+            session_id=session_id,
+            from_agent=from_agent,
+            to_agent=to_agent,
+            handoff_type="agent_transition",
+            payload=payload,
         )
 
     # ── Internal helpers ──────────────────────────────────────────────────────
