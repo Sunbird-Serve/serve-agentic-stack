@@ -280,6 +280,8 @@ class OrchestrationService:
             stage=session_context.current_stage,
             sub_state=session_context.sub_state,
             context_summary=session_context.context_summary,
+            # Forward live channel metadata (e.g. phone_number from Web UI pre-screen)
+            channel_metadata=event.raw_metadata if event.raw_metadata else None,
             created_at=session_context.created_at.isoformat() if session_context.created_at else None,
             updated_at=session_context.updated_at.isoformat() if session_context.updated_at else None
         )
@@ -295,13 +297,14 @@ class OrchestrationService:
             decision=routing_decision
         )
 
-        # Step 5: Invoke agent, passing the resolved intent as a hint
+        # Step 5: Invoke agent, passing the resolved intent as a hint and live channel metadata
         agent_request = AgentTurnRequest(
             session_id=session_context.session_id,
             session_state=session_state,
             user_message=event.payload,
             conversation_history=conversation,
             intent_hint=intent_result.intent.value,
+            channel_metadata=event.raw_metadata if event.raw_metadata else None,
         )
 
         self._log_event(
@@ -425,9 +428,17 @@ class OrchestrationService:
             )
 
         # Step 8: Calculate progress and build response
-        progress_percent = workflow_validator.get_completion_percentage(
+        # For need coordination, prefer the agent's field-level completion percentage
+        # (accurate during drafting) over the coarse stage-based one.
+        stage_progress = workflow_validator.get_completion_percentage(
             workflow_id=session_context.workflow,
             current_stage=agent_response.state
+        )
+        agent_pct = agent_response.confirmed_fields.get("completion_percentage") if agent_response.confirmed_fields else None
+        progress_percent = (
+            agent_pct
+            if agent_pct is not None and session_context.workflow == "need_coordination"
+            else stage_progress
         )
 
         is_complete = workflow_validator.is_terminal_stage(

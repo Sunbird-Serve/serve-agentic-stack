@@ -75,11 +75,13 @@ class OnboardingState(str, Enum):
 class NeedWorkflowState(str, Enum):
     """States in the need lifecycle workflow."""
     INITIATED = "initiated"
+    CAPTURING_PHONE = "capturing_phone"
     RESOLVING_COORDINATOR = "resolving_coordinator"
     RESOLVING_SCHOOL = "resolving_school"
     DRAFTING_NEED = "drafting_need"
     PENDING_APPROVAL = "pending_approval"
     REFINEMENT_REQUIRED = "refinement_required"
+    SUBMITTED = "submitted"
     APPROVED = "approved"
     PAUSED = "paused"
     REJECTED = "rejected"
@@ -244,6 +246,7 @@ class AgentTurnRequest(BaseModel):
     user_message: str
     conversation_history: List[Dict[str, str]] = []
     intent_hint: Optional[str] = None  # resolved intent value, e.g. "seek_help"
+    channel_metadata: Optional[Dict[str, Any]] = None  # forwarded from channel adapter
 
 
 class HandoffEvent(BaseModel):

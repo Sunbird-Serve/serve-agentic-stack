@@ -103,14 +103,33 @@ class DomainClient:
 
     async def resolve_coordinator_identity(
         self,
-        whatsapp_number: str,
-        name: Optional[str] = None
+        whatsapp_number: Optional[str] = None,
+        email: Optional[str] = None,
+        name: Optional[str] = None,
     ) -> Dict:
-        """Resolve coordinator identity from WhatsApp number."""
-        args: Dict[str, Any] = {"whatsapp_number": whatsapp_number}
+        """Resolve coordinator identity from WhatsApp number or email."""
+        args: Dict[str, Any] = {}
+        if whatsapp_number:
+            args["whatsapp_number"] = whatsapp_number
+        if email:
+            args["email"] = email
         if name:
             args["name"] = name
         return await _call_mcp_tool("resolve_coordinator_identity", args)
+
+    async def create_coordinator(
+        self,
+        name: str,
+        whatsapp_number: Optional[str] = None,
+        email: Optional[str] = None,
+    ) -> Dict:
+        """Register a new coordinator in Serve Registry."""
+        args: Dict[str, Any] = {"name": name}
+        if whatsapp_number:
+            args["whatsapp_number"] = whatsapp_number
+        if email:
+            args["email"] = email
+        return await _call_mcp_tool("create_coordinator", args)
 
     async def map_coordinator_to_school(
         self,

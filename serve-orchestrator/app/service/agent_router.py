@@ -70,10 +70,10 @@ class AgentRegistry:
             'healthy': True,   # Optimistic until first probe
             'last_check': None,
             'workflows': ['need_coordination'],
-            'stages': ['initiated', 'resolving_coordinator', 'resolving_school',
-                       'drafting_need', 'pending_approval', 'refinement_required',
-                       'approved', 'paused', 'rejected', 'human_review',
-                       'fulfillment_handoff_ready'],
+            'stages': ['initiated', 'capturing_phone', 'resolving_coordinator',
+                       'resolving_school', 'drafting_need', 'pending_approval',
+                       'refinement_required', 'submitted', 'approved', 'paused',
+                       'rejected', 'human_review', 'fulfillment_handoff_ready'],
         }
 
         # ── Engagement agent — re-engages returning volunteers ───────────────

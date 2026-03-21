@@ -1,685 +1,1003 @@
 """
-SERVE Need Agent Service - Core Logic
-Autonomous agent for need coordination with eVidyaloka context.
+SERVE Need Agent Service - Core Logic (L3.5)
 
-Key responsibilities:
-- Resolve coordinator identity (linked/unlinked/ambiguous)
-- Resolve school context (existing/new/ambiguous)
-- Capture need details through conversation
-- Validate completeness before submission
-- Handle pause/resume
-- Escalate ambiguous cases for human review
+Architecture:
+  - High-level workflow stages are controlled by a state machine (deterministic).
+  - Within RESOLVING_COORDINATOR and RESOLVING_SCHOOL, an LLM tool-calling loop
+    (via llm_adapter) handles all branching logic autonomously (non-deterministic).
+  - All other stages use plain LLM text generation.
+
+Sub-state JSON schema (stored in session.sub_state between turns):
+  {
+    "coordinator": {
+      "phone": str | null,
+      "email": str | null,
+      "name": str | null,
+      "phone_tried": bool,
+      "email_tried": bool,
+      "coordinator_id": str | null,     # Serve Registry osid
+      "coordinator_name": str | null,
+      "is_verified": bool
+    },
+    "school": {
+      "school_id": str | null,          # Serve Need Service entity UUID
+      "school_name": str | null,
+      "linked_schools_checked": bool,
+      "udise_hint": str | null,
+      "previous_needs": list,
+      "is_new_school": bool
+    }
+  }
 """
-import re
+import json
 import logging
-from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime, date
+import re
+from datetime import date
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.schemas.need_schemas import (
-    NeedWorkflowState, CoordinatorResolutionStatus, SchoolResolutionStatus,
-    NeedStatus, NeedEventType, NeedSessionState, NeedAgentTurnRequest,
-    NeedAgentTurnResponse, NeedDraft, Coordinator, School,
-    MANDATORY_NEED_FIELDS, SUBJECT_OPTIONS, GRADE_LEVEL_OPTIONS
+    NeedWorkflowState,
+    CoordinatorResolutionStatus,
+    SchoolResolutionStatus,
+    NeedSessionState,
+    NeedAgentTurnRequest,
+    NeedAgentTurnResponse,
+    NeedDraft,
+    Coordinator,
+    School,
+    MANDATORY_NEED_FIELDS,
 )
-from app.clients import domain_client
+from app.clients import domain_client as _mcp_client
 from app.service.llm_adapter import llm_adapter
 
 logger = logging.getLogger(__name__)
 
 
-# ============ State Transitions ============
+# ── Sub-state helpers ─────────────────────────────────────────────────────────
 
-VALID_NEED_TRANSITIONS = {
-    NeedWorkflowState.INITIATED.value: [
-        NeedWorkflowState.RESOLVING_COORDINATOR.value,
-        NeedWorkflowState.PAUSED.value
-    ],
-    NeedWorkflowState.RESOLVING_COORDINATOR.value: [
-        NeedWorkflowState.RESOLVING_SCHOOL.value,
-        NeedWorkflowState.HUMAN_REVIEW.value,
-        NeedWorkflowState.PAUSED.value
-    ],
-    NeedWorkflowState.RESOLVING_SCHOOL.value: [
-        NeedWorkflowState.DRAFTING_NEED.value,
-        NeedWorkflowState.HUMAN_REVIEW.value,
-        NeedWorkflowState.PAUSED.value
-    ],
-    NeedWorkflowState.DRAFTING_NEED.value: [
-        NeedWorkflowState.PENDING_APPROVAL.value,
-        NeedWorkflowState.PAUSED.value
-    ],
-    NeedWorkflowState.PENDING_APPROVAL.value: [
-        NeedWorkflowState.APPROVED.value,
-        NeedWorkflowState.REFINEMENT_REQUIRED.value,
-        NeedWorkflowState.REJECTED.value,
-        NeedWorkflowState.PAUSED.value
-    ],
-    NeedWorkflowState.REFINEMENT_REQUIRED.value: [
-        NeedWorkflowState.DRAFTING_NEED.value,
-        NeedWorkflowState.PENDING_APPROVAL.value,
-        NeedWorkflowState.PAUSED.value
-    ],
-    NeedWorkflowState.APPROVED.value: [
-        NeedWorkflowState.FULFILLMENT_HANDOFF_READY.value
-    ],
-    NeedWorkflowState.PAUSED.value: [
-        NeedWorkflowState.INITIATED.value,
-        NeedWorkflowState.RESOLVING_COORDINATOR.value,
-        NeedWorkflowState.RESOLVING_SCHOOL.value,
-        NeedWorkflowState.DRAFTING_NEED.value,
-        NeedWorkflowState.PENDING_APPROVAL.value,
-        NeedWorkflowState.REFINEMENT_REQUIRED.value
-    ],
-    NeedWorkflowState.HUMAN_REVIEW.value: [
-        NeedWorkflowState.RESOLVING_COORDINATOR.value,
-        NeedWorkflowState.RESOLVING_SCHOOL.value,
-        NeedWorkflowState.DRAFTING_NEED.value,
-        NeedWorkflowState.REJECTED.value
-    ],
-    NeedWorkflowState.REJECTED.value: [],
-    NeedWorkflowState.FULFILLMENT_HANDOFF_READY.value: []
-}
+def _load_sub_state(sub_state_str: Optional[str]) -> Dict[str, Any]:
+    if not sub_state_str:
+        return {"coordinator": {}, "school": {}}
+    try:
+        data = json.loads(sub_state_str)
+        data.setdefault("coordinator", {})
+        data.setdefault("school", {})
+        return data
+    except Exception:
+        return {"coordinator": {}, "school": {}}
 
 
-# ============ Need Detail Extraction ============
+def _dump_sub_state(sub_state: Dict[str, Any]) -> str:
+    return json.dumps(sub_state)
+
+
+# ── Phone extraction ──────────────────────────────────────────────────────────
+
+_PHONE_RE = re.compile(
+    r"(?:\+?91[-.\s]?)?(?:\(?0\)?[-.\s]?)?"
+    r"[6-9]\d{9}"
+    r"|(?:\+\d{1,3}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{4}"
+)
+
+
+def _extract_phone(text: str) -> Optional[str]:
+    match = _PHONE_RE.search(text.replace(" ", ""))
+    if match:
+        digits = re.sub(r"\D", "", match.group())
+        if len(digits) >= 10:
+            return "+" + digits if not digits.startswith("+") else digits
+    return None
+
+
+# ── Need field extraction (regex) ────────────────────────────────────────────
 
 class NeedDetailExtractor:
-    """Extract structured need details from free-form conversation."""
-    
-    # Subject keyword mapping
-    SUBJECT_KEYWORDS = {
-        "mathematics": ["math", "maths", "mathematics", "arithmetic", "algebra", "geometry"],
-        "science": ["science", "physics", "chemistry", "biology", "natural science"],
-        "english": ["english", "grammar", "writing", "reading", "literature", "spoken english"],
-        "hindi": ["hindi", "hindustani"],
-        "social_studies": ["social", "history", "geography", "civics", "social studies"],
-        "computer_basics": ["computer", "computers", "computing", "it", "technology"],
-        "spoken_english": ["spoken english", "speaking english", "english speaking", "conversation english"],
-        "art": ["art", "drawing", "painting", "craft"],
-        "music": ["music", "singing", "songs"]
+    """Regex-based extraction of need fields from free-text coordinator messages."""
+
+    SUBJECT_MAP = {
+        "math": "mathematics", "maths": "mathematics", "mathematics": "mathematics",
+        "science": "science", "physics": "science", "chemistry": "science", "biology": "science",
+        "english": "english", "eng": "english",
+        "hindi": "hindi",
+        "social": "social_studies", "history": "social_studies", "geography": "social_studies",
+        "computer": "computer_basics", "computers": "computer_basics", "ict": "computer_basics",
+        "spoken english": "spoken_english",
+        "art": "art", "music": "music",
     }
-    
-    # Grade patterns
-    GRADE_PATTERNS = [
-        r"(?:grade|class|std|standard)\s*(\d{1,2})",
-        r"(\d{1,2})(?:th|st|nd|rd)?\s*(?:grade|class|std|standard)",
-        r"(\d{1,2})(?:th|st|nd|rd)?\s*graders?"
-    ]
-    
-    # Student count patterns
-    STUDENT_COUNT_PATTERNS = [
-        r"(\d+)\s*(?:students?|children|kids|learners)",
-        r"(?:around|about|approximately|approx)\s*(\d+)",
-        r"(?:total|count|number)[:\s]*(\d+)"
-    ]
-    
-    # Time slot patterns
-    TIME_PATTERNS = [
-        r"(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM))",
-        r"(morning|afternoon|evening)",
-        r"(weekday|weekend|saturday|sunday|monday|tuesday|wednesday|thursday|friday)"
-    ]
-    
-    # Duration patterns
-    DURATION_PATTERNS = [
-        r"(\d+)\s*(?:weeks?|wks?)",
-        r"(\d+)\s*(?:months?)\s*",  # Convert to weeks
-        r"(?:for|about)\s*(\d+)\s*(?:weeks?|months?)"
-    ]
-    
-    def extract_all(self, message: str, existing_draft: Optional[Dict] = None) -> Dict[str, Any]:
-        """Extract all possible need details from a message."""
-        existing_draft = existing_draft or {}
-        extracted = {}
-        message_lower = message.lower()
-        
-        # Extract subjects
-        subjects = self._extract_subjects(message_lower)
-        if subjects:
-            existing_subjects = existing_draft.get("subjects", [])
-            combined = list(set(existing_subjects + subjects))
-            extracted["subjects"] = combined
-        
-        # Extract grades
-        grades = self._extract_grades(message)
-        if grades:
-            existing_grades = existing_draft.get("grade_levels", [])
-            combined = list(set(existing_grades + grades))
-            extracted["grade_levels"] = combined
-        
-        # Extract student count
-        count = self._extract_student_count(message)
-        if count and "student_count" not in existing_draft:
-            extracted["student_count"] = count
-        
-        # Extract time slots
-        slots = self._extract_time_slots(message_lower)
-        if slots:
-            existing_slots = existing_draft.get("time_slots", [])
-            combined = list(set(existing_slots + slots))
-            extracted["time_slots"] = combined
-        
-        # Extract start date
-        start_date = self._extract_start_date(message_lower)
-        if start_date and "start_date" not in existing_draft:
-            extracted["start_date"] = start_date
-        
-        # Extract duration
-        duration = self._extract_duration(message_lower)
-        if duration and "duration_weeks" not in existing_draft:
-            extracted["duration_weeks"] = duration
-        
-        return extracted
-    
-    def _extract_subjects(self, message: str) -> List[str]:
-        """Extract subject mentions from message."""
-        found = []
-        for subject, keywords in self.SUBJECT_KEYWORDS.items():
-            for keyword in keywords:
-                if keyword in message:
-                    if subject not in found:
-                        found.append(subject)
-                    break
-        return found
-    
-    def _extract_grades(self, message: str) -> List[str]:
-        """Extract grade levels from message."""
+
+    GRADE_RE = re.compile(
+        r"\b(?:grade|class|std|standard)s?\s*(\d{1,2})\b"
+        r"|\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:grade|class|std)\b"
+        r"|\bgrade\s+(\d{1,2})\s*(?:to|-|through)\s*(\d{1,2})\b",
+        re.IGNORECASE,
+    )
+    STUDENT_RE = re.compile(r"\b(\d+)\s*(?:students?|kids?|children|pupils?)\b", re.IGNORECASE)
+    DURATION_RE = re.compile(r"\b(\d+)\s*(?:weeks?|months?)\b", re.IGNORECASE)
+    DATE_RE = re.compile(r"(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})")
+    TIME_RE = re.compile(
+        r"\b(\d{1,2}(?::\d{2})?(?:\s*[ap]m)?)\s*(?:to|-)\s*(\d{1,2}(?::\d{2})?(?:\s*[ap]m)?)\b"
+        r"|\b(morning|afternoon|evening|weekday|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+        re.IGNORECASE,
+    )
+
+    def extract_subjects(self, text: str) -> List[str]:
         found = set()
-        for pattern in self.GRADE_PATTERNS:
-            matches = re.findall(pattern, message, re.IGNORECASE)
-            for match in matches:
-                grade = str(int(match))  # Normalize
-                if 1 <= int(grade) <= 12:
-                    found.add(grade)
-        
-        # Also check for grade ranges like "5-8"
-        range_pattern = r"(\d{1,2})\s*(?:to|-)\s*(\d{1,2})"
-        range_matches = re.findall(range_pattern, message)
-        for start, end in range_matches:
-            for g in range(int(start), int(end) + 1):
+        lower = text.lower()
+        for keyword, canonical in self.SUBJECT_MAP.items():
+            if keyword in lower:
+                found.add(canonical)
+        return list(found)
+
+    def extract_grades(self, text: str) -> List[str]:
+        found = set()
+        for match in self.GRADE_RE.finditer(text):
+            groups = [g for g in match.groups() if g is not None]
+            if len(groups) == 2:
+                try:
+                    lo, hi = int(groups[0]), int(groups[1])
+                    for g in range(lo, hi + 1):
+                        if 1 <= g <= 12:
+                            found.add(str(g))
+                except ValueError:
+                    pass
+            elif groups:
+                g = int(groups[0])
                 if 1 <= g <= 12:
                     found.add(str(g))
-        
         return list(found)
-    
-    def _extract_student_count(self, message: str) -> Optional[int]:
-        """Extract student count from message."""
-        for pattern in self.STUDENT_COUNT_PATTERNS:
-            match = re.search(pattern, message, re.IGNORECASE)
-            if match:
-                count = int(match.group(1))
-                if 1 <= count <= 1000:  # Reasonable bounds
-                    return count
+
+    def extract_student_count(self, text: str) -> Optional[int]:
+        m = self.STUDENT_RE.search(text)
+        if m:
+            count = int(m.group(1))
+            if 1 <= count <= 2000:
+                return count
         return None
-    
-    def _extract_time_slots(self, message: str) -> List[str]:
-        """Extract time slot preferences from message."""
+
+    def extract_time_slots(self, text: str) -> List[str]:
         found = []
-        for pattern in self.TIME_PATTERNS:
-            matches = re.findall(pattern, message, re.IGNORECASE)
-            found.extend(matches)
+        for m in self.TIME_RE.finditer(text):
+            slot = " ".join(g for g in m.groups() if g)
+            if slot:
+                found.append(slot.strip())
         return list(set(found))
-    
-    def _extract_start_date(self, message: str) -> Optional[str]:
-        """Extract start date from message."""
-        # Check for relative dates
+
+    def extract_start_date(self, text: str) -> Optional[str]:
         today = date.today()
-        
-        if "next week" in message:
-            # Next Monday
-            days_ahead = 7 - today.weekday()
-            if days_ahead <= 0:
-                days_ahead += 7
+        lower = text.lower()
+        if "next week" in lower:
             from datetime import timedelta
-            next_monday = today + timedelta(days=days_ahead)
-            return next_monday.isoformat()
-        
-        if "next month" in message:
-            # First of next month
-            if today.month == 12:
-                return f"{today.year + 1}-01-01"
-            return f"{today.year}-{today.month + 1:02d}-01"
-        
-        if "immediately" in message or "asap" in message or "as soon as" in message:
+            delta = (7 - today.weekday()) or 7
+            return (today + timedelta(days=delta)).isoformat()
+        if "next month" in lower:
+            m = today.month % 12 + 1
+            y = today.year + (1 if today.month == 12 else 0)
+            return f"{y}-{m:02d}-01"
+        if any(w in lower for w in ("immediately", "asap", "as soon as possible")):
             return today.isoformat()
-        
-        # Look for specific date patterns
-        date_pattern = r"(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})"
-        match = re.search(date_pattern, message)
+        match = self.DATE_RE.search(text)
         if match:
-            day, month, year = match.groups()
-            if len(year) == 2:
-                year = f"20{year}"
+            d, mo, y = match.groups()
+            if len(y) == 2:
+                y = f"20{y}"
             try:
-                parsed = date(int(year), int(month), int(day))
-                return parsed.isoformat()
+                return date(int(y), int(mo), int(d)).isoformat()
             except ValueError:
                 pass
-        
         return None
-    
-    def _extract_duration(self, message: str) -> Optional[int]:
-        """Extract duration in weeks from message."""
-        for pattern in self.DURATION_PATTERNS:
-            match = re.search(pattern, message, re.IGNORECASE)
-            if match:
-                value = int(match.group(1))
-                # Convert months to weeks if needed
-                if "month" in message[match.start():match.end()].lower():
-                    value = value * 4
-                if 1 <= value <= 52:
-                    return value
+
+    def extract_duration(self, text: str) -> Optional[int]:
+        m = self.DURATION_RE.search(text)
+        if m:
+            val = int(m.group(1))
+            if "month" in m.group(0).lower():
+                val *= 4
+            if 1 <= val <= 52:
+                return val
         return None
-    
-    def extract_coordinator_info(self, message: str) -> Dict[str, Any]:
-        """Extract coordinator information from introduction."""
-        info = {}
-        
-        # Name patterns
-        name_patterns = [
-            r"(?:my name is|i'm|i am|this is|call me)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
-            r"^([A-Z][a-z]+)(?:\s+here|,|\s+from)",
-        ]
-        for pattern in name_patterns:
-            match = re.search(pattern, message, re.IGNORECASE)
-            if match:
-                name = match.group(1).strip().title()
-                # Clean trailing words
-                stop_words = {'and', 'from', 'at', 'the', 'i', 'am', 'here'}
-                words = name.split()
-                clean = []
-                for w in words:
-                    if w.lower() in stop_words:
-                        break
-                    clean.append(w)
-                if clean:
-                    info["name"] = " ".join(clean[:3])
-                break
-        
-        # Phone/WhatsApp patterns
-        phone_pattern = r"(\+?\d{10,12})"
-        match = re.search(phone_pattern, message)
-        if match:
-            info["whatsapp_number"] = match.group(1)
-        
-        return info
-    
-    def extract_school_info(self, message: str) -> Dict[str, Any]:
-        """Extract school information from message."""
-        info = {}
-        
-        # School name patterns
-        school_patterns = [
-            r"(?:school|vidyalaya|vidya|shala)[:\s]+([A-Za-z\s]+?)(?:,|\.|\sin|\sat|$)",
-            r"(?:from|at|represent)\s+([A-Za-z\s]+?)\s+(?:school|vidyalaya)",
-        ]
-        for pattern in school_patterns:
-            match = re.search(pattern, message, re.IGNORECASE)
-            if match:
-                school_name = match.group(1).strip().title()
-                if len(school_name) > 3:
-                    info["name"] = school_name
-                break
-        
-        # Location patterns
-        location_patterns = [
-            r"(?:in|at|from|located in)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
-            r"(?:village|town|city|district)[:\s]+([A-Za-z\s]+?)(?:,|\.|\s|$)",
-        ]
-        for pattern in location_patterns:
-            match = re.search(pattern, message, re.IGNORECASE)
-            if match:
-                location = match.group(1).strip().title()
-                if len(location) > 2 and location.lower() not in ['school', 'vidyalaya']:
-                    info["location"] = location
-                break
-        
-        return info
+
+    def extract_all(self, text: str, existing: Optional[Dict] = None) -> Dict[str, Any]:
+        extracted: Dict[str, Any] = {}
+        existing = existing or {}
+
+        subjects = self.extract_subjects(text)
+        if subjects:
+            merged = list(set(existing.get("subjects", []) + subjects))
+            extracted["subjects"] = merged
+
+        grades = self.extract_grades(text)
+        if grades:
+            merged = list(set(existing.get("grade_levels", []) + grades))
+            extracted["grade_levels"] = sorted(merged, key=lambda x: int(x))
+
+        count = self.extract_student_count(text)
+        if count is not None:
+            extracted["student_count"] = count
+
+        slots = self.extract_time_slots(text)
+        if slots:
+            merged = list(set(existing.get("time_slots", []) + slots))
+            extracted["time_slots"] = merged
+
+        start = self.extract_start_date(text)
+        if start:
+            extracted["start_date"] = start
+
+        dur = self.extract_duration(text)
+        if dur is not None:
+            extracted["duration_weeks"] = dur
+
+        return extracted
 
 
-# Singleton extractor
-need_extractor = NeedDetailExtractor()
+_extractor = NeedDetailExtractor()
 
 
-# ============ State Determination ============
-
-def determine_next_need_state(
-    current_state: str,
-    user_message: str,
-    coordinator_resolved: bool,
-    school_resolved: bool,
-    need_draft: Optional[Dict],
-    missing_fields: List[str]
-) -> Tuple[str, str]:
-    """
-    Autonomously determine the next state based on:
-    1. User signals (pause, confirm, etc.)
-    2. Resolution status
-    3. Data completeness
-    
-    Returns: (next_state, reason)
-    """
-    message_lower = user_message.lower()
-    
-    # Check for pause signals
-    pause_signals = ["pause", "stop", "later", "bye", "quit", "not now", "come back"]
-    if any(signal in message_lower for signal in pause_signals):
-        return NeedWorkflowState.PAUSED.value, "User requested pause"
-    
-    # Check for resume signals (if paused)
-    if current_state == NeedWorkflowState.PAUSED.value:
-        resume_signals = ["continue", "resume", "ready", "back", "let's go", "start"]
-        if any(signal in message_lower for signal in resume_signals):
-            # Return to appropriate state based on progress
-            if not coordinator_resolved:
-                return NeedWorkflowState.RESOLVING_COORDINATOR.value, "Resuming coordinator resolution"
-            elif not school_resolved:
-                return NeedWorkflowState.RESOLVING_SCHOOL.value, "Resuming school resolution"
-            elif missing_fields:
-                return NeedWorkflowState.DRAFTING_NEED.value, "Resuming need drafting"
-            else:
-                return NeedWorkflowState.PENDING_APPROVAL.value, "Resuming for confirmation"
-    
-    # State-specific logic
-    if current_state == NeedWorkflowState.INITIATED.value:
-        return NeedWorkflowState.RESOLVING_COORDINATOR.value, "Starting coordinator resolution"
-    
-    elif current_state == NeedWorkflowState.RESOLVING_COORDINATOR.value:
-        if coordinator_resolved:
-            return NeedWorkflowState.RESOLVING_SCHOOL.value, "Coordinator resolved, moving to school"
-        return current_state, "Awaiting coordinator details"
-    
-    elif current_state == NeedWorkflowState.RESOLVING_SCHOOL.value:
-        if school_resolved:
-            return NeedWorkflowState.DRAFTING_NEED.value, "School resolved, starting need capture"
-        return current_state, "Awaiting school details"
-    
-    elif current_state == NeedWorkflowState.DRAFTING_NEED.value:
-        # Check if all mandatory fields are captured
-        if not missing_fields:
-            return NeedWorkflowState.PENDING_APPROVAL.value, "All details captured, ready for confirmation"
-        return current_state, f"Still gathering: {', '.join(missing_fields[:2])}"
-    
-    elif current_state == NeedWorkflowState.PENDING_APPROVAL.value:
-        # Check for confirmation
-        confirm_signals = ["yes", "correct", "confirm", "looks good", "that's right", "perfect", "ok", "okay", "approved", "submit"]
-        if any(signal in message_lower for signal in confirm_signals):
-            return NeedWorkflowState.APPROVED.value, "Coordinator confirmed the need"
-        
-        # Check for changes requested
-        change_signals = ["no", "wrong", "change", "update", "fix", "actually", "wait"]
-        if any(signal in message_lower for signal in change_signals):
-            return NeedWorkflowState.DRAFTING_NEED.value, "Coordinator wants to make changes"
-        
-        return current_state, "Awaiting confirmation"
-    
-    elif current_state == NeedWorkflowState.APPROVED.value:
-        return NeedWorkflowState.FULFILLMENT_HANDOFF_READY.value, "Ready for fulfillment handoff"
-    
-    elif current_state == NeedWorkflowState.REFINEMENT_REQUIRED.value:
-        # After addressing refinement, go back to drafting
-        return NeedWorkflowState.DRAFTING_NEED.value, "Addressing refinement feedback"
-    
-    return current_state, "Continuing in current state"
-
-
-# ============ Main Service ============
+# ── NeedAgentService ──────────────────────────────────────────────────────────
 
 class NeedAgentService:
     """
-    Autonomous need agent service.
-    
-    Responsibilities:
-    - Process conversation turns for need coordination
-    - Resolve coordinator and school identity
-    - Capture and validate need details
-    - Manage state transitions
-    - Prepare for approval and fulfillment handoff
+    L3.5 Need Agent Service.
+
+    The state machine controls stage transitions (deterministic).
+    Within resolution stages, an LLM tool-calling loop handles ambiguity.
     """
-    
-    def __init__(self):
-        self.extractor = need_extractor
-    
+
+    # ── Public entry point ────────────────────────────────────────────────────
+
     async def process_turn(self, request: NeedAgentTurnRequest) -> NeedAgentTurnResponse:
-        """
-        Process a single conversation turn.
-        
-        Flow:
-        1. Log incoming message
-        2. Extract information based on current state
-        3. Update draft/context as needed
-        4. Determine next state
-        5. Generate response
-        6. Prepare handoff if approved
-        """
-        session_state = request.session_state
-        current_state = session_state.stage
-        telemetry_events = []
-        
-        # Track context
-        coordinator_context = None
-        school_context = None
-        need_draft = {}
-        
-        # Log user message event
-        telemetry_events.append({
-            "session_id": str(request.session_id),
-            "event_type": "session_start" if current_state == NeedWorkflowState.INITIATED.value else "user_message",
-            "agent": "need",
-            "data": {"message_length": len(request.user_message)}
-        })
-        
-        # Get existing context from domain service
-        context_result = await domain_client.resume_need_context(str(request.session_id))
-        if context_result.get("status") == "success" and context_result.get("data"):
-            ctx = context_result["data"]
-            coordinator_context = ctx.get("coordinator")
-            school_context = ctx.get("school")
-            need_draft = ctx.get("need_draft", {})
-        
-        # Process based on current state
-        coordinator_resolved = session_state.coordinator_resolution == CoordinatorResolutionStatus.VERIFIED
-        school_resolved = session_state.school_resolution in [SchoolResolutionStatus.EXISTING, SchoolResolutionStatus.NEW]
-        
-        # Extract information from message
-        if current_state in [NeedWorkflowState.INITIATED.value, NeedWorkflowState.RESOLVING_COORDINATOR.value]:
-            # Extract coordinator info
-            coord_info = self.extractor.extract_coordinator_info(request.user_message)
-            if coord_info:
-                if not coordinator_context:
-                    coordinator_context = {}
-                coordinator_context.update(coord_info)
-                
-                # Try to resolve coordinator identity
-                if coord_info.get("name") or request.channel_metadata.get("whatsapp_number") if request.channel_metadata else None:
-                    whatsapp = request.channel_metadata.get("whatsapp_number", "") if request.channel_metadata else ""
-                    resolve_result = await domain_client.resolve_coordinator_identity(
-                        whatsapp_number=whatsapp,
-                        name=coord_info.get("name")
-                    )
-                    if resolve_result.get("status") == "success":
-                        resolution_data = resolve_result.get("data", {})
-                        if resolution_data.get("coordinator"):
-                            coordinator_context = resolution_data["coordinator"]
-                            coordinator_resolved = True
-                            session_state.coordinator_resolution = CoordinatorResolutionStatus.VERIFIED
-        
-        if current_state in [NeedWorkflowState.RESOLVING_SCHOOL.value]:
-            # Extract school info
-            school_info = self.extractor.extract_school_info(request.user_message)
-            if school_info:
-                if not school_context:
-                    school_context = {}
-                school_context.update(school_info)
-                
-                # Try to resolve school context
-                resolve_result = await domain_client.resolve_school_context(
-                    coordinator_id=session_state.coordinator_id,
-                    school_hint=school_info.get("name")
-                )
-                if resolve_result.get("status") == "success":
-                    resolution_data = resolve_result.get("data", {})
-                    if resolution_data.get("school"):
-                        school_context = resolution_data["school"]
-                        school_resolved = True
-                        session_state.school_resolution = SchoolResolutionStatus.EXISTING
-                    elif school_info.get("name") and school_info.get("location"):
-                        # Create new school
-                        create_result = await domain_client.create_basic_school_context(
-                            name=school_info["name"],
-                            location=school_info.get("location", ""),
-                            contact_number=coordinator_context.get("whatsapp_number") if coordinator_context else None
-                        )
-                        if create_result.get("status") == "success":
-                            school_context = create_result.get("data", {}).get("school")
-                            school_resolved = True
-                            session_state.school_resolution = SchoolResolutionStatus.NEW
-        
-        if current_state == NeedWorkflowState.DRAFTING_NEED.value:
-            # Extract need details
-            extracted = self.extractor.extract_all(request.user_message, need_draft)
-            if extracted:
-                need_draft.update(extracted)
-                
-                # Save updated draft
-                await domain_client.create_or_update_need_draft(
-                    session_id=str(request.session_id),
-                    need_data=need_draft
-                )
-                
-                telemetry_events.append({
-                    "session_id": str(request.session_id),
-                    "event_type": "mcp_call",
-                    "agent": "need",
-                    "data": {"fields_updated": list(extracted.keys())}
-                })
-        
-        # Calculate missing fields
-        missing_fields = self._get_missing_fields(need_draft)
-        completion_pct = self._calculate_completion(need_draft)
-        
-        # Determine next state
-        next_state, transition_reason = determine_next_need_state(
-            current_state=current_state,
-            user_message=request.user_message,
-            coordinator_resolved=coordinator_resolved,
-            school_resolved=school_resolved,
-            need_draft=need_draft,
-            missing_fields=missing_fields
+        stage = request.session_state.stage
+        sub = _load_sub_state(request.session_state.sub_state)
+
+        dispatch = {
+            NeedWorkflowState.INITIATED.value:              self._handle_initiated,
+            NeedWorkflowState.CAPTURING_PHONE.value:        self._handle_capturing_phone,
+            NeedWorkflowState.RESOLVING_COORDINATOR.value:  self._handle_resolving_coordinator,
+            NeedWorkflowState.RESOLVING_SCHOOL.value:       self._handle_resolving_school,
+            NeedWorkflowState.DRAFTING_NEED.value:          self._handle_drafting_need,
+            NeedWorkflowState.PENDING_APPROVAL.value:       self._handle_pending_approval,
+            NeedWorkflowState.SUBMITTED.value:              self._handle_submitted,
+            NeedWorkflowState.REFINEMENT_REQUIRED.value:    self._handle_refinement,
+            NeedWorkflowState.PAUSED.value:                 self._handle_paused,
+            NeedWorkflowState.HUMAN_REVIEW.value:           self._handle_human_review,
+        }
+
+        handler = dispatch.get(stage, self._handle_fallback)
+        return await handler(request, sub)
+
+    # ── Stage: INITIATED ──────────────────────────────────────────────────────
+
+    async def _handle_initiated(
+        self, request: NeedAgentTurnRequest, sub: Dict
+    ) -> NeedAgentTurnResponse:
+        channel = request.session_state.channel
+
+        # Resolve phone from channel_metadata (present for WhatsApp and for Web UI
+        # when the pre-screen already captured the number before the chat started).
+        channel_meta = (
+            request.channel_metadata
+            or (request.session_state.channel_metadata if request.session_state.channel_metadata else {})
         )
-        
-        # Log state transition
-        if next_state != current_state:
-            telemetry_events.append({
-                "session_id": str(request.session_id),
-                    "event_type": "state_transition",
-                "agent": "need",
-                "data": {
-                    "from_state": current_state,
-                    "to_state": next_state,
-                    "reason": transition_reason
-                }
-            })
-            logger.info(f"Need state transition: {current_state} -> {next_state} ({transition_reason})")
-        
-        # Generate response
-        assistant_message = await llm_adapter.generate_response(
-            stage=next_state,
+        phone = (
+            channel_meta.get("phone_number")
+            or channel_meta.get("actor_id")
+            or ""
+        )
+
+        if phone:
+            # Phone already known — skip CAPTURING_PHONE regardless of channel
+            sub["coordinator"]["phone"] = phone
+            next_state = NeedWorkflowState.RESOLVING_COORDINATOR.value
+            msg = await llm_adapter.generate_response(
+                stage="initiated",
+                messages=[],
+                user_message=request.user_message,
+            )
+        elif channel == "whatsapp":
+            # WhatsApp but no phone in metadata (shouldn't normally happen)
+            sub["coordinator"]["phone"] = None
+            next_state = NeedWorkflowState.RESOLVING_COORDINATOR.value
+            msg = await llm_adapter.generate_response(
+                stage="initiated",
+                messages=[],
+                user_message=request.user_message,
+            )
+        else:
+            # Web UI without pre-captured phone — ask for it in the chat
+            next_state = NeedWorkflowState.CAPTURING_PHONE.value
+            msg = await llm_adapter.generate_response(
+                stage="initiated",
+                messages=[],
+                user_message=request.user_message,
+            )
+
+        return self._build_response(
+            message=msg,
+            next_state=next_state,
+            sub=sub,
+            session_state=request.session_state,
+        )
+
+    # ── Stage: CAPTURING_PHONE ────────────────────────────────────────────────
+
+    async def _handle_capturing_phone(
+        self, request: NeedAgentTurnRequest, sub: Dict
+    ) -> NeedAgentTurnResponse:
+        # Phone may arrive via channel_metadata (re-sent by client on every turn)
+        channel_meta = (
+            request.channel_metadata
+            or (request.session_state.channel_metadata if request.session_state.channel_metadata else {})
+        )
+        phone = (
+            channel_meta.get("phone_number")
+            or _extract_phone(request.user_message)
+        )
+
+        if phone:
+            sub["coordinator"]["phone"] = phone
+            next_state = NeedWorkflowState.RESOLVING_COORDINATOR.value
+            msg = await llm_adapter.generate_response(
+                stage="resolving_coordinator",
+                messages=request.conversation_history,
+                user_message=request.user_message,
+            )
+        else:
+            next_state = NeedWorkflowState.CAPTURING_PHONE.value
+            msg = await llm_adapter.generate_response(
+                stage="capturing_phone",
+                messages=request.conversation_history,
+                user_message=request.user_message,
+            )
+
+        return self._build_response(
+            message=msg,
+            next_state=next_state,
+            sub=sub,
+            session_state=request.session_state,
+        )
+
+    # ── Stage: RESOLVING_COORDINATOR (L3.5) ───────────────────────────────────
+
+    async def _handle_resolving_coordinator(
+        self, request: NeedAgentTurnRequest, sub: Dict
+    ) -> NeedAgentTurnResponse:
+        coord_ctx = sub["coordinator"]
+
+        # Already resolved — skip to school
+        if coord_ctx.get("coordinator_id"):
+            return self._build_response(
+                message=None,
+                next_state=NeedWorkflowState.RESOLVING_SCHOOL.value,
+                sub=sub,
+                session_state=request.session_state,
+                auto_advance=True,
+            )
+
+        # Absorb any info provided in this message before handing to LLM
+        if "@" in request.user_message and not coord_ctx.get("email"):
+            email_match = re.search(r"[\w.+-]+@[\w-]+\.[a-z]{2,}", request.user_message, re.I)
+            if email_match:
+                coord_ctx["email"] = email_match.group(0)
+
+        if not coord_ctx.get("name"):
+            name_match = re.search(
+                r"(?:i['\u2019]?m|my name is|this is|call me)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+                request.user_message, re.I,
+            )
+            if name_match:
+                coord_ctx["name"] = name_match.group(1).title()
+
+        # Build tool executor
+        async def coordinator_tool_executor(tool_name: str, tool_input: Dict) -> Dict:
+            if tool_name == "lookup_coordinator_by_phone":
+                coord_ctx["phone_tried"] = True
+                return await domain_client.resolve_coordinator_identity(
+                    whatsapp_number=tool_input.get("phone")
+                )
+            if tool_name == "lookup_coordinator_by_email":
+                coord_ctx["email_tried"] = True
+                return await domain_client.resolve_coordinator_identity(
+                    email=tool_input.get("email")
+                )
+            if tool_name == "register_new_coordinator":
+                return await domain_client.create_coordinator(
+                    name=tool_input.get("name", ""),
+                    whatsapp_number=tool_input.get("phone"),
+                    email=tool_input.get("email"),
+                )
+            logger.warning(f"Unknown tool in coordinator loop: {tool_name}")
+            return {"status": "error", "error": f"Unknown tool: {tool_name}"}
+
+        # Build messages for tool loop
+        initial_messages = self._build_resolution_messages(request, coord_ctx)
+
+        system_prompt = llm_adapter.build_coordinator_system_prompt(coord_ctx)
+        msg, tool_results = await llm_adapter.run_tool_loop(
+            system_prompt=system_prompt,
+            initial_messages=initial_messages,
+            tools=llm_adapter.COORDINATOR_TOOLS,
+            tool_executor=coordinator_tool_executor,
+        )
+
+        # Check resolution outcome from tool results
+        for _tool_name, result in tool_results.items():
+            if result.get("status") == "linked":
+                coordinator = result.get("coordinator") or {}
+                coord_ctx["coordinator_id"] = coordinator.get("id")
+                coord_ctx["coordinator_name"] = coordinator.get("name") or coord_ctx.get("name")
+                coord_ctx["is_verified"] = coordinator.get("is_verified", False)
+                break
+            if result.get("id"):  # create_coordinator result
+                coord_ctx["coordinator_id"] = result.get("id")
+                coord_ctx["coordinator_name"] = result.get("name") or coord_ctx.get("name")
+                coord_ctx["is_verified"] = False
+                break
+
+        sub["coordinator"] = coord_ctx
+        resolved = bool(coord_ctx.get("coordinator_id"))
+        next_state = (
+            NeedWorkflowState.RESOLVING_SCHOOL.value
+            if resolved
+            else NeedWorkflowState.RESOLVING_COORDINATOR.value
+        )
+
+        return self._build_response(
+            message=msg,
+            next_state=next_state,
+            sub=sub,
+            session_state=request.session_state,
+            confirmed_fields={
+                "coordinator_name": coord_ctx.get("coordinator_name"),
+                "coordinator_id": coord_ctx.get("coordinator_id"),
+            } if resolved else {},
+        )
+
+    # ── Stage: RESOLVING_SCHOOL (L3.5) ────────────────────────────────────────
+
+    async def _handle_resolving_school(
+        self, request: NeedAgentTurnRequest, sub: Dict
+    ) -> NeedAgentTurnResponse:
+        coord_ctx = sub["coordinator"]
+        school_ctx = sub["school"]
+
+        # Already resolved — skip to drafting
+        if school_ctx.get("school_id"):
+            return self._build_response(
+                message=None,
+                next_state=NeedWorkflowState.DRAFTING_NEED.value,
+                sub=sub,
+                session_state=request.session_state,
+                auto_advance=True,
+            )
+
+        coordinator_id = coord_ctx.get("coordinator_id")
+
+        # Build tool executor
+        async def school_tool_executor(tool_name: str, tool_input: Dict) -> Dict:
+            if tool_name == "get_schools_for_coordinator":
+                school_ctx["linked_schools_checked"] = True
+                return await domain_client.resolve_school_context(
+                    coordinator_id=tool_input.get("coordinator_id")
+                )
+            if tool_name == "search_school":
+                hint = tool_input.get("hint", "")
+                school_ctx["udise_hint"] = hint
+                return await domain_client.resolve_school_context(school_hint=hint)
+            if tool_name == "fetch_previous_needs":
+                result = await domain_client.fetch_previous_need_context(
+                    school_id=tool_input.get("school_id", "")
+                )
+                if result.get("status") == "success":
+                    school_ctx["previous_needs"] = result.get("previous_needs", [])
+                return result
+            if tool_name == "link_coordinator_to_school":
+                return await domain_client.map_coordinator_to_school(
+                    coordinator_id=tool_input.get("coordinator_id", ""),
+                    school_id=tool_input.get("school_id", ""),
+                )
+            if tool_name == "create_new_school":
+                school_ctx["is_new_school"] = True
+                return await domain_client.create_basic_school_context(
+                    name=tool_input.get("name", ""),
+                    location=tool_input.get("district") or tool_input.get("state") or "",
+                    contact_number=tool_input.get("contact_number") or coord_ctx.get("phone"),
+                    coordinator_id=coordinator_id,
+                )
+            logger.warning(f"Unknown tool in school loop: {tool_name}")
+            return {"status": "error", "error": f"Unknown tool: {tool_name}"}
+
+        # Build initial messages
+        initial_messages = self._build_resolution_messages(request, {**coord_ctx, **school_ctx})
+        system_prompt = llm_adapter.build_school_system_prompt(coord_ctx, school_ctx)
+
+        msg, tool_results = await llm_adapter.run_tool_loop(
+            system_prompt=system_prompt,
+            initial_messages=initial_messages,
+            tools=llm_adapter.SCHOOL_TOOLS,
+            tool_executor=school_tool_executor,
+        )
+
+        # Extract resolution outcome from tool results
+        for tool_name, result in tool_results.items():
+            school = result.get("school") or {}
+            if school.get("id") and tool_name in (
+                "get_schools_for_coordinator", "search_school",
+                "create_new_school", "link_coordinator_to_school",
+            ):
+                if result.get("status") in ("existing", "success") or school.get("id"):
+                    school_ctx["school_id"] = school.get("id")
+                    school_ctx["school_name"] = school.get("name")
+                    break
+            # create_new_school may return entity directly
+            if tool_name == "create_new_school" and result.get("id"):
+                school_ctx["school_id"] = result.get("id")
+                school_ctx["school_name"] = result.get("name")
+                break
+
+        sub["school"] = school_ctx
+        resolved = bool(school_ctx.get("school_id"))
+        next_state = (
+            NeedWorkflowState.DRAFTING_NEED.value
+            if resolved
+            else NeedWorkflowState.RESOLVING_SCHOOL.value
+        )
+
+        confirmed = {}
+        if resolved:
+            confirmed = {
+                "school_name": school_ctx.get("school_name"),
+                "school_id": school_ctx.get("school_id"),
+            }
+
+        return self._build_response(
+            message=msg,
+            next_state=next_state,
+            sub=sub,
+            session_state=request.session_state,
+            confirmed_fields=confirmed,
+        )
+
+    # ── Stage: DRAFTING_NEED ──────────────────────────────────────────────────
+
+    async def _handle_drafting_need(
+        self, request: NeedAgentTurnRequest, sub: Dict
+    ) -> NeedAgentTurnResponse:
+        session_id = str(request.session_id)
+        coord_ctx = sub["coordinator"]
+        school_ctx = sub["school"]
+
+        # Fetch existing draft from MCP
+        ctx_result = await domain_client.resume_need_context(session_id)
+        existing_draft: Dict = {}
+        if ctx_result.get("status") == "success" and ctx_result.get("data"):
+            existing_draft = ctx_result["data"].get("need_draft") or {}
+
+        # Extract from user message
+        extracted = _extractor.extract_all(request.user_message, existing_draft)
+        if extracted:
+            merged = {**existing_draft, **extracted}
+            save_args = {
+                "session_id": session_id,
+                "coordinator_osid": coord_ctx.get("coordinator_id") or "",
+                "entity_id": school_ctx.get("school_id") or "",
+            }
+            save_args.update({k: v for k, v in merged.items() if v})
+            await domain_client.create_or_update_need_draft(**save_args)
+            existing_draft = merged
+
+        missing = self._get_missing_fields(existing_draft)
+        completion_pct = self._calculate_completion(existing_draft)
+
+        next_state = (
+            NeedWorkflowState.PENDING_APPROVAL.value
+            if not missing
+            else NeedWorkflowState.DRAFTING_NEED.value
+        )
+
+        previous_needs = school_ctx.get("previous_needs", [])
+        msg = await llm_adapter.generate_response(
+            stage="drafting_need",
             messages=request.conversation_history,
             user_message=request.user_message,
-            coordinator_context=coordinator_context,
-            school_context=school_context,
-            need_draft=need_draft,
-            missing_fields=missing_fields
+            coordinator_context=coord_ctx,
+            school_context=school_ctx,
+            need_draft=existing_draft,
+            missing_fields=missing,
+            previous_needs=previous_needs if existing_draft == {} else None,
         )
-        
-        # Prepare handoff if approved
-        handoff_event = None
-        completion_status = "in_progress"
-        
-        if next_state == NeedWorkflowState.APPROVED.value:
-            completion_status = "approved"
-            
-            # Prepare fulfillment handoff
-            handoff_result = await domain_client.prepare_fulfillment_handoff(
-                need_id=need_draft.get("id", str(request.session_id))
+
+        return self._build_response(
+            message=msg,
+            next_state=next_state,
+            sub=sub,
+            session_state=request.session_state,
+            confirmed_fields=existing_draft,
+            missing_fields=missing,
+            completion_pct=completion_pct,
+        )
+
+    # ── Stage: PENDING_APPROVAL ───────────────────────────────────────────────
+
+    async def _handle_pending_approval(
+        self, request: NeedAgentTurnRequest, sub: Dict
+    ) -> NeedAgentTurnResponse:
+        session_id = str(request.session_id)
+        coord_ctx = sub["coordinator"]
+        school_ctx = sub["school"]
+
+        ctx_result = await domain_client.resume_need_context(session_id)
+        need_draft: Dict = {}
+        need_draft_id: Optional[str] = None
+        if ctx_result.get("status") == "success" and ctx_result.get("data"):
+            data = ctx_result["data"]
+            need_draft = data.get("need_draft") or {}
+            need_draft_id = need_draft.get("id")
+
+        lower = request.user_message.lower()
+
+        # Coordinator wants changes
+        change_signals = {"no", "wrong", "change", "update", "fix", "actually", "wait", "incorrect"}
+        if any(s in lower for s in change_signals):
+            msg = await llm_adapter.generate_response(
+                stage="drafting_need",
+                messages=request.conversation_history,
+                user_message=request.user_message,
+                coordinator_context=coord_ctx,
+                school_context=school_ctx,
+                need_draft=need_draft,
             )
-            
-            if handoff_result.get("status") == "success":
-                handoff_event = {
-                    "session_id": str(request.session_id),
-                    "from_agent": "need",
-                    "to_agent": "fulfillment",
-                    "handoff_type": "agent_transition",
-                    "payload": handoff_result.get("data", {}),
-                    "reason": "Need approved, ready for volunteer matching"
-                }
-                
-                telemetry_events.append({
-                    "session_id": str(request.session_id),
-                    "event_type": "handoff",
-                    "agent": "need",
-                    "data": {"target_agent": "fulfillment"}
-                })
-        
-        elif next_state == NeedWorkflowState.PAUSED.value:
-            completion_status = "paused"
-            telemetry_events.append({
-                "session_id": str(request.session_id),
-                    "event_type": "session_end",
-                "agent": "need",
-                "data": {}
+            return self._build_response(
+                message=msg,
+                next_state=NeedWorkflowState.DRAFTING_NEED.value,
+                sub=sub,
+                session_state=request.session_state,
+                confirmed_fields=need_draft,
+            )
+
+        # Coordinator confirms
+        confirm_signals = {
+            "yes", "correct", "confirm", "looks good", "that's right", "perfect",
+            "ok", "okay", "approved", "submit", "proceed", "go ahead", "sure",
+        }
+        if any(s in lower for s in confirm_signals):
+            # Submit to Serve Need Service
+            submit_result: Dict = {}
+            serve_need_id: Optional[str] = None
+
+            if need_draft_id:
+                submit_result = await domain_client.submit_need_for_approval(need_draft_id)
+                serve_need_id = submit_result.get("serve_need_id") or submit_result.get("id")
+
+            ref = f"#{serve_need_id[:8].upper()}" if serve_need_id else "#pending"
+            msg = await llm_adapter.generate_response(
+                stage="submitted",
+                messages=request.conversation_history,
+                user_message=request.user_message,
+                coordinator_context=coord_ctx,
+                school_context=school_ctx,
+                need_draft=need_draft,
+            )
+            # Append reference number naturally
+            if serve_need_id and "reference" not in msg.lower() and ref not in msg:
+                msg += f" Your reference number is {ref}."
+
+            sub["school"]["serve_need_id"] = serve_need_id
+            return self._build_response(
+                message=msg,
+                next_state=NeedWorkflowState.SUBMITTED.value,
+                sub=sub,
+                session_state=request.session_state,
+                confirmed_fields=need_draft,
+                completion_pct=100,
+            )
+
+        # Ambiguous reply — show summary again
+        msg = await llm_adapter.generate_response(
+            stage="pending_approval",
+            messages=request.conversation_history,
+            user_message=request.user_message,
+            coordinator_context=coord_ctx,
+            school_context=school_ctx,
+            need_draft=need_draft,
+        )
+        return self._build_response(
+            message=msg,
+            next_state=NeedWorkflowState.PENDING_APPROVAL.value,
+            sub=sub,
+            session_state=request.session_state,
+            confirmed_fields=need_draft,
+        )
+
+    # ── Stage: SUBMITTED ─────────────────────────────────────────────────────
+
+    async def _handle_submitted(
+        self, request: NeedAgentTurnRequest, sub: Dict
+    ) -> NeedAgentTurnResponse:
+        msg = await llm_adapter.generate_response(
+            stage="submitted",
+            messages=request.conversation_history,
+            user_message=request.user_message,
+        )
+        return self._build_response(
+            message=msg,
+            next_state=NeedWorkflowState.SUBMITTED.value,
+            sub=sub,
+            session_state=request.session_state,
+            completion_pct=100,
+        )
+
+    # ── Stage: REFINEMENT_REQUIRED ────────────────────────────────────────────
+
+    async def _handle_refinement(
+        self, request: NeedAgentTurnRequest, sub: Dict
+    ) -> NeedAgentTurnResponse:
+        msg = await llm_adapter.generate_response(
+            stage="refinement_required",
+            messages=request.conversation_history,
+            user_message=request.user_message,
+        )
+        return self._build_response(
+            message=msg,
+            next_state=NeedWorkflowState.DRAFTING_NEED.value,
+            sub=sub,
+            session_state=request.session_state,
+        )
+
+    # ── Stage: PAUSED ────────────────────────────────────────────────────────
+
+    async def _handle_paused(
+        self, request: NeedAgentTurnRequest, sub: Dict
+    ) -> NeedAgentTurnResponse:
+        resume_signals = {"continue", "resume", "ready", "back", "let's go", "start", "hi", "hello"}
+        if any(s in request.user_message.lower() for s in resume_signals):
+            coord_id = sub["coordinator"].get("coordinator_id")
+            school_id = sub["school"].get("school_id")
+            if not coord_id:
+                next_state = NeedWorkflowState.CAPTURING_PHONE.value
+            elif not school_id:
+                next_state = NeedWorkflowState.RESOLVING_SCHOOL.value
+            else:
+                next_state = NeedWorkflowState.DRAFTING_NEED.value
+            msg = "Welcome back! Let's pick up where we left off."
+        else:
+            next_state = NeedWorkflowState.PAUSED.value
+            msg = await llm_adapter.generate_response(
+                stage="paused",
+                messages=request.conversation_history,
+                user_message=request.user_message,
+            )
+        return self._build_response(
+            message=msg, next_state=next_state, sub=sub, session_state=request.session_state
+        )
+
+    # ── Stage: HUMAN_REVIEW ──────────────────────────────────────────────────
+
+    async def _handle_human_review(
+        self, request: NeedAgentTurnRequest, sub: Dict
+    ) -> NeedAgentTurnResponse:
+        msg = await llm_adapter.generate_response(
+            stage="human_review",
+            messages=request.conversation_history,
+            user_message=request.user_message,
+        )
+        return self._build_response(
+            message=msg,
+            next_state=NeedWorkflowState.HUMAN_REVIEW.value,
+            sub=sub,
+            session_state=request.session_state,
+        )
+
+    # ── Fallback ─────────────────────────────────────────────────────────────
+
+    async def _handle_fallback(
+        self, request: NeedAgentTurnRequest, sub: Dict
+    ) -> NeedAgentTurnResponse:
+        logger.warning(f"No handler for stage={request.session_state.stage!r}; using fallback")
+        msg = await llm_adapter.generate_response(
+            stage="initiated",
+            messages=request.conversation_history,
+            user_message=request.user_message,
+        )
+        return self._build_response(
+            message=msg,
+            next_state=NeedWorkflowState.INITIATED.value,
+            sub=sub,
+            session_state=request.session_state,
+        )
+
+    # ── Helpers ──────────────────────────────────────────────────────────────
+
+    def _build_resolution_messages(
+        self, request: NeedAgentTurnRequest, context: Dict
+    ) -> List[Dict]:
+        """
+        Build the message list for a tool-calling loop.
+        Includes recent conversation history (as a context summary) + current user message.
+        """
+        messages: List[Dict] = []
+
+        # Add prior conversation as a single assistant turn for context
+        if request.conversation_history:
+            recent = request.conversation_history[-4:]
+            history_text = "\n".join(
+                f"{'Coordinator' if m.get('role') == 'user' else 'eVidyaloka'}: {m.get('content', '')}"
+                for m in recent
+            )
+            messages.append({
+                "role": "user",
+                "content": f"[Prior conversation]\n{history_text}",
             })
-        
-        elif next_state == NeedWorkflowState.HUMAN_REVIEW.value:
-            completion_status = "human_review"
-            telemetry_events.append({
-                "session_id": str(request.session_id),
-                    "event_type": "error",
-                "agent": "need",
-                "data": {"reason": transition_reason}
+            messages.append({
+                "role": "assistant",
+                "content": "I have the conversation context. What's their latest message?",
             })
-        
-        # Build response
+
+        messages.append({"role": "user", "content": request.user_message})
+        return messages
+
+    def _build_response(
+        self,
+        message: Optional[str],
+        next_state: str,
+        sub: Dict,
+        session_state: NeedSessionState,
+        confirmed_fields: Optional[Dict] = None,
+        missing_fields: Optional[List[str]] = None,
+        completion_pct: int = 0,
+        auto_advance: bool = False,
+    ) -> NeedAgentTurnResponse:
+        """Build the standard NeedAgentTurnResponse."""
+        if auto_advance or message is None:
+            message = ""
+
+        # Build the flat confirmed_fields dict the orchestrator exposes via journey_progress.
+        # Start with whatever was explicitly passed in (usually the need draft fields),
+        # then layer in coordinator and school display names from sub_state.
+        flat: Dict[str, Any] = dict(confirmed_fields or {})
+        coord = sub.get("coordinator", {})
+        school = sub.get("school", {})
+        if coord.get("coordinator_name"):
+            flat["coordinator_name"] = coord["coordinator_name"]
+        if coord.get("phone"):
+            flat["coordinator_phone"] = coord["phone"]
+        if school.get("school_name"):
+            flat["school_name"] = school["school_name"]
+        flat["completion_percentage"] = completion_pct
+
         return NeedAgentTurnResponse(
-            assistant_message=assistant_message,
+            assistant_message=message,
             active_agent="need",
             workflow="need_coordination",
             state=next_state,
-            completion_status=completion_status,
-            coordinator_resolved=Coordinator(**coordinator_context) if coordinator_context and coordinator_context.get("name") else None,
-            school_resolved=School(**school_context) if school_context and school_context.get("name") else None,
-            need_draft=NeedDraft(**need_draft) if need_draft else None,
-            missing_fields=missing_fields,
+            sub_state=_dump_sub_state(sub),
+            completion_status=self._completion_status(next_state),
+            confirmed_fields=flat,
+            coordinator_resolved=self._make_coordinator(coord) if coord.get("coordinator_id") else None,
+            school_resolved=self._make_school(school) if school.get("school_id") else None,
+            missing_fields=missing_fields or [],
             completion_percentage=completion_pct,
-            telemetry_events=telemetry_events,
-            handoff_event=handoff_event
+            telemetry_events=[],
+            handoff_event=None,
         )
-    
+
+    def _completion_status(self, state: str) -> str:
+        return {
+            NeedWorkflowState.SUBMITTED.value: "submitted",
+            NeedWorkflowState.PAUSED.value: "paused",
+            NeedWorkflowState.HUMAN_REVIEW.value: "human_review",
+            NeedWorkflowState.REJECTED.value: "rejected",
+            NeedWorkflowState.FULFILLMENT_HANDOFF_READY.value: "fulfillment_ready",
+        }.get(state, "in_progress")
+
+    def _make_coordinator(self, ctx: Dict) -> Optional[Coordinator]:
+        try:
+            return Coordinator(
+                id=ctx.get("coordinator_id"),
+                name=ctx.get("coordinator_name") or "Unknown",
+                whatsapp_number=ctx.get("phone"),
+                email=ctx.get("email"),
+                is_verified=ctx.get("is_verified", False),
+            )
+        except Exception:
+            return None
+
+    def _make_school(self, ctx: Dict) -> Optional[School]:
+        try:
+            return School(
+                id=ctx.get("school_id"),
+                name=ctx.get("school_name") or "Unknown",
+                previous_needs=[
+                    n.get("name", "") for n in ctx.get("previous_needs", []) if n
+                ],
+            )
+        except Exception:
+            return None
+
     def _get_missing_fields(self, draft: Dict) -> List[str]:
-        """Get list of missing mandatory fields."""
-        missing = []
-        for field in MANDATORY_NEED_FIELDS:
-            value = draft.get(field)
-            if not value or (isinstance(value, list) and len(value) == 0):
-                missing.append(field)
-        return missing
-    
+        return [
+            f for f in MANDATORY_NEED_FIELDS
+            if not draft.get(f) or (isinstance(draft[f], list) and not draft[f])
+        ]
+
     def _calculate_completion(self, draft: Dict) -> int:
-        """Calculate completion percentage."""
         if not draft:
             return 0
-        
-        total_fields = len(MANDATORY_NEED_FIELDS)
-        filled = 0
-        
-        for field in MANDATORY_NEED_FIELDS:
-            value = draft.get(field)
-            if value and (not isinstance(value, list) or len(value) > 0):
-                filled += 1
-        
-        return round((filled / total_fields) * 100)
+        filled = sum(
+            1 for f in MANDATORY_NEED_FIELDS
+            if draft.get(f) and (not isinstance(draft[f], list) or draft[f])
+        )
+        return round((filled / len(MANDATORY_NEED_FIELDS)) * 100)
 
 
-# Singleton instance
+# ── Domain client wrappers (thin pass-through) ────────────────────────────────
+# These keep domain_client.py interface stable and centralise the mapping.
+
+class _DomainClientAdapter:
+    """
+    Thin wrapper exposing the method signatures used by stage handlers.
+    Delegates to _mcp_client (the real DomainClient singleton) to avoid
+    the circular-reference that would result from reassigning the module-level name.
+    """
+
+    async def resolve_coordinator_identity(
+        self,
+        whatsapp_number: Optional[str] = None,
+        email: Optional[str] = None,
+        name: Optional[str] = None,
+    ) -> Dict:
+        return await _mcp_client.resolve_coordinator_identity(
+            whatsapp_number=whatsapp_number, email=email
+        )
+
+    async def create_coordinator(
+        self, name: str, whatsapp_number: Optional[str] = None, email: Optional[str] = None
+    ) -> Dict:
+        return await _mcp_client.create_coordinator(
+            name=name, whatsapp_number=whatsapp_number, email=email
+        )
+
+    async def resolve_school_context(
+        self,
+        coordinator_id: Optional[str] = None,
+        school_hint: Optional[str] = None,
+    ) -> Dict:
+        return await _mcp_client.resolve_school_context(
+            coordinator_id=coordinator_id, school_hint=school_hint
+        )
+
+    async def map_coordinator_to_school(self, coordinator_id: str, school_id: str) -> Dict:
+        return await _mcp_client.map_coordinator_to_school(
+            coordinator_id=coordinator_id, school_id=school_id
+        )
+
+    async def create_basic_school_context(
+        self,
+        name: str,
+        location: str,
+        contact_number: Optional[str] = None,
+        coordinator_id: Optional[str] = None,
+    ) -> Dict:
+        return await _mcp_client.create_basic_school_context(
+            name=name, location=location, contact_number=contact_number
+        )
+
+    async def fetch_previous_need_context(self, school_id: str) -> Dict:
+        return await _mcp_client.fetch_previous_need_context(school_id=school_id)
+
+    async def resume_need_context(self, session_id: str) -> Dict:
+        return await _mcp_client.resume_need_context(session_id=session_id)
+
+    async def create_or_update_need_draft(self, session_id: str, **kwargs) -> Dict:
+        return await _mcp_client.create_or_update_need_draft(
+            session_id=session_id, need_data=kwargs
+        )
+
+    async def submit_need_for_approval(self, need_id: str) -> Dict:
+        return await _mcp_client.submit_need_for_approval(need_id=need_id)
+
+
+# Stage handlers use this adapter, not the raw _mcp_client
+domain_client = _DomainClientAdapter()
+
+# Singleton
 need_agent_service = NeedAgentService()

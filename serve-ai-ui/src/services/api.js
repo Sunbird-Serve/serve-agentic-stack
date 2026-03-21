@@ -30,7 +30,7 @@ apiClient.interceptors.response.use(
  */
 export const orchestratorApi = {
   // Process a chat interaction
-  interact: async (sessionId, message, channel = 'web_ui', persona = 'new_volunteer') => {
+  interact: async (sessionId, message, channel = 'web_ui', persona = 'new_volunteer', channelMetadata = null) => {
     const payload = {
       message,
       channel,
@@ -38,6 +38,9 @@ export const orchestratorApi = {
     };
     if (sessionId) {
       payload.session_id = sessionId;
+    }
+    if (channelMetadata) {
+      payload.channel_metadata = channelMetadata;
     }
     const response = await apiClient.post('/orchestrator/interact', payload);
     return response.data;

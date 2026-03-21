@@ -112,11 +112,19 @@ NEED_COORDINATION_WORKFLOW = WorkflowDefinition(
     display_name='Need Coordination',
     description='Guides need coordinators through capturing and validating school needs',
     initial_stage='initiated',
-    terminal_stages=['approved', 'rejected', 'fulfillment_handoff_ready'],
+    terminal_stages=['submitted', 'approved', 'rejected', 'fulfillment_handoff_ready'],
     stages={
         'initiated': WorkflowStageDefinition(
             stage_id='initiated',
             display_name='Welcome',
+            responsible_agent='need',
+            valid_next_stages=['capturing_phone', 'resolving_coordinator', 'paused'],
+            required_fields=[],
+            can_pause=True
+        ),
+        'capturing_phone': WorkflowStageDefinition(
+            stage_id='capturing_phone',
+            display_name='Phone Number',
             responsible_agent='need',
             valid_next_stages=['resolving_coordinator', 'paused'],
             required_fields=[],
@@ -153,9 +161,17 @@ NEED_COORDINATION_WORKFLOW = WorkflowDefinition(
             stage_id='pending_approval',
             display_name='Review & Confirm',
             responsible_agent='need',
-            valid_next_stages=['approved', 'refinement_required', 'drafting_need', 'rejected', 'paused'],
+            valid_next_stages=['submitted', 'approved', 'refinement_required', 'drafting_need', 'rejected', 'paused'],
             required_fields=['subjects', 'grade_levels', 'student_count', 'time_slots', 'start_date', 'duration_weeks'],
             can_pause=True
+        ),
+        'submitted': WorkflowStageDefinition(
+            stage_id='submitted',
+            display_name='Need Registered',
+            responsible_agent='need',
+            valid_next_stages=['fulfillment_handoff_ready', 'refinement_required'],
+            required_fields=[],
+            can_pause=False
         ),
         'refinement_required': WorkflowStageDefinition(
             stage_id='refinement_required',
@@ -193,8 +209,9 @@ NEED_COORDINATION_WORKFLOW = WorkflowDefinition(
             stage_id='paused',
             display_name='Paused',
             responsible_agent='need',
-            valid_next_stages=['initiated', 'resolving_coordinator', 'resolving_school',
-                              'drafting_need', 'pending_approval', 'refinement_required'],
+            valid_next_stages=['initiated', 'capturing_phone', 'resolving_coordinator',
+                              'resolving_school', 'drafting_need', 'pending_approval',
+                              'refinement_required'],
             required_fields=[],
             can_pause=False
         ),
@@ -429,8 +446,8 @@ class WorkflowValidator:
                 'profile_confirmation', 'onboarding_complete'
             ],
             'need_coordination': [
-                'initiated', 'resolving_coordinator', 'resolving_school',
-                'drafting_need', 'pending_approval', 'approved',
+                'initiated', 'capturing_phone', 'resolving_coordinator', 'resolving_school',
+                'drafting_need', 'pending_approval', 'submitted', 'approved',
                 'fulfillment_handoff_ready'
             ],
             'returning_volunteer': [

@@ -14,12 +14,14 @@ from enum import Enum
 class NeedWorkflowState(str, Enum):
     """States in the need lifecycle workflow."""
     INITIATED = "initiated"
+    CAPTURING_PHONE = "capturing_phone"          # web UI: ask for phone before identity lookup
     RESOLVING_COORDINATOR = "resolving_coordinator"
     RESOLVING_SCHOOL = "resolving_school"
     DRAFTING_NEED = "drafting_need"
     PENDING_APPROVAL = "pending_approval"
     REFINEMENT_REQUIRED = "refinement_required"
-    APPROVED = "approved"
+    SUBMITTED = "submitted"                      # need raised in Serve Need Service (auto-approved)
+    APPROVED = "approved"                        # kept for compatibility
     PAUSED = "paused"
     REJECTED = "rejected"
     HUMAN_REVIEW = "human_review"
@@ -132,7 +134,8 @@ class NeedSessionState(BaseModel):
     status: str = "active"
     stage: str = NeedWorkflowState.INITIATED.value
     sub_state: Optional[str] = None
-    
+    channel_metadata: Optional[Dict[str, Any]] = None
+
     # Resolution context
     coordinator_resolution: Optional[CoordinatorResolutionStatus] = None
     school_resolution: Optional[SchoolResolutionStatus] = None
@@ -160,16 +163,21 @@ class NeedAgentTurnResponse(BaseModel):
     state: str
     sub_state: Optional[str] = None
     completion_status: Optional[str] = None
-    
-    # Resolution results
+
+    # Flat dict of all captured data — read by orchestrator to build journey_progress.
+    # Keys: coordinator_name, school_name, subjects, grade_levels, student_count,
+    #       time_slots, start_date, duration_weeks, completion_percentage.
+    confirmed_fields: Dict[str, Any] = Field(default_factory=dict)
+
+    # Resolution results (richer objects for internal use)
     coordinator_resolved: Optional[Coordinator] = None
     school_resolved: Optional[School] = None
     need_draft: Optional[NeedDraft] = None
-    
+
     # Progress tracking
     missing_fields: List[str] = Field(default_factory=list)
     completion_percentage: int = 0
-    
+
     # Events
     telemetry_events: List[Dict[str, Any]] = Field(default_factory=list)
     handoff_event: Optional[Dict[str, Any]] = None
