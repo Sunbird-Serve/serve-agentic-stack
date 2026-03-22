@@ -87,7 +87,12 @@ async def _call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict:
                 await asyncio.sleep(wait)
 
     logger.error(f"MCP tool [{tool_name}] failed after {_MCP_RETRIES} attempts: {last_error}")
-    return {"status": "error", "error": str(last_error)}
+    return {
+        "status": "error",
+        "serve_system_available": False,
+        "error": str(last_error),
+        "message": "Serve system temporarily unavailable. Cannot verify this information.",
+    }
 
 
 class DomainClient:
@@ -115,7 +120,14 @@ class DomainClient:
             args["email"] = email
         if name:
             args["name"] = name
-        return await _call_mcp_tool("resolve_coordinator_identity", args)
+        result = await _call_mcp_tool("resolve_coordinator_identity", args)
+        # Normalise empty / unexpected responses so Claude always sees a clear status
+        if not result or result == {}:
+            return {"status": "not_found", "serve_system_available": True,
+                    "message": "Coordinator not found in Serve system"}
+        if result.get("status") not in ("linked", "unlinked", "not_found", "error"):
+            result.setdefault("status", "not_found")
+        return result
 
     async def create_coordinator(
         self,
@@ -155,7 +167,17 @@ class DomainClient:
             args["coordinator_id"] = coordinator_id
         if school_hint:
             args["school_hint"] = school_hint
-        return await _call_mcp_tool("resolve_school_context", args)
+        result = await _call_mcp_tool("resolve_school_context", args)
+        # Normalise empty / unexpected responses so Claude always sees a clear status
+        if not result or result == {}:
+            return {"status": "not_found", "serve_system_available": True,
+                    "message": "School not found in Serve system"}
+        if result.get("status") not in ("existing", "new", "not_found", "error", "success", "linked"):
+            # MCP may return school dict directly — wrap it
+            if result.get("id") or result.get("school"):
+                return result
+            result.setdefault("status", "not_found")
+        return result
 
     async def create_basic_school_context(
         self,
@@ -198,6 +220,8 @@ class DomainClient:
             "duration_weeks": "duration_weeks",
             "schedule_preference": "schedule_preference",
             "special_requirements": "special_requirements",
+            "coordinator_osid": "coordinator_osid",
+            "entity_id": "entity_id",
         }
         for src_key, dst_key in field_map.items():
             if src_key in need_data and need_data[src_key] is not None:

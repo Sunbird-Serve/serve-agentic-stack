@@ -81,7 +81,7 @@ class Session(Base):
     active_agent     = Column(String(50),  nullable=False, default="onboarding")
     status           = Column(String(20),  nullable=False, default="active")
     stage            = Column(String(50),  nullable=False, default="init")
-    sub_state        = Column(String(50),  nullable=True)
+    sub_state        = Column(Text,        nullable=True)
     context_summary  = Column(Text,        nullable=True)
     channel_metadata = Column(JSONB,       nullable=True)
     idempotency_key  = Column(String(255), nullable=True)   # deduplication (WhatsApp wamid)
@@ -305,9 +305,23 @@ class NeedDraft(Base):
 # ─── DB Lifecycle ─────────────────────────────────────────────────────────────
 
 async def init_db():
-    """Create all tables (safe to call on every startup — uses CREATE IF NOT EXISTS)."""
+    """Create all tables (safe to call on every startup — uses CREATE IF NOT EXISTS).
+    Also runs lightweight column migrations for schema drift (e.g. VARCHAR → TEXT)."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Run DDL migrations in a separate transaction — asyncpg requires DDL
+    # to be committed independently from create_all.
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE sessions ALTER COLUMN sub_state TYPE TEXT"
+            ))
+        logger.info("Migration applied: sub_state VARCHAR(50) → TEXT")
+    except Exception as e:
+        # Already TEXT or other benign error — log and continue
+        logger.info(f"Migration sub_state skipped (likely already applied): {e}")
+
     logger.info("Database tables initialised")
 
 

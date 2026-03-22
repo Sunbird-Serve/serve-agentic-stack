@@ -10,9 +10,9 @@ load_dotenv()
 
 # ─── Serve Platform Base URL ─────────────────────────────────────────────────
 # Single base URL for all Serve platform services.
-# Sandbox : https://serve-v1.evean.net.in
+# Sandbox : https://serve-v1.evean.net
 # Override with SERVE_BASE_URL env var for other deployments / adopters.
-SERVE_BASE_URL = os.environ.get("SERVE_BASE_URL", "https://serve-v1.evean.net.in")
+SERVE_BASE_URL = os.environ.get("SERVE_BASE_URL", "https://serve-v1.evean.net")
 
 # ─── Service Path Prefixes ────────────────────────────────────────────────────
 VOLUNTEERING_API_PATH = os.environ.get(
@@ -53,7 +53,7 @@ ONLINE_TEACHING_NEED_TYPE_ID = os.environ.get(
 )
 
 # Default need status on creation
-DEFAULT_NEED_STATUS = os.environ.get("DEFAULT_NEED_STATUS", "Unassigned")
+DEFAULT_NEED_STATUS = os.environ.get("DEFAULT_NEED_STATUS", "New")
 
 # ─── Actor Registry Cache TTL ─────────────────────────────────────────────────
 # How many hours before we re-validate an actor against the Serve Registry.

@@ -228,16 +228,16 @@ class FulfillmentHandoffPayload(BaseModel):
 
 MANDATORY_NEED_FIELDS = [
     "subjects",
-    "grade_levels", 
+    "grade_levels",
     "student_count",
-    "time_slots",
+    "schedule_preference",
     "start_date",
-    "duration_weeks"
 ]
 
 OPTIONAL_NEED_FIELDS = [
-    "schedule_preference",
-    "special_requirements"
+    "time_slots",
+    "duration_weeks",
+    "special_requirements",
 ]
 
 SUBJECT_OPTIONS = [

@@ -193,10 +193,12 @@ class NeedService:
 
     async def submit_for_approval(self, need_id: str) -> Dict[str, Any]:
         """
-        Find the draft by need_id (or session context) and push it
+        Find the draft by need_id and push one need per subject+grade combination
         to the Serve Need Service via POST /need/raise.
+
+        Example: subjects=[math, english], grade_levels=[7, 8] →
+          Math Grade 7, Math Grade 8, English Grade 7, English Grade 8 (4 needs)
         """
-        # Find draft
         draft = await self._get_draft_by_need_id(need_id)
         if not draft:
             return {"status": "error", "error_message": f"Draft {need_id} not found"}
@@ -210,23 +212,51 @@ class NeedService:
                 "error_message": "coordinator_osid and entity_id must be set before submission",
             }
 
-        result = await need_service_client.raise_need(
-            coordinator_osid=coordinator_osid,
-            entity_id=entity_id,
-            need_draft=draft,
-        )
+        subjects     = draft.get("subjects") or []
+        grade_levels = draft.get("grade_levels") or []
 
-        if result and result.get("id"):
-            serve_need_id = str(result["id"])
-            await self._mark_submitted(need_id, serve_need_id)
-            logger.info(f"Need submitted to Serve Need Service: {serve_need_id}")
-            return {
-                "status":       "success",
-                "serve_need_id": serve_need_id,
-                "need":          result,
-            }
+        # Ensure we have at least one subject and one grade to iterate over
+        if not subjects:
+            subjects = ["Teaching"]
+        if not grade_levels:
+            grade_levels = [""]
 
-        return {"status": "error", "error_message": "Serve Need Service submission failed"}
+        submitted_ids: List[str] = []
+        errors: List[str] = []
+
+        for subject in subjects:
+            for grade in grade_levels:
+                # Build a per-need draft copy
+                need_name = f"{subject.title()} Grade {grade}" if grade else subject.title()
+                single_draft = {**draft, "subjects": [subject], "grade_levels": [grade] if grade else []}
+
+                result = await need_service_client.raise_need(
+                    coordinator_osid=coordinator_osid,
+                    entity_id=entity_id,
+                    need_draft=single_draft,
+                    need_name=need_name,
+                )
+
+                if result and result.get("id"):
+                    submitted_ids.append(str(result["id"]))
+                else:
+                    errors.append(f"Failed to raise need for {need_name}")
+
+        if not submitted_ids:
+            return {"status": "error", "error_message": "; ".join(errors) or "Submission failed"}
+
+        # Mark the draft as submitted with the first serve_need_id for reference
+        primary_id = submitted_ids[0]
+        await self._mark_submitted(need_id, primary_id)
+        logger.info(f"Raised {len(submitted_ids)} needs for draft {need_id}: {submitted_ids}")
+
+        return {
+            "status":        "success",
+            "serve_need_id": primary_id,
+            "serve_need_ids": submitted_ids,
+            "needs_count":   len(submitted_ids),
+            "errors":        errors,
+        }
 
     async def update_status(
         self,

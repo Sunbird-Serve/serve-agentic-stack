@@ -134,7 +134,7 @@ NEED_COORDINATION_WORKFLOW = WorkflowDefinition(
             stage_id='resolving_coordinator',
             display_name='Identifying You',
             responsible_agent='need',
-            valid_next_stages=['resolving_school', 'human_review', 'paused'],
+            valid_next_stages=['resolving_school', 'drafting_need', 'human_review', 'paused'],
             required_fields=[],
             optional_fields=['coordinator_name', 'whatsapp_number'],
             can_pause=True
@@ -153,8 +153,8 @@ NEED_COORDINATION_WORKFLOW = WorkflowDefinition(
             display_name='Capturing Your Need',
             responsible_agent='need',
             valid_next_stages=['pending_approval', 'paused'],
-            required_fields=['subjects', 'grade_levels', 'student_count', 'time_slots', 'start_date', 'duration_weeks'],
-            optional_fields=['schedule_preference', 'special_requirements'],
+            required_fields=['subjects', 'grade_levels', 'student_count', 'schedule_preference', 'start_date'],
+            optional_fields=['time_slots', 'duration_weeks', 'special_requirements'],
             can_pause=True
         ),
         'pending_approval': WorkflowStageDefinition(
@@ -162,7 +162,7 @@ NEED_COORDINATION_WORKFLOW = WorkflowDefinition(
             display_name='Review & Confirm',
             responsible_agent='need',
             valid_next_stages=['submitted', 'approved', 'refinement_required', 'drafting_need', 'rejected', 'paused'],
-            required_fields=['subjects', 'grade_levels', 'student_count', 'time_slots', 'start_date', 'duration_weeks'],
+            required_fields=['subjects', 'grade_levels', 'student_count', 'schedule_preference', 'start_date'],
             can_pause=True
         ),
         'submitted': WorkflowStageDefinition(

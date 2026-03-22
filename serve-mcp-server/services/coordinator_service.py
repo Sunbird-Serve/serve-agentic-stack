@@ -21,32 +21,35 @@ class CoordinatorService:
     ) -> Dict[str, Any]:
         """
         Resolve coordinator identity from WhatsApp number or email.
-        Tries Serve Registry first (by email when available).
-        Phone-based lookup is deferred until the registry exposes that endpoint.
+        Tries phone lookup first, then email. Any registered user is treated
+        as a valid coordinator (Option A) — role check is advisory only.
         """
         serve_user = None
 
-        # Email lookup (most reliable)
-        if email:
-            serve_user = await volunteering_client.lookup_by_email(email)
+        # Phone lookup (primary path for WhatsApp channel)
+        if whatsapp_number and not serve_user:
+            serve_user = await volunteering_client.lookup_by_mobile(whatsapp_number)
 
-        # Phone lookup not yet supported by Serve Registry API.
-        # If only WhatsApp number is available, we return "unlinked"
-        # and the AI will ask for email to complete resolution.
+        # Email lookup (fallback / web UI path)
+        if email and not serve_user:
+            serve_user = await volunteering_client.lookup_by_email(email)
 
         if serve_user:
             roles = serve_user.get("role", [])
-            is_coordinator = "NEED_COORDINATOR" in roles
+            # Role in Serve Registry is "nCoordinator" for coordinators.
+            # Option A: treat any registered user as a valid coordinator —
+            # entity mapping in the next stage will confirm the school link.
+            is_coordinator = "nCoordinator" in roles or bool(roles)
 
             return {
-                "status":               "linked" if is_coordinator else "linked_volunteer",
+                "status":               "linked",
                 "coordinator": {
                     "id":               serve_user.get("osid"),
                     "name":             serve_user.get("full_name"),
                     "whatsapp_number":  whatsapp_number,
                     "email":            serve_user.get("email"),
-                    "is_verified":      serve_user.get("status") == "ACTIVE",
-                    "school_ids":       [],  # populated by resolve_school_context
+                    "is_verified":      serve_user.get("status") == "Active",
+                    "school_ids":       [],
                 },
                 "linked_schools":       [],
                 "resolution_confidence": 1.0,

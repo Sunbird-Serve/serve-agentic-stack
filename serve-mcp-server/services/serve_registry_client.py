@@ -63,6 +63,10 @@ async def _request(
                 )
             if response.status_code == 404:
                 return None
+            if response.status_code >= 400:
+                logger.warning(
+                    f"[serve_registry] {method} {url} returned {response.status_code}: {response.text}"
+                )
             if response.status_code >= 500:
                 raise httpx.HTTPStatusError(
                     f"Server error {response.status_code}",
@@ -103,6 +107,22 @@ class VolunteeringClient:
         """
         url = f"{VOLUNTEERING_SERVICE_URL}/user/email"
         data = await _request("GET", url, params={"email": email})
+        if data and data.get("osid"):
+            return self._normalise_user(data)
+        return None
+
+    async def lookup_by_mobile(self, phone: str) -> Optional[Dict]:
+        """
+        GET /user/mobile?mobile={phone}
+        Strips country code prefix (+91 / 91) before calling — API expects 10-digit mobile.
+        Returns the full user object on success, None if not found.
+        """
+        # Normalise to 10-digit Indian mobile
+        digits = phone.strip().lstrip("+")
+        if digits.startswith("91") and len(digits) == 12:
+            digits = digits[2:]
+        url = f"{VOLUNTEERING_SERVICE_URL}/user/mobile"
+        data = await _request("GET", url, params={"mobile": digits})
         if data and data.get("osid"):
             return self._normalise_user(data)
         return None
@@ -475,6 +495,7 @@ class NeedServiceClient:
         coordinator_osid: str,
         entity_id: str,
         need_draft: Dict[str, Any],
+        need_name: Optional[str] = None,
     ) -> Optional[Dict]:
         """
         POST /need/raise
@@ -483,13 +504,7 @@ class NeedServiceClient:
         """
         url = f"{NEED_SERVICE_URL}/need/raise"
 
-        # Build time slots from draft
-        time_slots = need_draft.get("time_slots") or []
-        if isinstance(time_slots, list) and time_slots and isinstance(time_slots[0], str):
-            # Convert simple string list to [{day, startTime, endTime}] format
-            time_slots = [{"day": ts, "startTime": "09:00", "endTime": "10:00"} for ts in time_slots]
-
-        # Compute end date from start_date + duration_weeks
+        # Compute end date from start_date + duration_weeks; default to March 31, 2027
         start_date = need_draft.get("start_date", "")
         end_date = need_draft.get("end_date", "")
         if start_date and not end_date and need_draft.get("duration_weeks"):
@@ -499,20 +514,46 @@ class NeedServiceClient:
                 end_date = ed.isoformat()
             except Exception:
                 pass
+        if not end_date:
+            end_date = "2027-03-31"
 
         subjects = need_draft.get("subjects") or []
         grade_levels = need_draft.get("grade_levels") or []
-        skill_detail = f"Subjects: {', '.join(subjects)}. Grades: {', '.join(grade_levels)}."
+        skill_detail = f"{', '.join(s.title() for s in subjects)}, Teaching"
+
+        resolved_name = need_name or f"Teaching Need — {', '.join(subjects)}"
+
+        # Build days string: "Monday,Wednesday" (no spaces)
+        schedule = need_draft.get("schedule_preference") or ""
+        days_str = ",".join(d.strip().title() for d in schedule.split(",") if d.strip())
+
+        # Build timeSlots with full ISO datetime strings as required by the API
+        # Use start_date as the anchor date for slot datetimes
+        anchor = start_date or end_date or "2026-04-01"
+        try:
+            anchor_date = date.fromisoformat(anchor)
+        except Exception:
+            anchor_date = date(2026, 4, 1)
+
+        day_names = [d.strip().title() for d in schedule.split(",") if d.strip()]
+        time_slots = []
+        for day_name in day_names:
+            slot_date = anchor_date.isoformat()
+            time_slots.append({
+                "day":       day_name,
+                "startTime": f"{slot_date}T10:00:00Z",
+                "endTime":   f"{slot_date}T11:00:00Z",
+            })
 
         payload = {
             "needRequest": {
-                "needTypeId":   ONLINE_TEACHING_NEED_TYPE_ID,
-                "name":         f"Teaching Need — {', '.join(subjects)}",
-                "needPurpose":  "Online Teaching",
-                "description":  need_draft.get("special_requirements") or "",
-                "status":       DEFAULT_NEED_STATUS,
-                "userId":       coordinator_osid,
-                "entityId":     entity_id,
+                "needTypeId":  ONLINE_TEACHING_NEED_TYPE_ID,
+                "name":        resolved_name,
+                "needPurpose": f"Teach {', '.join(s.title() for s in subjects)} to Grade {', '.join(str(g) for g in grade_levels)} students",
+                "description": need_draft.get("special_requirements") or "",
+                "status":      DEFAULT_NEED_STATUS,
+                "userId":      coordinator_osid,
+                "entityId":    entity_id,
             },
             "needRequirementRequest": {
                 "skillDetails":       skill_detail,
@@ -521,13 +562,15 @@ class NeedServiceClient:
                 "occurrence": {
                     "startDate": f"{start_date}T00:00:00Z" if start_date else "",
                     "endDate":   f"{end_date}T00:00:00Z"   if end_date   else "",
-                    "days":      need_draft.get("schedule_preference") or "",
-                    "frequency": need_draft.get("schedule_preference") or "Weekly",
+                    "days":      days_str,
+                    "frequency": "Weekly",
                     "timeSlots": time_slots,
                 },
             },
         }
 
+        import json as _json
+        logger.info(f"[raise_need] payload: {_json.dumps(payload, default=str)}")
         data = await _request("POST", url, json=payload)
         return data
 

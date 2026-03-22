@@ -119,6 +119,32 @@ class NeedDetailExtractor:
         r"|\b(morning|afternoon|evening|weekday|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
         re.IGNORECASE,
     )
+    FREQ_RE = re.compile(
+        r"\b(\d+)\s*(?:times?|days?)\s*(?:a|per)\s*week\b"
+        r"|\b(daily|everyday|every day|weekly|twice\s+a\s+week|thrice\s+a\s+week|alternate\s+days?)\b",
+        re.IGNORECASE,
+    )
+    DAY_RE = re.compile(
+        r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday"
+        r"|mon|tue|wed|thu|fri|sat|sun"
+        r"|weekdays?|weekends?)\b",
+        re.IGNORECASE,
+    )
+    MONTH_MAP = {
+        "january": 1, "jan": 1, "february": 2, "feb": 2, "march": 3, "mar": 3,
+        "april": 4, "apr": 4, "may": 5, "june": 6, "jun": 6,
+        "july": 7, "jul": 7, "august": 8, "aug": 8, "september": 9, "sep": 9, "sept": 9,
+        "october": 10, "oct": 10, "november": 11, "nov": 11, "december": 12, "dec": 12,
+    }
+    _MONTHS_PAT = (
+        "january|february|march|april|may|june|july|august|september|october|november|december"
+        "|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec"
+    )
+    MONTH_DATE_RE = re.compile(
+        r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(" + _MONTHS_PAT + r")\b"
+        r"|\b(" + _MONTHS_PAT + r")\s+(\d{1,2})(?:st|nd|rd|th)?\b",
+        re.IGNORECASE,
+    )
 
     def extract_subjects(self, text: str) -> List[str]:
         found = set()
@@ -147,9 +173,23 @@ class NeedDetailExtractor:
         return list(found)
 
     def extract_student_count(self, text: str) -> Optional[int]:
+        # Primary: explicit mention of students/kids/children
         m = self.STUDENT_RE.search(text)
         if m:
             count = int(m.group(1))
+            if 1 <= count <= 2000:
+                return count
+        # Fallback: short message that is just a number (coordinator answering "how many students?")
+        # Only if no grade pattern is present (to avoid confusing "Grade 6" with student count)
+        stripped = text.strip()
+        if re.match(r'^\d+$', stripped):
+            count = int(stripped)
+            if 1 <= count <= 2000:
+                return count
+        # Also match "about 30", "around 50", "approximately 40"
+        m2 = re.search(r'\b(?:about|around|approximately|roughly|~)\s*(\d+)\b', text, re.IGNORECASE)
+        if m2:
+            count = int(m2.group(1))
             if 1 <= count <= 2000:
                 return count
         return None
@@ -161,6 +201,30 @@ class NeedDetailExtractor:
             if slot:
                 found.append(slot.strip())
         return list(set(found))
+
+    def extract_schedule(self, text: str) -> Optional[str]:
+        # First try frequency phrases (twice a week, 3 days a week, daily, etc.)
+        m = self.FREQ_RE.search(text)
+        if m:
+            groups = [g for g in m.groups() if g]
+            if groups:
+                raw = groups[0].strip().lower()
+                raw = re.sub(r"times?\s+a\s+week", "days a week", raw)
+                raw = re.sub(r"days?\s+a\s+week", "days a week", raw)
+                return raw.title()
+        # Fall back to day names — collect all mentioned days
+        days = self.DAY_RE.findall(text)
+        if days:
+            # Deduplicate preserving order
+            seen = set()
+            unique = []
+            for d in days:
+                key = d.lower()
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(d.title())
+            return ", ".join(unique)
+        return None
 
     def extract_start_date(self, text: str) -> Optional[str]:
         today = date.today()
@@ -175,6 +239,7 @@ class NeedDetailExtractor:
             return f"{y}-{m:02d}-01"
         if any(w in lower for w in ("immediately", "asap", "as soon as possible")):
             return today.isoformat()
+        # Numeric date: DD/MM/YYYY or DD-MM-YYYY
         match = self.DATE_RE.search(text)
         if match:
             d, mo, y = match.groups()
@@ -184,6 +249,28 @@ class NeedDetailExtractor:
                 return date(int(y), int(mo), int(d)).isoformat()
             except ValueError:
                 pass
+        # Month-name date: "1st April", "April 1", "1 April" etc.
+        m2 = self.MONTH_DATE_RE.search(lower)
+        if m2:
+            g = m2.groups()
+            # Pattern 1: day month  (groups 0,1)
+            if g[0] and g[1]:
+                day_str, month_str = g[0], g[1]
+            # Pattern 2: month day  (groups 2,3)
+            elif g[2] and g[3]:
+                month_str, day_str = g[2], g[3]
+            else:
+                return None
+            month_num = self.MONTH_MAP.get(month_str.lower())
+            if month_num:
+                try:
+                    candidate = date(today.year, month_num, int(day_str))
+                    # If the date has already passed this year, use next year
+                    if candidate < today:
+                        candidate = date(today.year + 1, month_num, int(day_str))
+                    return candidate.isoformat()
+                except ValueError:
+                    pass
         return None
 
     def extract_duration(self, text: str) -> Optional[int]:
@@ -226,6 +313,10 @@ class NeedDetailExtractor:
         dur = self.extract_duration(text)
         if dur is not None:
             extracted["duration_weeks"] = dur
+
+        schedule = self.extract_schedule(text)
+        if schedule:
+            extracted["schedule_preference"] = schedule
 
         return extracted
 
@@ -362,8 +453,19 @@ class NeedAgentService:
         self, request: NeedAgentTurnRequest, sub: Dict
     ) -> NeedAgentTurnResponse:
         coord_ctx = sub["coordinator"]
+        school_ctx = sub["school"]
 
-        # Already resolved — skip to school
+        # Already fully resolved — skip straight to drafting
+        if coord_ctx.get("coordinator_id") and school_ctx.get("school_id"):
+            return self._build_response(
+                message=None,
+                next_state=NeedWorkflowState.DRAFTING_NEED.value,
+                sub=sub,
+                session_state=request.session_state,
+                auto_advance=True,
+            )
+
+        # Coordinator resolved but school not yet — hand off to school stage
         if coord_ctx.get("coordinator_id"):
             return self._build_response(
                 message=None,
@@ -387,7 +489,7 @@ class NeedAgentService:
             if name_match:
                 coord_ctx["name"] = name_match.group(1).title()
 
-        # Build tool executor
+        # Build tool executor — handles both coordinator AND school tools
         async def coordinator_tool_executor(tool_name: str, tool_input: Dict) -> Dict:
             if tool_name == "lookup_coordinator_by_phone":
                 coord_ctx["phone_tried"] = True
@@ -405,51 +507,150 @@ class NeedAgentService:
                     whatsapp_number=tool_input.get("phone"),
                     email=tool_input.get("email"),
                 )
+            # School tools — available in the combined loop
+            if tool_name == "get_schools_for_coordinator":
+                school_ctx["linked_schools_checked"] = True
+                return await domain_client.resolve_school_context(
+                    coordinator_id=tool_input.get("coordinator_id")
+                )
+            if tool_name == "search_school":
+                hint = tool_input.get("hint", "")
+                school_ctx["udise_hint"] = hint
+                return await domain_client.resolve_school_context(school_hint=hint)
+            if tool_name == "fetch_previous_needs":
+                result = await domain_client.fetch_previous_need_context(
+                    school_id=tool_input.get("school_id", "")
+                )
+                if result.get("status") == "success":
+                    school_ctx["previous_needs"] = result.get("previous_needs", [])
+                return result
+            if tool_name == "link_coordinator_to_school":
+                return await domain_client.map_coordinator_to_school(
+                    coordinator_id=tool_input.get("coordinator_id", ""),
+                    school_id=tool_input.get("school_id", ""),
+                )
+            if tool_name == "create_new_school":
+                school_ctx["is_new_school"] = True
+                return await domain_client.create_basic_school_context(
+                    name=tool_input.get("name", ""),
+                    location=tool_input.get("district") or tool_input.get("state") or "",
+                    contact_number=tool_input.get("contact_number") or coord_ctx.get("phone"),
+                    coordinator_id=coord_ctx.get("coordinator_id"),
+                )
             logger.warning(f"Unknown tool in coordinator loop: {tool_name}")
             return {"status": "error", "error": f"Unknown tool: {tool_name}"}
 
         # Build messages for tool loop
         initial_messages = self._build_resolution_messages(request, coord_ctx)
 
-        system_prompt = llm_adapter.build_coordinator_system_prompt(coord_ctx)
+        system_prompt = llm_adapter.build_coordinator_system_prompt(coord_ctx, school_ctx)
         msg, tool_results = await llm_adapter.run_tool_loop(
             system_prompt=system_prompt,
             initial_messages=initial_messages,
-            tools=llm_adapter.COORDINATOR_TOOLS,
+            tools=llm_adapter.COMBINED_RESOLUTION_TOOLS,
             tool_executor=coordinator_tool_executor,
+            stage="coordinator",
         )
 
-        # Check resolution outcome from tool results
+        # If ALL tool calls failed (MCP unavailable), override Claude's response
+        # to prevent hallucinated "I can see you're in our system" messages.
+        all_failed = bool(tool_results) and all(
+            r.get("serve_system_available") is False or r.get("status") == "error"
+            for r in tool_results.values()
+        )
+        if all_failed:
+            msg = (
+                "I'm having trouble accessing our records right now. "
+                "Could you share your email address so I can try another way to look you up?"
+            )
+
+        # Check resolution outcome from tool results.
+        # Guard: only accept an ID that looks like a real DB record (non-trivial string).
+        # This prevents a hallucinated "linked" status from leaking into sub_state.
+        def _is_real_id(value: Any) -> bool:
+            return bool(value and isinstance(value, str) and len(value) > 4)
+
         for _tool_name, result in tool_results.items():
+            if result.get("serve_system_available") is False:
+                # Tool failure — don't treat as resolved, let Claude ask for more info
+                continue
             if result.get("status") == "linked":
                 coordinator = result.get("coordinator") or {}
-                coord_ctx["coordinator_id"] = coordinator.get("id")
-                coord_ctx["coordinator_name"] = coordinator.get("name") or coord_ctx.get("name")
-                coord_ctx["is_verified"] = coordinator.get("is_verified", False)
-                break
-            if result.get("id"):  # create_coordinator result
+                real_id = coordinator.get("id") or coordinator.get("osid")
+                if _is_real_id(real_id):
+                    coord_ctx["coordinator_id"] = real_id
+                    coord_ctx["coordinator_name"] = coordinator.get("name") or coord_ctx.get("name")
+                    coord_ctx["is_verified"] = coordinator.get("is_verified", False)
+                    break
+            if result.get("status") in ("success", "created") and _is_real_id(result.get("id")):
+                # create_coordinator result
                 coord_ctx["coordinator_id"] = result.get("id")
                 coord_ctx["coordinator_name"] = result.get("name") or coord_ctx.get("name")
                 coord_ctx["is_verified"] = False
                 break
 
+        # Extract school resolution outcome from tool results (school tools run in same loop)
+        for tool_name, result in tool_results.items():
+            if result.get("serve_system_available") is False:
+                continue
+            if tool_name in ("get_schools_for_coordinator", "search_school"):
+                if result.get("status") == "multiple":
+                    # Multiple schools — Claude will ask coordinator to pick.
+                    # Mark this so _handle_resolving_school doesn't reset linked_schools_checked.
+                    school_ctx["multiple_schools_presented"] = True
+                    break
+                school = result.get("school") or {}
+                real_id = school.get("id")
+                if _is_real_id(real_id) and result.get("status") in ("existing", "success", "linked", "ambiguous"):
+                    school_ctx["school_id"] = real_id
+                    school_ctx["school_name"] = school.get("name")
+                    school_ctx["multiple_schools_presented"] = False
+                    break
+            if tool_name == "link_coordinator_to_school":
+                # Result is {"success": True, "school_id": "...", "coordinator_id": "..."}
+                real_id = result.get("school_id")
+                if _is_real_id(real_id) and result.get("success"):
+                    school_ctx["school_id"] = real_id
+                    school_ctx["multiple_schools_presented"] = False
+                    break
+            if tool_name == "create_new_school":
+                school = result.get("school") or {}
+                real_id = result.get("id") or school.get("id")
+                school_name = result.get("name") or school.get("name")
+                if _is_real_id(real_id):
+                    school_ctx["school_id"] = real_id
+                    school_ctx["school_name"] = school_name
+                    school_ctx["multiple_schools_presented"] = False
+                    break
+
         sub["coordinator"] = coord_ctx
-        resolved = bool(coord_ctx.get("coordinator_id"))
-        next_state = (
-            NeedWorkflowState.RESOLVING_SCHOOL.value
-            if resolved
-            else NeedWorkflowState.RESOLVING_COORDINATOR.value
-        )
+        sub["school"] = school_ctx
+
+        # Determine next state based on what was resolved
+        coord_resolved = bool(coord_ctx.get("coordinator_id"))
+        school_resolved = bool(school_ctx.get("school_id"))
+
+        if coord_resolved and school_resolved:
+            next_state = NeedWorkflowState.DRAFTING_NEED.value
+        elif coord_resolved:
+            next_state = NeedWorkflowState.RESOLVING_SCHOOL.value
+        else:
+            next_state = NeedWorkflowState.RESOLVING_COORDINATOR.value
+
+        confirmed: Dict = {}
+        if coord_resolved:
+            confirmed["coordinator_name"] = coord_ctx.get("coordinator_name")
+            confirmed["coordinator_id"] = coord_ctx.get("coordinator_id")
+        if school_resolved:
+            confirmed["school_name"] = school_ctx.get("school_name")
+            confirmed["school_id"] = school_ctx.get("school_id")
 
         return self._build_response(
             message=msg,
             next_state=next_state,
             sub=sub,
             session_state=request.session_state,
-            confirmed_fields={
-                "coordinator_name": coord_ctx.get("coordinator_name"),
-                "coordinator_id": coord_ctx.get("coordinator_id"),
-            } if resolved else {},
+            confirmed_fields=confirmed,
         )
 
     # ── Stage: RESOLVING_SCHOOL (L3.5) ────────────────────────────────────────
@@ -515,24 +716,59 @@ class NeedAgentService:
             initial_messages=initial_messages,
             tools=llm_adapter.SCHOOL_TOOLS,
             tool_executor=school_tool_executor,
+            stage="school",
         )
 
-        # Extract resolution outcome from tool results
+        # If ALL tool calls failed (MCP unavailable), override Claude's response
+        # to prevent hallucinated school resolution.
+        all_failed = bool(tool_results) and all(
+            r.get("serve_system_available") is False or r.get("status") == "error"
+            for r in tool_results.values()
+        )
+        if all_failed:
+            msg = (
+                "I'm having trouble accessing our school records right now. "
+                "Could you share your school's UDISE code or name? I'll try again."
+            )
+
+        # Extract resolution outcome from tool results.
+        # Guard: only accept a school ID that is a real DB record.
+        # This prevents hallucinated school names from leaking into sub_state.
+        def _is_real_id(value: Any) -> bool:  # noqa: F811 (shadows outer, intentional)
+            return bool(value and isinstance(value, str) and len(value) > 4)
+
         for tool_name, result in tool_results.items():
-            school = result.get("school") or {}
-            if school.get("id") and tool_name in (
-                "get_schools_for_coordinator", "search_school",
-                "create_new_school", "link_coordinator_to_school",
-            ):
-                if result.get("status") in ("existing", "success") or school.get("id"):
-                    school_ctx["school_id"] = school.get("id")
-                    school_ctx["school_name"] = school.get("name")
+            if result.get("serve_system_available") is False:
+                continue
+            if tool_name in ("get_schools_for_coordinator", "search_school"):
+                if result.get("status") == "multiple":
+                    # Multiple schools — Claude will present options. Mark this so we
+                    # don't reset linked_schools_checked on the next turn.
+                    school_ctx["multiple_schools_presented"] = True
                     break
-            # create_new_school may return entity directly
-            if tool_name == "create_new_school" and result.get("id"):
-                school_ctx["school_id"] = result.get("id")
-                school_ctx["school_name"] = result.get("name")
-                break
+                school = result.get("school") or {}
+                real_id = school.get("id")
+                if _is_real_id(real_id) and result.get("status") in ("existing", "success", "linked", "ambiguous"):
+                    school_ctx["school_id"] = real_id
+                    school_ctx["school_name"] = school.get("name")
+                    school_ctx["multiple_schools_presented"] = False
+                    break
+            if tool_name == "link_coordinator_to_school":
+                # Result is {"success": True, "school_id": "...", "coordinator_id": "..."}
+                real_id = result.get("school_id")
+                if _is_real_id(real_id) and result.get("success"):
+                    school_ctx["school_id"] = real_id
+                    school_ctx["multiple_schools_presented"] = False
+                    break
+            if tool_name == "create_new_school":
+                school = result.get("school") or {}
+                real_id = result.get("id") or school.get("id")
+                school_name = result.get("name") or school.get("name")
+                if _is_real_id(real_id):
+                    school_ctx["school_id"] = real_id
+                    school_ctx["school_name"] = school_name
+                    school_ctx["multiple_schools_presented"] = False
+                    break
 
         sub["school"] = school_ctx
         resolved = bool(school_ctx.get("school_id"))
@@ -569,24 +805,35 @@ class NeedAgentService:
         # Fetch existing draft from MCP
         ctx_result = await domain_client.resume_need_context(session_id)
         existing_draft: Dict = {}
-        if ctx_result.get("status") == "success" and ctx_result.get("data"):
-            existing_draft = ctx_result["data"].get("need_draft") or {}
+        if ctx_result.get("status") == "success":
+            existing_draft = ctx_result.get("need_draft") or ctx_result.get("data", {}).get("need_draft") or {}
+
+        logger.info(f"[drafting] resume result status={ctx_result.get('status')} existing_draft_keys={list(existing_draft.keys())}")
 
         # Extract from user message
         extracted = _extractor.extract_all(request.user_message, existing_draft)
-        if extracted:
-            merged = {**existing_draft, **extracted}
-            save_args = {
-                "session_id": session_id,
-                "coordinator_osid": coord_ctx.get("coordinator_id") or "",
-                "entity_id": school_ctx.get("school_id") or "",
-            }
-            save_args.update({k: v for k, v in merged.items() if v})
-            await domain_client.create_or_update_need_draft(**save_args)
-            existing_draft = merged
+        # Always merge coordinator/entity IDs into the draft so submission can find them
+        merged = {**existing_draft, **extracted}
+        save_args = {
+            "session_id": session_id,
+            "coordinator_osid": coord_ctx.get("coordinator_id") or "",
+            "entity_id": school_ctx.get("school_id") or "",
+        }
+        save_args.update({k: v for k, v in merged.items() if v is not None and v != "" and v != []})
+        save_result = await domain_client.create_or_update_need_draft(**save_args)
+        logger.info(f"[drafting] draft save result={save_result.get('status')} need_id={save_result.get('need_id')}")
+        existing_draft = merged
 
         missing = self._get_missing_fields(existing_draft)
         completion_pct = self._calculate_completion(existing_draft)
+
+        logger.info(
+            f"[drafting] session={session_id[:8]} "
+            f"extracted={list(extracted.keys())} "
+            f"draft_keys={[k for k,v in existing_draft.items() if v is not None and v != '' and v != []]} "
+            f"missing={missing} "
+            f"completion={completion_pct}%"
+        )
 
         next_state = (
             NeedWorkflowState.PENDING_APPROVAL.value
@@ -595,16 +842,32 @@ class NeedAgentService:
         )
 
         previous_needs = school_ctx.get("previous_needs", [])
-        msg = await llm_adapter.generate_response(
-            stage="drafting_need",
-            messages=request.conversation_history,
-            user_message=request.user_message,
-            coordinator_context=coord_ctx,
-            school_context=school_ctx,
-            need_draft=existing_draft,
-            missing_fields=missing,
-            previous_needs=previous_needs if existing_draft == {} else None,
-        )
+
+        if not missing:
+            # All mandatory fields captured — show summary for approval
+            msg = await llm_adapter.generate_response(
+                stage="pending_approval",
+                messages=request.conversation_history,
+                user_message=request.user_message,
+                coordinator_context=coord_ctx,
+                school_context=school_ctx,
+                need_draft=existing_draft,
+            )
+        else:
+            # Still collecting — nudge for next missing field, optionally schedule too
+            optional_missing = []
+            if not existing_draft.get("schedule_preference"):
+                optional_missing.append("schedule_preference")
+            msg = await llm_adapter.generate_response(
+                stage="drafting_need",
+                messages=request.conversation_history,
+                user_message=request.user_message,
+                coordinator_context=coord_ctx,
+                school_context=school_ctx,
+                need_draft=existing_draft,
+                missing_fields=missing + optional_missing,
+                previous_needs=previous_needs if not existing_draft else None,
+            )
 
         return self._build_response(
             message=msg,
@@ -628,9 +891,8 @@ class NeedAgentService:
         ctx_result = await domain_client.resume_need_context(session_id)
         need_draft: Dict = {}
         need_draft_id: Optional[str] = None
-        if ctx_result.get("status") == "success" and ctx_result.get("data"):
-            data = ctx_result["data"]
-            need_draft = data.get("need_draft") or {}
+        if ctx_result.get("status") == "success":
+            need_draft = ctx_result.get("need_draft") or ctx_result.get("data", {}).get("need_draft") or {}
             need_draft_id = need_draft.get("id")
 
         lower = request.user_message.lower()
@@ -660,13 +922,15 @@ class NeedAgentService:
             "ok", "okay", "approved", "submit", "proceed", "go ahead", "sure",
         }
         if any(s in lower for s in confirm_signals):
-            # Submit to Serve Need Service
+            # Submit to Serve Need Service — one need per subject+grade combination
             submit_result: Dict = {}
             serve_need_id: Optional[str] = None
+            needs_count: int = 0
 
             if need_draft_id:
                 submit_result = await domain_client.submit_need_for_approval(need_draft_id)
                 serve_need_id = submit_result.get("serve_need_id") or submit_result.get("id")
+                needs_count = submit_result.get("needs_count", 1)
 
             ref = f"#{serve_need_id[:8].upper()}" if serve_need_id else "#pending"
             msg = await llm_adapter.generate_response(
@@ -677,9 +941,10 @@ class NeedAgentService:
                 school_context=school_ctx,
                 need_draft=need_draft,
             )
-            # Append reference number naturally
+            # Append reference and count naturally
             if serve_need_id and "reference" not in msg.lower() and ref not in msg:
-                msg += f" Your reference number is {ref}."
+                count_note = f" {needs_count} teaching needs have been registered." if needs_count > 1 else ""
+                msg += f"{count_note} Your reference number is {ref}."
 
             sub["school"]["serve_need_id"] = serve_need_id
             return self._build_response(
@@ -812,11 +1077,12 @@ class NeedAgentService:
     ) -> List[Dict]:
         """
         Build the message list for a tool-calling loop.
-        Includes recent conversation history (as a context summary) + current user message.
+        Includes recent conversation history as user-turn context + current user message.
         """
         messages: List[Dict] = []
 
-        # Add prior conversation as a single assistant turn for context
+        # Add prior conversation as a single user turn for context.
+        # Do NOT inject a fake assistant turn — it primes Claude to hallucinate resolution.
         if request.conversation_history:
             recent = request.conversation_history[-4:]
             history_text = "\n".join(
@@ -825,11 +1091,11 @@ class NeedAgentService:
             )
             messages.append({
                 "role": "user",
-                "content": f"[Prior conversation]\n{history_text}",
+                "content": f"[Prior conversation for context — do not repeat these exchanges]\n{history_text}\n\n[Latest message from coordinator]",
             })
             messages.append({
                 "role": "assistant",
-                "content": "I have the conversation context. What's their latest message?",
+                "content": "Understood. I'll use the prior context and respond to their latest message.",
             })
 
         messages.append({"role": "user", "content": request.user_message})
@@ -916,7 +1182,7 @@ class NeedAgentService:
     def _get_missing_fields(self, draft: Dict) -> List[str]:
         return [
             f for f in MANDATORY_NEED_FIELDS
-            if not draft.get(f) or (isinstance(draft[f], list) and not draft[f])
+            if draft.get(f) is None or draft.get(f) == "" or (isinstance(draft[f], list) and not draft[f])
         ]
 
     def _calculate_completion(self, draft: Dict) -> int:
@@ -924,7 +1190,7 @@ class NeedAgentService:
             return 0
         filled = sum(
             1 for f in MANDATORY_NEED_FIELDS
-            if draft.get(f) and (not isinstance(draft[f], list) or draft[f])
+            if draft.get(f) is not None and draft.get(f) != "" and (not isinstance(draft[f], list) or draft[f])
         )
         return round((filled / len(MANDATORY_NEED_FIELDS)) * 100)
 
