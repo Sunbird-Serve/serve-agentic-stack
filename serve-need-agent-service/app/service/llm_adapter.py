@@ -122,8 +122,9 @@ _STAGE_PROMPTS: Dict[str, str] = {
     ),
     "submitted": (
         "The need has been successfully registered. "
-        "Thank the coordinator warmly. Mention the reference ID. "
-        "Let them know the team will start matching volunteers and will be in touch."
+        "Thank the coordinator warmly. "
+        "Let them know the team will start matching volunteers and will be in touch. "
+        "Do NOT mention any reference ID or reference number."
     ),
     "approved": (
         "The need has been confirmed. Thank the coordinator. "

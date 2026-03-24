@@ -2031,131 +2031,32 @@ async def agent_health():
 
 # ============ WhatsApp Channel Endpoints ============
 
-@app.post("/api/whatsapp/webhook")
-async def whatsapp_webhook(request: Request):
-    """
-    Twilio WhatsApp webhook endpoint.
-    
-    Receives incoming messages from Twilio Sandbox and routes through orchestrator.
-    Returns TwiML response with assistant message.
-    
-    Twilio Sandbox Setup:
-    1. Go to https://www.twilio.com/console/sms/whatsapp/sandbox
-    2. Set webhook URL to: https://your-domain.com/api/whatsapp/webhook
-    3. Send "join <sandbox-code>" to +14155238886 from your WhatsApp
-    """
-    try:
-        form_data = await request.form()
-        
-        from_number = form_data.get("From", "")  # whatsapp:+1234567890
-        message_body = form_data.get("Body", "").strip()
-        media_url = form_data.get("MediaUrl0")  # Optional media
-        
-        # Normalize phone number
-        phone = from_number.replace("whatsapp:", "")
-        
-        logger.info(f"WhatsApp message from {phone[:6]}***: {message_body[:50]}...")
-        
-        # Check for reset commands
-        if message_body.lower() in ["reset", "restart", "start over", "new", "quit"]:
-            whatsapp_sessions.clear_session(phone)
-            response_text = "Session reset! Send a message to start fresh. I'm here to help register teaching needs for your school."
-        else:
-            # Get or create session
-            session = whatsapp_sessions.get_session(phone)
-            session_id = UUID(session["session_id"]) if session else None
-            
-            # Route through orchestrator
-            orchestrator_request = InteractionRequest(
-                session_id=session_id,
-                message=message_body,
-                channel=ChannelType.WHATSAPP,
-                persona=PersonaType.NEED_COORDINATOR,
-                channel_metadata={"whatsapp_number": phone, "media_url": media_url}
-            )
-            
-            orchestrator_response = await orchestrator_interact(orchestrator_request)
-            
-            # Update session mapping - convert session_id to string
-            response_session_id = str(orchestrator_response.session_id)
-            if session:
-                whatsapp_sessions.update_session(phone, response_session_id)
-            else:
-                whatsapp_sessions.create_session(
-                    phone=phone,
-                    session_id=response_session_id,
-                    workflow=orchestrator_response.workflow
-                )
-            
-            response_text = orchestrator_response.assistant_message
-        
-        # Return TwiML response
-        twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Message>{response_text}</Message>
-</Response>"""
-        
-        return Response(content=twiml, media_type="application/xml")
-        
-    except Exception as e:
-        logger.error(f"WhatsApp webhook error: {e}")
-        twiml = """<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Message>I apologize, but I encountered an issue. Please try again in a moment.</Message>
-</Response>"""
-        return Response(content=twiml, media_type="application/xml")
+# WhatsApp routes — delegated to Cloud API adapter
+from channels.whatsapp_adapter import (
+    whatsapp_router as _wa_router,
+    set_orchestrator as _wa_set_orchestrator,
+)
 
-
-@app.get("/api/whatsapp/webhook")
-async def whatsapp_webhook_verify():
-    """Webhook verification endpoint."""
-    return PlainTextResponse("OK")
-
-
-@app.get("/api/whatsapp/status")
-async def whatsapp_status():
-    """Get WhatsApp integration status."""
+async def _orchestrator_interact_for_wa(
+    session_id, message, channel, persona, channel_metadata
+):
+    """Thin wrapper so the adapter can call the orchestrator."""
+    req = InteractionRequest(
+        session_id=session_id,
+        message=message,
+        channel=ChannelType(channel),
+        persona=PersonaType(persona),
+        channel_metadata=channel_metadata,
+    )
+    resp = await orchestrator_interact(req)
     return {
-        "enabled": twilio_client is not None,
-        "sandbox_number": TWILIO_WHATSAPP_NUMBER,
-        "active_sessions": len(whatsapp_sessions.get_all_sessions()),
-        "configuration": {
-            "account_sid": bool(TWILIO_ACCOUNT_SID),
-            "auth_token": bool(TWILIO_AUTH_TOKEN),
-            "whatsapp_number": TWILIO_WHATSAPP_NUMBER
-        },
-        "setup_instructions": {
-            "1_sandbox_url": "https://www.twilio.com/console/sms/whatsapp/sandbox",
-            "2_webhook_url": "Set 'WHEN A MESSAGE COMES IN' to: https://your-domain/api/whatsapp/webhook",
-            "3_join_sandbox": f"Send 'join <your-sandbox-code>' to {TWILIO_WHATSAPP_NUMBER} from WhatsApp"
-        }
+        "session_id": str(resp.session_id),
+        "assistant_message": resp.assistant_message,
+        "workflow": resp.workflow,
     }
 
-
-@app.get("/api/whatsapp/sessions")
-async def whatsapp_list_sessions():
-    """List active WhatsApp sessions (admin)."""
-    sessions = whatsapp_sessions.get_all_sessions()
-    masked = {}
-    for phone, data in sessions.items():
-        masked_phone = phone[:6] + "***" + phone[-2:] if len(phone) > 8 else "***"
-        masked[masked_phone] = {
-            "session_id": data["session_id"][:8] + "...",
-            "workflow": data["workflow"],
-            "message_count": data["message_count"],
-            "last_activity": data["last_activity"]
-        }
-    return {"sessions": masked, "total": len(sessions)}
-
-
-@app.post("/api/whatsapp/send")
-async def whatsapp_send_message(to_number: str, message: str):
-    """Send WhatsApp message (admin/testing)."""
-    if not twilio_client:
-        raise HTTPException(503, "Twilio not configured")
-    
-    success = await send_whatsapp_reply(to_number, message)
-    return {"success": success, "to": to_number}
+_wa_set_orchestrator(_orchestrator_interact_for_wa)
+app.include_router(_wa_router)
 
 
 # ============ MCP Capability Endpoints ============

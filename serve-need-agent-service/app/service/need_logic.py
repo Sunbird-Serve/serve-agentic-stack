@@ -1151,7 +1151,6 @@ class NeedAgentService:
                 serve_need_id = submit_result.get("serve_need_id") or submit_result.get("id")
                 needs_count = submit_result.get("needs_count", 1)
 
-            ref = f"#{serve_need_id[:8].upper()}" if serve_need_id else "#pending"
             msg = await llm_adapter.generate_response(
                 stage="submitted",
                 messages=request.conversation_history,
@@ -1160,10 +1159,6 @@ class NeedAgentService:
                 school_context=school_ctx,
                 need_draft=need_draft,
             )
-            # Append reference and count naturally
-            if serve_need_id and "reference" not in msg.lower() and ref not in msg:
-                count_note = f" {needs_count} teaching needs have been registered." if needs_count > 1 else ""
-                msg += f"{count_note} Your reference number is {ref}."
 
             sub["school"]["serve_need_id"] = serve_need_id
             return self._build_response(

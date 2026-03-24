@@ -1,327 +1,275 @@
 """
 SERVE AI - WhatsApp Channel Adapter
-Twilio WhatsApp Sandbox integration with webhook-based message handling.
+Meta WhatsApp Business Cloud API integration.
 
 Architecture:
-- Webhook endpoint receives incoming WhatsApp messages from Twilio
-- Messages are routed through the orchestrator
-- Responses are sent back via Twilio WhatsApp API
-- Phone number is used as session identifier
+- GET /webhook  — Meta verification handshake (hub.challenge)
+- POST /webhook — Incoming messages from Meta Cloud API (JSON payload)
+- Replies sent via Graph API POST (not in webhook response body)
+- Phone number used as session identifier
 """
 import os
+import hmac
+import hashlib
 import logging
+import httpx
 from typing import Optional, Dict, Any
 from datetime import datetime
-from uuid import uuid4
-import hashlib
 
 from fastapi import APIRouter, Request, Response, HTTPException
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel
-from twilio.rest import Client
-from twilio.request_validator import RequestValidator
 
 logger = logging.getLogger(__name__)
 
-# ============ Configuration ============
+# ── Config ────────────────────────────────────────────────────────────────────
 
-TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-TWILIO_WHATSAPP_NUMBER = os.environ.get("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")  # Sandbox number
+WHATSAPP_TOKEN           = os.environ.get("WHATSAPP_TOKEN", "")
+WHATSAPP_PHONE_NUMBER_ID = os.environ.get("WHATSAPP_PHONE_NUMBER_ID", "")
+WHATSAPP_APP_SECRET      = os.environ.get("WHATSAPP_APP_SECRET", "")
+WHATSAPP_VERIFY_TOKEN    = os.environ.get("WHATSAPP_VERIFY_TOKEN", "serve_verify_token")
 
-# Initialize Twilio client
-twilio_client = None
-request_validator = None
+GRAPH_API_URL = "https://graph.facebook.com/v18.0"
 
-if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
-    twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-    request_validator = RequestValidator(TWILIO_AUTH_TOKEN)
-    logger.info("Twilio WhatsApp client initialized")
+if WHATSAPP_TOKEN and WHATSAPP_PHONE_NUMBER_ID:
+    logger.info("WhatsApp Cloud API adapter initialised")
 else:
-    logger.warning("Twilio credentials not configured - WhatsApp integration disabled")
+    logger.warning("WHATSAPP_TOKEN or WHATSAPP_PHONE_NUMBER_ID not set — WhatsApp disabled")
 
 
-# ============ Phone-to-Session Mapping ============
+# ── Phone-to-Session Mapping ──────────────────────────────────────────────────
 
 class PhoneSessionManager:
-    """
-    Manages mapping between WhatsApp phone numbers and orchestrator sessions.
-    Uses phone number as primary session identifier.
-    """
-    
+    """Maps WhatsApp phone numbers to orchestrator session IDs."""
+
     def __init__(self):
-        # phone_number -> session_data
         self._sessions: Dict[str, Dict[str, Any]] = {}
-    
-    def get_session(self, phone_number: str) -> Optional[Dict[str, Any]]:
-        """Get existing session for phone number."""
-        return self._sessions.get(phone_number)
-    
-    def create_session(self, phone_number: str, orchestrator_session_id: str, workflow: str = "need_coordination") -> Dict[str, Any]:
-        """Create new session mapping."""
+
+    def get(self, phone: str) -> Optional[Dict[str, Any]]:
+        return self._sessions.get(phone)
+
+    def create(self, phone: str, session_id: str, workflow: str = "need_coordination") -> Dict[str, Any]:
         session = {
-            "phone_number": phone_number,
-            "orchestrator_session_id": orchestrator_session_id,
+            "phone_number": phone,
+            "orchestrator_session_id": session_id,
             "workflow": workflow,
             "created_at": datetime.utcnow().isoformat(),
             "last_activity": datetime.utcnow().isoformat(),
-            "message_count": 0
+            "message_count": 0,
         }
-        self._sessions[phone_number] = session
-        logger.info(f"Created WhatsApp session for {phone_number[:6]}*** -> {orchestrator_session_id[:8]}...")
+        self._sessions[phone] = session
+        logger.info(f"New WhatsApp session: {phone[:6]}*** → {session_id[:8]}…")
         return session
-    
-    def update_session(self, phone_number: str, orchestrator_session_id: str = None) -> Optional[Dict[str, Any]]:
-        """Update session activity."""
-        session = self._sessions.get(phone_number)
-        if session:
-            session["last_activity"] = datetime.utcnow().isoformat()
-            session["message_count"] += 1
-            if orchestrator_session_id:
-                session["orchestrator_session_id"] = orchestrator_session_id
-        return session
-    
-    def clear_session(self, phone_number: str) -> bool:
-        """Clear session for phone number (for reset/restart)."""
-        if phone_number in self._sessions:
-            del self._sessions[phone_number]
+
+    def update(self, phone: str, session_id: str = None):
+        s = self._sessions.get(phone)
+        if s:
+            s["last_activity"] = datetime.utcnow().isoformat()
+            s["message_count"] += 1
+            if session_id:
+                s["orchestrator_session_id"] = session_id
+
+    def clear(self, phone: str) -> bool:
+        if phone in self._sessions:
+            del self._sessions[phone]
             return True
         return False
-    
-    def get_all_sessions(self) -> Dict[str, Dict[str, Any]]:
-        """Get all active sessions (for admin/monitoring)."""
+
+    def all(self) -> Dict[str, Dict[str, Any]]:
         return self._sessions.copy()
 
 
-# Singleton instance
 phone_session_manager = PhoneSessionManager()
 
 
-# ============ WhatsApp Message Handler ============
-
-class WhatsAppMessageHandler:
-    """Handles incoming WhatsApp messages and routes to orchestrator."""
-    
-    def __init__(self, orchestrator_interact_func):
-        """
-        Initialize with reference to orchestrator interact function.
-        
-        Args:
-            orchestrator_interact_func: Async function to call orchestrator
-        """
-        self.orchestrator_interact = orchestrator_interact_func
-    
-    async def handle_incoming_message(
-        self,
-        from_number: str,
-        message_body: str,
-        media_url: Optional[str] = None
-    ) -> str:
-        """
-        Handle incoming WhatsApp message and return response.
-        
-        Args:
-            from_number: WhatsApp number (format: whatsapp:+1234567890)
-            message_body: Text content of the message
-            media_url: Optional media attachment URL
-            
-        Returns:
-            Response text to send back
-        """
-        # Normalize phone number (remove whatsapp: prefix)
-        phone = from_number.replace("whatsapp:", "")
-        
-        # Check for reset/restart commands
-        if message_body.lower().strip() in ["reset", "restart", "start over", "new"]:
-            phone_session_manager.clear_session(phone)
-            return "Session reset! Let's start fresh. How can I help you today?"
-        
-        # Get or create session
-        session = phone_session_manager.get_session(phone)
-        session_id = session["orchestrator_session_id"] if session else None
-        
-        try:
-            # Call orchestrator
-            response = await self.orchestrator_interact(
-                session_id=session_id,
-                message=message_body,
-                channel="whatsapp",
-                persona="need_coordinator",
-                channel_metadata={
-                    "whatsapp_number": phone,
-                    "media_url": media_url
-                }
-            )
-            
-            # Update or create session mapping
-            if session:
-                phone_session_manager.update_session(phone, response.get("session_id"))
-            else:
-                phone_session_manager.create_session(
-                    phone_number=phone,
-                    orchestrator_session_id=response.get("session_id"),
-                    workflow=response.get("workflow", "need_coordination")
-                )
-            
-            return response.get("assistant_message", "I apologize, but I couldn't process your message. Please try again.")
-            
-        except Exception as e:
-            logger.error(f"Error handling WhatsApp message: {e}")
-            return "I'm sorry, I encountered an issue. Please try again in a moment."
-
-
-# ============ Twilio WhatsApp Sender ============
+# ── Send reply via Graph API ──────────────────────────────────────────────────
 
 async def send_whatsapp_message(to_number: str, message: str) -> bool:
-    """
-    Send WhatsApp message via Twilio.
-    
-    Args:
-        to_number: Recipient number (format: +1234567890 or whatsapp:+1234567890)
-        message: Text message to send
-        
-    Returns:
-        True if sent successfully
-    """
-    if not twilio_client:
-        logger.error("Twilio client not initialized")
+    """Send a text message via WhatsApp Cloud API."""
+    if not WHATSAPP_TOKEN or not WHATSAPP_PHONE_NUMBER_ID:
+        logger.error("WhatsApp not configured — cannot send message")
         return False
-    
-    # Ensure whatsapp: prefix
-    if not to_number.startswith("whatsapp:"):
-        to_number = f"whatsapp:{to_number}"
-    
+
+    # Strip any whatsapp: prefix if present
+    to_number = to_number.replace("whatsapp:", "")
+
+    url = f"{GRAPH_API_URL}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "text",
+        "text": {"body": message},
+    }
+
     try:
-        twilio_message = twilio_client.messages.create(
-            body=message,
-            from_=TWILIO_WHATSAPP_NUMBER,
-            to=to_number
-        )
-        logger.info(f"WhatsApp message sent: {twilio_message.sid}")
-        return True
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            logger.info(f"Message sent to {to_number[:6]}***: {resp.json()}")
+            return True
     except Exception as e:
         logger.error(f"Failed to send WhatsApp message: {e}")
         return False
 
 
-# ============ FastAPI Router ============
+# ── Signature verification ────────────────────────────────────────────────────
+
+def _verify_signature(body: bytes, signature_header: str) -> bool:
+    """Verify X-Hub-Signature-256 from Meta."""
+    if not WHATSAPP_APP_SECRET:
+        return True  # Skip in dev if secret not set
+    if not signature_header.startswith("sha256="):
+        return False
+    expected = hmac.new(
+        WHATSAPP_APP_SECRET.encode(),
+        body,
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature_header[7:])
+
+
+# ── Message handler ───────────────────────────────────────────────────────────
+
+async def _handle_message(phone: str, message_body: str, orchestrator_interact_func) -> None:
+    """Process one inbound message and send reply."""
+    if message_body.lower().strip() in ("reset", "restart", "start over", "new"):
+        phone_session_manager.clear(phone)
+        await send_whatsapp_message(phone, "Session reset! Send a message to start fresh.")
+        return
+
+    session = phone_session_manager.get(phone)
+    session_id = session["orchestrator_session_id"] if session else None
+
+    try:
+        response = await orchestrator_interact_func(
+            session_id=session_id,
+            message=message_body,
+            channel="whatsapp",
+            persona="need_coordinator",
+            channel_metadata={"phone_number": phone},
+        )
+
+        new_session_id = response.get("session_id")
+        if session:
+            phone_session_manager.update(phone, new_session_id)
+        else:
+            phone_session_manager.create(
+                phone=phone,
+                session_id=new_session_id or "",
+                workflow=response.get("workflow", "need_coordination"),
+            )
+
+        reply = response.get("assistant_message") or "I'm here to help. Please try again."
+        await send_whatsapp_message(phone, reply)
+
+    except Exception as e:
+        logger.error(f"Error handling message from {phone[:6]}***: {e}")
+        await send_whatsapp_message(phone, "I'm sorry, something went wrong. Please try again in a moment.")
+
+
+# ── FastAPI Router ────────────────────────────────────────────────────────────
 
 whatsapp_router = APIRouter(prefix="/api/whatsapp", tags=["WhatsApp"])
 
+# Orchestrator function injected at startup
+_orchestrator_interact = None
 
-@whatsapp_router.post("/webhook")
-async def whatsapp_webhook(request: Request):
-    """
-    Twilio WhatsApp webhook endpoint.
-    
-    Receives incoming messages from Twilio and returns TwiML response.
-    """
-    # Get form data from Twilio
-    form_data = await request.form()
-    
-    # Extract message details
-    from_number = form_data.get("From", "")
-    message_body = form_data.get("Body", "")
-    media_url = form_data.get("MediaUrl0")  # First media attachment if any
-    
-    logger.info(f"WhatsApp webhook: from={from_number[:15]}..., body={message_body[:50]}...")
-    
-    # Validate Twilio signature in production
-    if TWILIO_AUTH_TOKEN and request_validator:
-        signature = request.headers.get("X-Twilio-Signature", "")
-        url = str(request.url)
-        
-        # Convert form data to dict for validation
-        params = {key: form_data.get(key) for key in form_data.keys()}
-        
-        # Note: In sandbox mode, signature validation may be skipped
-        # if not request_validator.validate(url, params, signature):
-        #     logger.warning("Invalid Twilio signature")
-        #     raise HTTPException(status_code=403, detail="Invalid signature")
-    
-    # Handle the message (this will be connected to orchestrator)
-    # For now, return a simple acknowledgment
-    response_text = await handle_whatsapp_message_internal(from_number, message_body, media_url)
-    
-    # Return TwiML response
-    twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-    <Message>{response_text}</Message>
-</Response>"""
-    
-    return Response(content=twiml, media_type="application/xml")
+
+def set_orchestrator(interact_func):
+    """Called from main server to wire up the orchestrator."""
+    global _orchestrator_interact
+    _orchestrator_interact = interact_func
 
 
 @whatsapp_router.get("/webhook")
-async def whatsapp_webhook_verify(request: Request):
-    """
-    Webhook verification endpoint (for some providers).
-    """
-    return PlainTextResponse("OK")
+async def verify_webhook(request: Request):
+    """Meta webhook verification handshake."""
+    params = request.query_params
+    mode      = params.get("hub.mode")
+    token     = params.get("hub.verify_token")
+    challenge = params.get("hub.challenge")
+
+    if mode == "subscribe" and token == WHATSAPP_VERIFY_TOKEN:
+        logger.info("WhatsApp webhook verified")
+        return PlainTextResponse(challenge)
+
+    logger.warning(f"Webhook verification failed: mode={mode} token={token}")
+    raise HTTPException(status_code=403, detail="Verification failed")
+
+
+@whatsapp_router.post("/webhook")
+async def receive_webhook(request: Request):
+    """Receive inbound messages from Meta Cloud API."""
+    body_bytes = await request.body()
+
+    # Signature check
+    sig = request.headers.get("X-Hub-Signature-256", "")
+    if not _verify_signature(body_bytes, sig):
+        logger.warning("Invalid webhook signature")
+        raise HTTPException(status_code=403, detail="Invalid signature")
+
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    # Meta sends a nested structure — walk to the message
+    for entry in data.get("entry", []):
+        for change in entry.get("changes", []):
+            value = change.get("value", {})
+            for msg in value.get("messages", []):
+                msg_type = msg.get("type")
+                if msg_type != "text":
+                    # Ignore non-text (images, audio, etc.) for now
+                    continue
+
+                phone = msg.get("from", "")
+                body  = msg.get("text", {}).get("body", "").strip()
+
+                if phone and body and _orchestrator_interact:
+                    await _handle_message(phone, body, _orchestrator_interact)
+
+    # Meta expects a 200 OK immediately — reply is sent separately via Graph API
+    return {"status": "ok"}
 
 
 @whatsapp_router.get("/status")
 async def whatsapp_status():
-    """
-    Get WhatsApp integration status.
-    """
     return {
-        "enabled": twilio_client is not None,
-        "sandbox_number": TWILIO_WHATSAPP_NUMBER if twilio_client else None,
-        "active_sessions": len(phone_session_manager.get_all_sessions()),
+        "enabled": bool(WHATSAPP_TOKEN and WHATSAPP_PHONE_NUMBER_ID),
+        "phone_number_id": WHATSAPP_PHONE_NUMBER_ID or None,
+        "active_sessions": len(phone_session_manager.all()),
         "configuration": {
-            "account_sid_configured": bool(TWILIO_ACCOUNT_SID),
-            "auth_token_configured": bool(TWILIO_AUTH_TOKEN),
-            "whatsapp_number_configured": bool(TWILIO_WHATSAPP_NUMBER)
-        }
+            "token_configured":           bool(WHATSAPP_TOKEN),
+            "phone_number_id_configured": bool(WHATSAPP_PHONE_NUMBER_ID),
+            "app_secret_configured":      bool(WHATSAPP_APP_SECRET),
+            "verify_token_configured":    bool(WHATSAPP_VERIFY_TOKEN),
+        },
     }
 
 
 @whatsapp_router.get("/sessions")
-async def list_whatsapp_sessions():
-    """
-    List active WhatsApp sessions (admin endpoint).
-    """
-    sessions = phone_session_manager.get_all_sessions()
-    # Mask phone numbers for privacy
+async def list_sessions():
+    sessions = phone_session_manager.all()
     masked = {}
     for phone, data in sessions.items():
-        masked_phone = phone[:6] + "***" + phone[-2:] if len(phone) > 8 else "***"
-        masked[masked_phone] = {
-            "orchestrator_session_id": data["orchestrator_session_id"][:8] + "...",
-            "workflow": data["workflow"],
+        key = phone[:6] + "***" + phone[-2:] if len(phone) > 8 else "***"
+        masked[key] = {
+            "session_id":    data["orchestrator_session_id"][:8] + "…",
+            "workflow":      data["workflow"],
             "message_count": data["message_count"],
-            "last_activity": data["last_activity"]
+            "last_activity": data["last_activity"],
         }
     return {"sessions": masked, "total": len(sessions)}
 
 
 @whatsapp_router.post("/test-send")
-async def test_send_whatsapp(to_number: str, message: str):
-    """
-    Test endpoint to send a WhatsApp message (admin only).
-    """
-    if not twilio_client:
-        raise HTTPException(status_code=503, detail="Twilio not configured")
-    
+async def test_send(to_number: str, message: str):
+    """Admin: send a test message."""
+    if not WHATSAPP_TOKEN:
+        raise HTTPException(status_code=503, detail="WhatsApp not configured")
     success = await send_whatsapp_message(to_number, message)
     return {"success": success, "to": to_number}
-
-
-# ============ Internal Handler (to be connected to orchestrator) ============
-
-# This will be replaced when integrating with the main server
-async def handle_whatsapp_message_internal(from_number: str, message_body: str, media_url: Optional[str] = None) -> str:
-    """
-    Internal handler - placeholder until connected to orchestrator.
-    """
-    phone = from_number.replace("whatsapp:", "")
-    session = phone_session_manager.get_session(phone)
-    
-    if message_body.lower().strip() in ["reset", "restart", "start over", "new"]:
-        phone_session_manager.clear_session(phone)
-        return "Session reset! Send a message to start fresh."
-    
-    # This will be replaced with actual orchestrator call
-    # For now, return a placeholder
-    return f"[WhatsApp] Received: {message_body[:50]}... (Orchestrator integration pending)"
