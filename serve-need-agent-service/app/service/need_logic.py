@@ -29,6 +29,7 @@ Sub-state JSON schema (stored in session.sub_state between turns):
     }
   }
 """
+import copy
 import json
 import logging
 import re
@@ -249,14 +250,12 @@ class NeedDetailExtractor:
                 return date(int(y), int(mo), int(d)).isoformat()
             except ValueError:
                 pass
-        # Month-name date: "1st April", "April 1", "1 April" etc.
+        # Month-name + day: "1st April", "April 1", "1 April" etc.
         m2 = self.MONTH_DATE_RE.search(lower)
         if m2:
             g = m2.groups()
-            # Pattern 1: day month  (groups 0,1)
             if g[0] and g[1]:
                 day_str, month_str = g[0], g[1]
-            # Pattern 2: month day  (groups 2,3)
             elif g[2] and g[3]:
                 month_str, day_str = g[2], g[3]
             else:
@@ -264,13 +263,20 @@ class NeedDetailExtractor:
             month_num = self.MONTH_MAP.get(month_str.lower())
             if month_num:
                 try:
-                    candidate = date(today.year, month_num, int(day_str))
-                    # If the date has already passed this year, use next year
-                    if candidate < today:
-                        candidate = date(today.year + 1, month_num, int(day_str))
+                    candidate = date(2026, month_num, int(day_str))
                     return candidate.isoformat()
                 except ValueError:
                     pass
+        # Bare month name: "April se", "April mein", "from April", just "April"
+        bare_month_re = re.compile(
+            r"\b(" + "|".join(self.MONTH_MAP.keys()) + r")\b",
+            re.IGNORECASE,
+        )
+        m3 = bare_month_re.search(lower)
+        if m3:
+            month_num = self.MONTH_MAP.get(m3.group(1).lower())
+            if month_num:
+                return f"2026-{month_num:02d}-01"
         return None
 
     def extract_duration(self, text: str) -> Optional[int]:
@@ -297,14 +303,12 @@ class NeedDetailExtractor:
             merged = list(set(existing.get("grade_levels", []) + grades))
             extracted["grade_levels"] = sorted(merged, key=lambda x: int(x))
 
-        count = self.extract_student_count(text)
-        if count is not None:
-            extracted["student_count"] = count
+        # student_count: removed deterministic extraction — LLM handles this intelligently
+        # when user says "grade 6 - 30, grade 7 - 40", LLM can ask clarifying questions
 
         slots = self.extract_time_slots(text)
-        if slots:
-            merged = list(set(existing.get("time_slots", []) + slots))
-            extracted["time_slots"] = merged
+        if slots and not existing.get("time_slots"):
+            extracted["time_slots"] = slots
 
         start = self.extract_start_date(text)
         if start:
@@ -344,6 +348,7 @@ class NeedAgentService:
             NeedWorkflowState.INITIATED.value:              self._handle_initiated,
             NeedWorkflowState.CAPTURING_PHONE.value:        self._handle_capturing_phone,
             NeedWorkflowState.RESOLVING_COORDINATOR.value:  self._handle_resolving_coordinator,
+            NeedWorkflowState.CONFIRMING_IDENTITY.value:    self._handle_confirming_identity,
             NeedWorkflowState.RESOLVING_SCHOOL.value:       self._handle_resolving_school,
             NeedWorkflowState.DRAFTING_NEED.value:          self._handle_drafting_need,
             NeedWorkflowState.PENDING_APPROVAL.value:       self._handle_pending_approval,
@@ -354,7 +359,25 @@ class NeedAgentService:
         }
 
         handler = dispatch.get(stage, self._handle_fallback)
-        return await handler(request, sub)
+        response = await handler(request, sub)
+
+        # Auto-advance: if the handler returned an empty message and transitioned to a
+        # new stage, immediately re-dispatch so the user gets a real response this turn.
+        if not response.assistant_message and response.state != stage:
+            next_stage = response.state
+            next_handler = dispatch.get(next_stage)
+            if next_handler:
+                logger.info(f"[process_turn] auto-advancing {stage!r} → {next_stage!r}")
+                # Rebuild request with updated sub_state and stage
+                advanced_session = copy.copy(request.session_state)
+                advanced_session.stage = next_stage
+                advanced_session.sub_state = response.sub_state
+                advanced_request = copy.copy(request)
+                advanced_request.session_state = advanced_session
+                next_sub = _load_sub_state(response.sub_state)
+                response = await next_handler(advanced_request, next_sub)
+
+        return response
 
     # ── Stage: INITIATED ──────────────────────────────────────────────────────
 
@@ -376,22 +399,25 @@ class NeedAgentService:
         )
 
         if phone:
-            # Phone already known — skip CAPTURING_PHONE regardless of channel
+            # Phone already known — skip CAPTURING_PHONE and auto-advance to
+            # RESOLVING_COORDINATOR so the tool loop runs immediately on the next dispatch.
             sub["coordinator"]["phone"] = phone
-            next_state = NeedWorkflowState.RESOLVING_COORDINATOR.value
-            msg = await llm_adapter.generate_response(
-                stage="initiated",
-                messages=[],
-                user_message=request.user_message,
+            return self._build_response(
+                message=None,
+                next_state=NeedWorkflowState.RESOLVING_COORDINATOR.value,
+                sub=sub,
+                session_state=request.session_state,
+                auto_advance=True,
             )
         elif channel == "whatsapp":
             # WhatsApp but no phone in metadata (shouldn't normally happen)
             sub["coordinator"]["phone"] = None
-            next_state = NeedWorkflowState.RESOLVING_COORDINATOR.value
-            msg = await llm_adapter.generate_response(
-                stage="initiated",
-                messages=[],
-                user_message=request.user_message,
+            return self._build_response(
+                message=None,
+                next_state=NeedWorkflowState.RESOLVING_COORDINATOR.value,
+                sub=sub,
+                session_state=request.session_state,
+                auto_advance=True,
             )
         else:
             # Web UI without pre-captured phone — ask for it in the chat
@@ -523,6 +549,7 @@ class NeedAgentService:
                 )
                 if result.get("status") == "success":
                     school_ctx["previous_needs"] = result.get("previous_needs", [])
+                    logger.info(f"[coordinator_loop] fetch_previous_needs stored: count={len(school_ctx['previous_needs'])}")
                 return result
             if tool_name == "link_coordinator_to_school":
                 return await domain_client.map_coordinator_to_school(
@@ -631,7 +658,16 @@ class NeedAgentService:
         school_resolved = bool(school_ctx.get("school_id"))
 
         if coord_resolved and school_resolved:
-            next_state = NeedWorkflowState.DRAFTING_NEED.value
+            next_state = NeedWorkflowState.CONFIRMING_IDENTITY.value
+            # Generate identity confirmation message — LLM presents coordinator+school
+            # and asks for confirmation before moving to need capture.
+            msg = await llm_adapter.generate_response(
+                stage="confirming_identity",
+                messages=request.conversation_history,
+                user_message=request.user_message,
+                coordinator_context=coord_ctx,
+                school_context=school_ctx,
+            )
         elif coord_resolved:
             next_state = NeedWorkflowState.RESOLVING_SCHOOL.value
         else:
@@ -651,6 +687,124 @@ class NeedAgentService:
             sub=sub,
             session_state=request.session_state,
             confirmed_fields=confirmed,
+        )
+
+    # ── Stage: CONFIRMING_IDENTITY ────────────────────────────────────────────
+
+    async def _handle_confirming_identity(
+        self, request: NeedAgentTurnRequest, sub: Dict
+    ) -> NeedAgentTurnResponse:
+        coord_ctx = sub["coordinator"]
+        school_ctx = sub["school"]
+        lower = request.user_message.lower()
+
+        # Detect name correction — coordinator provides corrected name inline
+        # e.g. "mera naam Rajesh hai, Rakesh nahi" / "my name is Rajesh not Rakesh" / "naam Rajesh hai"
+        name_correction_patterns = [
+            r"(?:mera\s+naam|my\s+name\s+is|naam\s+hai|naam\s+h)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+            r"(?:not|nahi|nhi)\s+\w+[,.]?\s+(?:it['\u2019]?s|its|naam)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+            r"(?:spelling\s+wrong|naam\s+galat)[^,]*[,.]?\s+(?:it['\u2019]?s|its|naam\s+hai?)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+        ]
+        corrected_name = None
+        for pattern in name_correction_patterns:
+            m = re.search(pattern, request.user_message, re.IGNORECASE)
+            if m:
+                corrected_name = m.group(1).title()
+                break
+        # Fallback: message contains correction signal + a capitalized name token
+        if not corrected_name:
+            correction_signals_name = {"wrong", "galat", "spelling", "nahi", "not", "correct it", "change"}
+            if any(s in lower for s in correction_signals_name):
+                name_m = re.search(r"\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?)\b", request.user_message)
+                if name_m:
+                    corrected_name = name_m.group(1).title()
+
+        if corrected_name:
+            # Update coordinator name in sub_state and proceed to drafting
+            coord_ctx["coordinator_name"] = corrected_name
+            sub["coordinator"] = coord_ctx
+            logger.info(f"[confirming_identity] name corrected to: {corrected_name!r}")
+            previous_needs = school_ctx.get("previous_needs", [])
+            msg = await llm_adapter.generate_response(
+                stage="drafting_need",
+                messages=request.conversation_history,
+                user_message=request.user_message,
+                coordinator_context=coord_ctx,
+                school_context=school_ctx,
+                need_draft={},
+                missing_fields=["subjects", "grade_levels", "student_count", "schedule_preference", "start_date"],
+                previous_needs=previous_needs if previous_needs else None,
+            )
+            return self._build_response(
+                message=msg,
+                next_state=NeedWorkflowState.DRAFTING_NEED.value,
+                sub=sub,
+                session_state=request.session_state,
+                confirmed_fields={
+                    "coordinator_name": corrected_name,
+                    "school_name": school_ctx.get("school_name"),
+                },
+            )
+
+        # Detect generic correction — coordinator says something is wrong (no name provided)
+        correction_signals = {"no", "nahi", "nope", "wrong", "galat", "change", "different", "alag"}
+        if any(s in lower for s in correction_signals):
+            # Send back to coordinator resolution
+            msg = await llm_adapter.generate_response(
+                stage="resolving_coordinator",
+                messages=request.conversation_history,
+                user_message=request.user_message,
+                coordinator_context=coord_ctx,
+                school_context=school_ctx,
+            )
+            return self._build_response(
+                message=msg,
+                next_state=NeedWorkflowState.RESOLVING_COORDINATOR.value,
+                sub=sub,
+                session_state=request.session_state,
+            )
+
+        # Detect confirmation — coordinator says yes/correct
+        confirm_signals = {
+            "yes", "haan", "ha", "han", "correct", "sahi", "theek", "bilkul",
+            "ok", "okay", "right", "confirm", "sure", "aage", "proceed",
+        }
+        if any(s in lower for s in confirm_signals):
+            previous_needs = school_ctx.get("previous_needs", [])
+            msg = await llm_adapter.generate_response(
+                stage="drafting_need",
+                messages=request.conversation_history,
+                user_message=request.user_message,
+                coordinator_context=coord_ctx,
+                school_context=school_ctx,
+                need_draft={},
+                missing_fields=["subjects", "grade_levels", "student_count", "schedule_preference", "start_date"],
+                previous_needs=previous_needs if previous_needs else None,
+            )
+            return self._build_response(
+                message=msg,
+                next_state=NeedWorkflowState.DRAFTING_NEED.value,
+                sub=sub,
+                session_state=request.session_state,
+                confirmed_fields={
+                    "coordinator_name": coord_ctx.get("coordinator_name"),
+                    "school_name": school_ctx.get("school_name"),
+                },
+            )
+
+        # Ambiguous — re-ask for confirmation
+        msg = await llm_adapter.generate_response(
+            stage="confirming_identity",
+            messages=request.conversation_history,
+            user_message=request.user_message,
+            coordinator_context=coord_ctx,
+            school_context=school_ctx,
+        )
+        return self._build_response(
+            message=msg,
+            next_state=NeedWorkflowState.CONFIRMING_IDENTITY.value,
+            sub=sub,
+            session_state=request.session_state,
         )
 
     # ── Stage: RESOLVING_SCHOOL (L3.5) ────────────────────────────────────────
@@ -690,6 +844,7 @@ class NeedAgentService:
                 )
                 if result.get("status") == "success":
                     school_ctx["previous_needs"] = result.get("previous_needs", [])
+                    logger.info(f"[school_loop] fetch_previous_needs stored: count={len(school_ctx['previous_needs'])}")
                 return result
             if tool_name == "link_coordinator_to_school":
                 return await domain_client.map_coordinator_to_school(
@@ -812,28 +967,91 @@ class NeedAgentService:
 
         # Extract from user message
         extracted = _extractor.extract_all(request.user_message, existing_draft)
-        # Always merge coordinator/entity IDs into the draft so submission can find them
-        merged = {**existing_draft, **extracted}
-        save_args = {
-            "session_id": session_id,
-            "coordinator_osid": coord_ctx.get("coordinator_id") or "",
-            "entity_id": school_ctx.get("school_id") or "",
-        }
-        save_args.update({k: v for k, v in merged.items() if v is not None and v != "" and v != []})
-        save_result = await domain_client.create_or_update_need_draft(**save_args)
-        logger.info(f"[drafting] draft save result={save_result.get('status')} need_id={save_result.get('need_id')}")
+
+        # If schedule_preference still missing, scan recent conversation history for day names
+        if not extracted.get("schedule_preference") and not existing_draft.get("schedule_preference"):
+            for msg in reversed(request.conversation_history[-6:]):
+                if msg.get("role") == "user":
+                    sched = _extractor.extract_schedule(msg.get("content", ""))
+                    if sched:
+                        extracted["schedule_preference"] = sched
+                        logger.info(f"[drafting] schedule_preference recovered from history: {sched}")
+                        break
+
+        # Renewal detection: if coordinator confirms "same as last year" and we have
+        # previous needs, pre-populate all fields except student_count and start_date
+        previous_needs = school_ctx.get("previous_needs", [])
+        if previous_needs and not any(existing_draft.get(f) for f in ["subjects", "grade_levels"]):
+            msg_lower = request.user_message.lower()
+            renewal_signals = ["same", "haan", "yes", "ha ", "han ", "theek", "sahi", "bilkul", "correct", "right", "ok", "okay"]
+            if any(s in msg_lower for s in renewal_signals):
+                # Combine subjects + grades across ALL previous needs (not just first)
+                all_subjects: List[str] = []
+                all_grades: List[str] = []
+                for prev in previous_needs:
+                    prev_name = prev.get("name", "")
+                    s = prev.get("subjects") or _extractor.extract_subjects(prev_name)
+                    g = prev.get("grade_levels") or _extractor.extract_grades(prev_name)
+                    all_subjects.extend(s)
+                    all_grades.extend(g)
+
+                if not extracted.get("subjects") and all_subjects:
+                    extracted["subjects"] = list(dict.fromkeys(all_subjects))  # dedup, preserve order
+                if not extracted.get("grade_levels") and all_grades:
+                    extracted["grade_levels"] = sorted(list(dict.fromkeys(all_grades)), key=lambda x: int(x))
+
+                # schedule/timeslots from first need (they're usually the same across needs)
+                first = previous_needs[0]
+                if not extracted.get("schedule_preference"):
+                    days = first.get("days", "")
+                    freq = first.get("frequency", "")
+                    if days:
+                        extracted["schedule_preference"] = f"{days} ({freq})" if freq else days
+
+                if not extracted.get("time_slots") and first.get("time_slots"):
+                    extracted["time_slots"] = first["time_slots"]
+
+                if not extracted.get("end_date"):
+                    extracted["end_date"] = "2027-03-31"
+
+                logger.info(
+                    f"[drafting] renewal confirmed — pre-populated from {len(previous_needs)} need(s): "
+                    f"subjects={extracted.get('subjects')} grades={extracted.get('grade_levels')} "
+                    f"schedule={extracted.get('schedule_preference')}"
+                )
+        # student_count: delegate to LLM — handles any free-text format
+        # (bare number, "X students", "grade 6 - 30 and grade 7 - 20", etc.)
+        if not extracted.get("student_count") and not existing_draft.get("student_count"):
+            count = await llm_adapter.extract_student_count(request.user_message)
+            logger.info(f"[drafting] extract_student_count from '{request.user_message[:50]}' → {count}")
+            if count:
+                extracted["student_count"] = count
+
+        logger.info(f"[drafting] extracted keys before merge: {list(extracted.keys())}")
+        # Strip None/empty from existing_draft before merging so we don't overwrite
+        # previously saved values with None (DB returns all columns, even unset ones)
+        clean_existing = {k: v for k, v in existing_draft.items()
+                          if v is not None and v != "" and not (isinstance(v, list) and len(v) == 0)}
+        merged = {**clean_existing, **extracted}
+        need_data = {k: v for k, v in merged.items() if v is not None and v != "" and not (isinstance(v, list) and len(v) == 0)}
+        coordinator_osid = coord_ctx.get("coordinator_id") or None
+        entity_id = school_ctx.get("school_id") or None
+        if coordinator_osid:
+            need_data["coordinator_osid"] = coordinator_osid
+        if entity_id:
+            need_data["entity_id"] = entity_id
+        logger.info(f"[drafting] saving draft with coordinator_osid={coordinator_osid!r} entity_id={entity_id!r} fields={list(need_data.keys())}")
+        save_result = await domain_client.create_or_update_need_draft(
+            session_id=session_id,
+            need_data=need_data,
+        )
         existing_draft = merged
 
         missing = self._get_missing_fields(existing_draft)
         completion_pct = self._calculate_completion(existing_draft)
 
-        logger.info(
-            f"[drafting] session={session_id[:8]} "
-            f"extracted={list(extracted.keys())} "
-            f"draft_keys={[k for k,v in existing_draft.items() if v is not None and v != '' and v != []]} "
-            f"missing={missing} "
-            f"completion={completion_pct}%"
-        )
+        collected = [k for k, v in existing_draft.items() if v is not None and v != "" and not (isinstance(v, list) and len(v) == 0)]
+        logger.info(f"[drafting] session={session_id[:8]} collected={collected} missing={missing} completion={completion_pct}%")
 
         next_state = (
             NeedWorkflowState.PENDING_APPROVAL.value
@@ -866,7 +1084,7 @@ class NeedAgentService:
                 school_context=school_ctx,
                 need_draft=existing_draft,
                 missing_fields=missing + optional_missing,
-                previous_needs=previous_needs if not existing_draft else None,
+                previous_needs=previous_needs if not any(existing_draft.get(f) for f in ["subjects", "grade_levels", "student_count"]) else None,
             )
 
         return self._build_response(
@@ -920,6 +1138,7 @@ class NeedAgentService:
         confirm_signals = {
             "yes", "correct", "confirm", "looks good", "that's right", "perfect",
             "ok", "okay", "approved", "submit", "proceed", "go ahead", "sure",
+            "haan", "ha", "theek hai", "sahi hai", "bilkul", "kar do", "bhejo", "send karo",
         }
         if any(s in lower for s in confirm_signals):
             # Submit to Serve Need Service — one need per subject+grade combination
@@ -1182,7 +1401,7 @@ class NeedAgentService:
     def _get_missing_fields(self, draft: Dict) -> List[str]:
         return [
             f for f in MANDATORY_NEED_FIELDS
-            if draft.get(f) is None or draft.get(f) == "" or (isinstance(draft[f], list) and not draft[f])
+            if draft.get(f) is None or draft.get(f) == "" or (isinstance(draft.get(f), list) and len(draft[f]) == 0)
         ]
 
     def _calculate_completion(self, draft: Dict) -> int:
@@ -1190,7 +1409,7 @@ class NeedAgentService:
             return 0
         filled = sum(
             1 for f in MANDATORY_NEED_FIELDS
-            if draft.get(f) is not None and draft.get(f) != "" and (not isinstance(draft[f], list) or draft[f])
+            if draft.get(f) is not None and draft.get(f) != "" and not (isinstance(draft.get(f), list) and len(draft[f]) == 0)
         )
         return round((filled / len(MANDATORY_NEED_FIELDS)) * 100)
 
@@ -1253,9 +1472,9 @@ class _DomainClientAdapter:
     async def resume_need_context(self, session_id: str) -> Dict:
         return await _mcp_client.resume_need_context(session_id=session_id)
 
-    async def create_or_update_need_draft(self, session_id: str, **kwargs) -> Dict:
+    async def create_or_update_need_draft(self, session_id: str, need_data: Dict) -> Dict:
         return await _mcp_client.create_or_update_need_draft(
-            session_id=session_id, need_data=kwargs
+            session_id=session_id, need_data=need_data
         )
 
     async def submit_need_for_approval(self, need_id: str) -> Dict:

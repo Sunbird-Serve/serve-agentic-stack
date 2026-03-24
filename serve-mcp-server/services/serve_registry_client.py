@@ -490,6 +490,84 @@ class NeedServiceClient:
         url = f"{NEED_SERVICE_URL}/need/{need_id}"
         return await _request("GET", url)
 
+    async def get_need_details(self, need_id: str) -> Optional[Dict]:
+        """
+        GET /need/{needId}/details
+        Returns enriched need with requirement, occurrence, and timeSlots.
+        Flattens into an AI-friendly dict with subjects, grades, days, timeslots.
+        """
+        url = f"{NEED_SERVICE_URL}/need/{need_id}/details"
+        data = await _request("GET", url)
+        if not data:
+            return None
+
+        need = data.get("need", {})
+        requirement = data.get("needRequirement", {})
+        occurrence = data.get("occurrence", {})
+        time_slots = data.get("timeSlots", [])
+
+        # Parse subjects and grades from need name (e.g. "English Grade 6")
+        name = need.get("name", "")
+        subjects = []
+        grades = []
+        
+        # Extract subjects from skillDetails if available
+        skill_details = requirement.get("skillDetails", "")
+        if skill_details:
+            # "English, Teaching" → ["english"]
+            parts = [p.strip().lower() for p in skill_details.split(",")]
+            subjects = [p for p in parts if p and p != "teaching"]
+        
+        # Extract grade from name using regex
+        import re
+        grade_match = re.search(r"Grade\s+(\d+)", name, re.IGNORECASE)
+        if grade_match:
+            grades = [grade_match.group(1)]
+
+        # Parse dates
+        start_date = occurrence.get("startDate", "")
+        end_date = occurrence.get("endDate", "")
+        if start_date:
+            start_date = start_date.split("T")[0]  # "2026-04-01T00:00:00Z" → "2026-04-01"
+        if end_date:
+            end_date = end_date.split("T")[0]
+
+        # Parse days and frequency
+        days = occurrence.get("days", "")
+        frequency = occurrence.get("frequency", "")
+
+        # Parse time slots
+        parsed_slots = []
+        for slot in time_slots:
+            start_time = slot.get("startTime", "")
+            end_time = slot.get("endTime", "")
+            # Extract time portion: "2026-04-01T10:00:00Z" → "10:00"
+            if start_time:
+                start_time = start_time.split("T")[1].split(":")[0] + ":" + start_time.split("T")[1].split(":")[1]
+            if end_time:
+                end_time = end_time.split("T")[1].split(":")[0] + ":" + end_time.split("T")[1].split(":")[1]
+            
+            parsed_slots.append({
+                "day": slot.get("day", ""),
+                "startTime": start_time,
+                "endTime": end_time,
+            })
+
+        return {
+            "id": need.get("id"),
+            "name": name,
+            "subjects": subjects,
+            "grade_levels": grades,
+            "days": days,
+            "frequency": frequency,
+            "start_date": start_date,
+            "end_date": end_date,
+            "time_slots": parsed_slots,
+            "status": need.get("status"),
+            "createdAt": need.get("createdAt"),
+            "needPurpose": need.get("needPurpose", ""),
+        }
+
     async def raise_need(
         self,
         coordinator_osid: str,

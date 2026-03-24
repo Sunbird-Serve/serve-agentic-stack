@@ -118,7 +118,7 @@ NEED_COORDINATION_WORKFLOW = WorkflowDefinition(
             stage_id='initiated',
             display_name='Welcome',
             responsible_agent='need',
-            valid_next_stages=['capturing_phone', 'resolving_coordinator', 'paused'],
+            valid_next_stages=['capturing_phone', 'resolving_coordinator', 'confirming_identity', 'drafting_need', 'paused'],
             required_fields=[],
             can_pause=True
         ),
@@ -134,16 +134,24 @@ NEED_COORDINATION_WORKFLOW = WorkflowDefinition(
             stage_id='resolving_coordinator',
             display_name='Identifying You',
             responsible_agent='need',
-            valid_next_stages=['resolving_school', 'drafting_need', 'human_review', 'paused'],
+            valid_next_stages=['resolving_school', 'confirming_identity', 'drafting_need', 'human_review', 'paused'],
             required_fields=[],
             optional_fields=['coordinator_name', 'whatsapp_number'],
+            can_pause=True
+        ),
+        'confirming_identity': WorkflowStageDefinition(
+            stage_id='confirming_identity',
+            display_name='Confirm Your Details',
+            responsible_agent='need',
+            valid_next_stages=['drafting_need', 'resolving_coordinator', 'paused'],
+            required_fields=[],
             can_pause=True
         ),
         'resolving_school': WorkflowStageDefinition(
             stage_id='resolving_school',
             display_name='Your School',
             responsible_agent='need',
-            valid_next_stages=['drafting_need', 'human_review', 'paused'],
+            valid_next_stages=['confirming_identity', 'drafting_need', 'human_review', 'paused'],
             required_fields=[],
             optional_fields=['school_name', 'school_location'],
             can_pause=True
@@ -210,7 +218,7 @@ NEED_COORDINATION_WORKFLOW = WorkflowDefinition(
             display_name='Paused',
             responsible_agent='need',
             valid_next_stages=['initiated', 'capturing_phone', 'resolving_coordinator',
-                              'resolving_school', 'drafting_need', 'pending_approval',
+                              'confirming_identity', 'resolving_school', 'drafting_need', 'pending_approval',
                               'refinement_required'],
             required_fields=[],
             can_pause=False
@@ -446,8 +454,8 @@ class WorkflowValidator:
                 'profile_confirmation', 'onboarding_complete'
             ],
             'need_coordination': [
-                'initiated', 'capturing_phone', 'resolving_coordinator', 'resolving_school',
-                'drafting_need', 'pending_approval', 'submitted', 'approved',
+                'initiated', 'capturing_phone', 'resolving_coordinator', 'confirming_identity',
+                'resolving_school', 'drafting_need', 'pending_approval', 'submitted', 'approved',
                 'fulfillment_handoff_ready'
             ],
             'returning_volunteer': [

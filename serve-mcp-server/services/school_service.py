@@ -115,15 +115,38 @@ class SchoolService:
         return entity
 
     async def fetch_previous_needs(self, school_id: str) -> Dict[str, Any]:
-        """Fetch entity details + previous needs from Serve Need Service."""
+        """Fetch entity details + previous needs from Serve Need Service.
+        Enriches needs created in 2025 or 2026 with full details (occurrence, timeslots, days).
+        Falls back to most recent 2 needs if none match the year filter.
+        """
         entity = await need_service_client.get_entity(school_id)
         needs  = await need_service_client.get_needs_for_entity(school_id)
+
+        def _created_year(need: Dict) -> int:
+            try:
+                return int(need.get("createdAt", "")[:4])
+            except Exception:
+                return 0
+
+        recent_needs = [n for n in needs if _created_year(n) in (2025, 2026)]
+        candidates = recent_needs if recent_needs else needs[:2]
+
+        enriched = []
+        for need in candidates[:2]:
+            need_id = need.get("id")
+            if need_id:
+                full = await need_service_client.get_need_details(need_id)
+                enriched.append(full if full else need)
+            else:
+                enriched.append(need)
+
         return {
             "status":         "success",
             "school":         entity or {"id": school_id},
-            "previous_needs": needs,
-            "needs_count":    len(needs),
+            "previous_needs": enriched,
+            "needs_count":    len(enriched),
         }
+
 
     async def link_coordinator(
         self,

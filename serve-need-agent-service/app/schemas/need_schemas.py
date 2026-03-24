@@ -16,6 +16,7 @@ class NeedWorkflowState(str, Enum):
     INITIATED = "initiated"
     CAPTURING_PHONE = "capturing_phone"          # web UI: ask for phone before identity lookup
     RESOLVING_COORDINATOR = "resolving_coordinator"
+    CONFIRMING_IDENTITY = "confirming_identity"  # coordinator+school resolved, awaiting confirmation
     RESOLVING_SCHOOL = "resolving_school"
     DRAFTING_NEED = "drafting_need"
     PENDING_APPROVAL = "pending_approval"

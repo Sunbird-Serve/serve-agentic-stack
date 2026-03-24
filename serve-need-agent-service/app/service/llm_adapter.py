@@ -16,23 +16,28 @@ has no direct dependency on domain_client.
 import json
 import logging
 import os
+import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# ── eVidyaloka context ────────────────────────────────────────────────────────
+# ── Project Serve context ────────────────────────────────────────────────────────
 
 _EVID_CONTEXT = """
-You are the eVidyaloka Need Coordination Assistant.
-eVidyaloka connects volunteer teachers with rural schools across India that need teaching support.
+You are the Project Serve Need Coordination Assistant.
+Project Serve connects volunteer teachers with rural schools across India that need teaching support.
+You are talking to school coordinators — typically teachers or headmasters from rural areas, often in Uttar Pradesh.
 
 Communication guidelines:
-- Professional yet warm — coordinators are partners in the mission
-- Clear and efficient — they are busy people
-- Respectful of their local knowledge
-- NEVER use technical jargon: no "workflow", "agent", "MCP", "osid", "entity", "system"
-- Focus on children's educational needs
-- Keep responses to 2-3 sentences; ask only one question at a time
+- LANGUAGE: Detect whether the coordinator is writing in Hindi, Hinglish, or English and respond in the SAME language.
+  If they write in Hindi or Hinglish, reply in Hinglish (a natural mix of Hindi and English that feels familiar).
+  If they write in English, reply in English. Never force a language switch.
+- Warm and mission-driven — these coordinators are doing important work for children
+- Keep it short and simple — they are busy, often on mobile, often on WhatsApp
+- Ask only ONE question at a time
+- NEVER use technical jargon: no "workflow", "agent", "MCP", "osid", "entity", "system", "register", "submit"
+  Use instead: "note kar lete hain", "save kar lete hain", "bhej dete hain"
+- Focus on children's educational needs, not process
 """
 
 # ── Stage prompts (plain text generation) ────────────────────────────────────
@@ -55,28 +60,65 @@ _STAGE_PROMPTS: Dict[str, str] = {
         "You are identifying which school this coordinator is coordinating for. "
         "Be conversational. If the school has previous support history, mention it naturally."
     ),
+    "confirming_identity": (
+        "STAGE: Identity Confirmation\n"
+        "The coordinator's identity and school have been resolved. "
+        "Present their details warmly and ask them to confirm before proceeding to the need.\n"
+        "Include: coordinator name, school name.\n"
+        "Keep it short — one confirmation message. "
+        "Example: 'Aap [Name] ji hain, aur aapka school [School] hai — sab sahi hai na? "
+        "Confirm karein toh hum need ke baare mein baat karte hain.'\n"
+        "Do NOT ask about the need yet. Just confirm identity and wait."
+    ),
     "drafting_need": (
         "STAGE: Capturing the Need\n"
-        "Collect the specific educational need one question at a time:\n"
+        "Collect the specific educational need. Fields needed:\n"
         "- Subjects (mathematics, science, english, etc.)\n"
         "- Grade levels (1-12)\n"
         "- Number of students\n"
-        "- Which days of the week for classes (e.g. Monday & Wednesday, weekdays, 3 days a week)\n"
-        "- Start date — IMPORTANT: always use year 2026 unless the coordinator explicitly states a different year\n\n"
-        "Acknowledge what the coordinator has already shared before asking the next question. "
-        "Be flexible — 'math for 5th graders' gives you both subject and grade. "
-        "For days/schedule, accept any natural phrasing like 'Monday Wednesday Friday', 'twice a week', 'weekdays'."
+        "- Which days of the week for classes\n"
+        "- Start date — IMPORTANT: always use year 2026 unless the coordinator explicitly states otherwise\n\n"
+        "FIRST MESSAGE ONLY — if this is the opening of the need capture (no fields captured yet), "
+        "start by warmly greeting the coordinator by name and confirming their school name naturally "
+        "before moving to the need. Example: 'Namaste [Name] ji! Aapka school [School] — sab theek hai. "
+        "Ab need ke baare mein baat karte hain...'. Keep it to one or two lines, then move on.\n\n"
+        "MULTI-FIELD EXTRACTION — CRITICAL:\n"
+        "Coordinators often give multiple details in one message (e.g. 'Class 5 ke 30 bacche hain, Monday Wednesday ko padhna hai').\n"
+        "Extract ALL fields present in the message. Only ask about fields that are genuinely still missing.\n"
+        "NEVER re-ask for something the coordinator already told you.\n\n"
+        "FLEXIBLE INTERPRETATION:\n"
+        "- 'poori class' or 'whole class' → treat as approximately 40 students\n"
+        "- 'lagbhag 30', 'around 30', 'about 30' → 30 students\n"
+        "- Per-grade counts like 'Grade 6 - 30, Grade 7 - 40' or '30 aur 40 bacche hain' → add them up (total = 70)\n"
+        "- Relative dates: 'April se', 'next month', 'after Holi', 'April mein' → extract the month, use 2026\n"
+        "- Days: 'Monday Wednesday Friday', 'teen din', 'twice a week', 'weekdays' → all valid\n\n"
+        "RENEWAL SHORTCUT — IMPORTANT:\n"
+        "If previous needs exist (shown in PREVIOUS NEEDS section), proactively offer renewal at the START of this stage.\n"
+        "Show the previous need's details — subjects, grades, student count, days, time slots — and ask:\n"
+        "'Kya is saal bhi same support chahiye, ya kuch changes hain?' (or in English: 'Same as last year, or any changes?')\n"
+        "If the coordinator says yes/same/haan, treat ALL fields from the previous need as confirmed for the new need.\n"
+        "Only ask follow-up questions if they indicate changes.\n\n"
+        "STRICT RULE — NEVER SAY SUBMITTED:\n"
+        "You are ONLY collecting information. You cannot submit, send, or register anything.\n"
+        "NEVER say 'bhej diya', 'submitted', 'registered', 'sent to team', or anything implying submission.\n"
+        "When all fields are collected, simply confirm what you have and wait — the system handles submission.\n\n"
+        "Acknowledge what the coordinator has already shared before asking the next question."
     ),
     "pending_approval": (
         "STAGE: Review & Confirmation\n"
-        "Summarise the complete need clearly and ask the coordinator to confirm:\n"
-        "- School name\n"
-        "- Subjects\n"
-        "- Grades\n"
-        "- Number of students\n"
-        "- Days / schedule\n"
-        "- Start date\n\n"
-        "Ask if anything needs to be changed before we proceed."
+        "You MUST format your response EXACTLY as shown below — no paragraphs, no prose, no extra sentences.\n"
+        "Use this exact structure:\n\n"
+        "Here's what I've noted:\n"
+        "• School: {school}\n"
+        "• Subject(s): {subjects}\n"
+        "• Grade(s): {grades}\n"
+        "• Students: {count}\n"
+        "• Days: {schedule}\n"
+        "• Starting: {start_date}\n\n"
+        "Kya sab theek hai? Confirm karein toh hum aage badhte hain.\n\n"
+        "Fill in the actual values from CAPTURED SO FAR. "
+        "Do NOT write a paragraph. Do NOT add any explanation before or after the bullets. "
+        "The bullet list + one confirmation line is the ENTIRE response."
     ),
     "submitted": (
         "The need has been successfully registered. "
@@ -96,7 +138,7 @@ _STAGE_PROMPTS: Dict[str, str] = {
         "and help the coordinator provide the updated information."
     ),
     "human_review": (
-        "Something needs human attention. Explain that someone from the eVidyaloka team "
+        "Something needs human attention. Explain that someone from the Project Serve team "
         "will review and follow up shortly. Be reassuring."
     ),
 }
@@ -456,7 +498,7 @@ UUID RULE — CRITICAL:
         return f"""{_EVID_CONTEXT}
 
 GROUNDING RULES — NON-NEGOTIABLE:
-- You are connected ONLY to the eVidyaloka Serve database through the provided tools.
+- You are connected ONLY to the Project Serve Serve database through the provided tools.
 - You have NO internet access, NO external registry, NO general knowledge about people or schools.
 - NEVER use your training knowledge to identify a coordinator or school.
 - The ONLY valid source of coordinator names, IDs, and school data is the text inside tool call results.
@@ -476,7 +518,7 @@ PHASE 1 — Coordinator Identity:
 1. If coordinator is already resolved (coordinator_id known), skip identity lookups and go to Phase 2.
 2. If phone is available and NOT yet tried, call lookup_coordinator_by_phone.
 3. If phone lookup returned 'linked' AND the result contains a real coordinator ID, confirm their name warmly — do NOT ask for email — then immediately proceed to Phase 2.
-4. If phone lookup returned 'unlinked' OR 'not_found', ask the coordinator for their email address.
+4. If phone lookup returned 'unlinked' OR 'not_found', ask warmly: "Hmm, is number se koi record nahi mila. Kya aapne pehle kisi aur number se register kiya tha, ya aap Project Serve mein naye hain?" (or in English: "I couldn't find this number. Did you register with a different number, or are you new to Project Serve?"). Wait for their response before asking for email.
 5. If email is available and NOT yet tried, call lookup_coordinator_by_email.
 6. If email lookup returned 'linked' AND the result contains a real coordinator ID, confirm their name warmly, then proceed to Phase 2.
 7. If email lookup returned 'unlinked' AND coordinator has confirmed they are new, ask for their name then call register_new_coordinator, then proceed to Phase 2.
@@ -485,7 +527,7 @@ PHASE 1 — Coordinator Identity:
 Conversational rules:
 - Do not repeat lookups already tried.
 - Do not mention "system", "database", "lookup", "entity", "osid", or any technical term to the coordinator.
-- After a successful coordinator lookup, confirm naturally: "I see you're [Name] — great!" then immediately call get_schools_for_coordinator without asking the coordinator anything.
+- After a successful coordinator lookup, confirm naturally in their language: "Aap [Name] hain na? Great!" (or "I see you're [Name] — great!") then immediately call get_schools_for_coordinator without asking the coordinator anything.
 - If school is already resolved, skip Phase 2 and respond with the school context.
 """
 
@@ -517,7 +559,7 @@ Conversational rules:
         return f"""{_EVID_CONTEXT}
 
 GROUNDING RULES — NON-NEGOTIABLE:
-- You are connected ONLY to the eVidyaloka Serve database through the provided tools.
+- You are connected ONLY to the Project Serve Serve database through the provided tools.
 - You have NO internet access, NO UDISE registry, NO external database, NO general knowledge about schools.
 - NEVER use your training knowledge to identify a school from a UDISE code or school name.
   A UDISE code that you "recognise" from training is completely irrelevant — the code must be searched via tools.
@@ -550,10 +592,8 @@ Your task:
 1. If school is already resolved (school_id known) AND previous needs fetched — respond with that context.
 2. If coordinator_id is available and linked schools NOT yet checked, call get_schools_for_coordinator first.
 3. If get_schools_for_coordinator returns one school, confirm it with the coordinator naturally and call fetch_previous_needs using that school's `id` UUID.
-4. If get_schools_for_coordinator returns status='multiple', read the `schools` array from the result and list each school's `name` to the coordinator. Ask them to confirm which school this need is for. Once they confirm, call link_coordinator_to_school and fetch_previous_needs using the confirmed school's `id` UUID.
-5. If no linked schools found (or coordinator is new), ask: "Do you know your school's UDISE code?"
-   - If they provide a UDISE code, call search_school with it.
-   - If they say they don't know it, ask for the school name and call search_school with the name.
+4. If get_schools_for_coordinator returns status='multiple', read the `schools` array from the result and list each school as "[name] ([district])" to the coordinator. Ask them to confirm which school this need is for. Once they confirm, call link_coordinator_to_school and fetch_previous_needs using the confirmed school's `id` UUID.
+5. If no linked schools found (or coordinator is new), ask: "Aapke school ka UDISE code kya hai? (11 digit number hota hai)" — coordinators in UP know this immediately. If they say they don't know it, ask for the school name.
 6. If search_school returns one match, confirm that exact school name from the result with the coordinator, then call link_coordinator_to_school + fetch_previous_needs using the school's `id` UUID.
 7. If search_school returns multiple matches, list the school names from the result and ask the coordinator to confirm which one is theirs.
 8. If search_school returns no match or status='not_found', confirm the school is new, gather name + district + state, call create_new_school.
@@ -568,6 +608,33 @@ Conversational rules:
 """
 
     # ── Plain text generation ─────────────────────────────────────────────────
+
+    async def extract_student_count(self, user_message: str) -> Optional[int]:
+        """
+        Ask the LLM to extract total student count from a free-text message.
+        Handles per-grade inputs like "grade 6 - 30 and grade 7 - 20" → 50.
+        Returns None if no count can be determined.
+        """
+        client = self._get_client()
+        if client is None:
+            return None
+        try:
+            response = await client.messages.create(
+                model=self._model,
+                max_tokens=10,
+                system=(
+                    "Extract the total number of students from the message. "
+                    "If per-grade counts are given (e.g. 'grade 6 - 30, grade 7 - 20'), add them up. "
+                    "Reply with ONLY a single integer. If no count is present, reply with 0."
+                ),
+                messages=[{"role": "user", "content": user_message}],
+            )
+            raw = next((b.text.strip() for b in response.content if hasattr(b, "text") and b.text), "0")
+            val = int(re.search(r'\d+', raw).group()) if re.search(r'\d+', raw) else 0
+            return val if 1 <= val <= 2000 else None
+        except Exception as exc:
+            logger.warning(f"extract_student_count LLM call failed: {exc}")
+            return None
 
     async def generate_response(
         self,
@@ -600,7 +667,7 @@ Conversational rules:
         # Build conversation context (last 6 messages)
         convo = ""
         for msg in messages[-6:]:
-            role = "Coordinator" if msg.get("role") == "user" else "eVidyaloka"
+            role = "Coordinator" if msg.get("role") == "user" else "Project Serve"
             convo += f"{role}: {msg.get('content', '')}\n"
         full_msg = f"{convo}\nCoordinator: {user_message}" if convo else user_message
 
@@ -644,15 +711,49 @@ Conversational rules:
         if previous_needs:
             prev_desc = []
             for p in previous_needs[:2]:
+                name_str = p.get("name", "")
                 subjects = p.get("subjects") or []
                 if isinstance(subjects, str):
                     subjects = [subjects]
-                name_str = p.get("name", "")
                 desc = ", ".join(subjects) if subjects else name_str
-                if desc:
-                    prev_desc.append(desc)
+
+                grade = p.get("grade_levels") or []
+                if isinstance(grade, list):
+                    grade = ", ".join(str(g) for g in grade)
+
+                days = p.get("days") or p.get("schedule_preference") or ""
+                freq = p.get("frequency") or ""
+
+                slots = p.get("time_slots") or []
+                slot_str = ""
+                if slots and isinstance(slots, list):
+                    first = slots[0] if slots else {}
+                    if isinstance(first, dict):
+                        st = first.get("startTime", "")
+                        et = first.get("endTime", "")
+                        if st and et:
+                            slot_str = f"{st}–{et}"
+
+                detail_parts = []
+                if grade:
+                    detail_parts.append(f"Grade {grade}")
+                if days:
+                    detail_parts.append(f"{days} ({freq})" if freq else days)
+                if slot_str:
+                    detail_parts.append(slot_str)
+                full_desc = desc + (f" ({', '.join(detail_parts)})" if detail_parts else "")
+                if full_desc:
+                    prev_desc.append(full_desc)
             if prev_desc:
                 prompt += f"\n\nPREVIOUS NEEDS: {'; '.join(prev_desc)}"
+                prompt += (
+                    "\n\nRENEWAL INSTRUCTION: Previous need details including subject, grade, days, and timings are shown above. "
+                    "Present this to the coordinator naturally. Example: "
+                    "'Pichhle saal aapke school mein English Grade 6 ka support tha — Monday, Tuesday 10:00–11:00. "
+                    "Kya is saal bhi same chahiye?' "
+                    "If they confirm same/yes/haan, treat subject, grade, days, timings, and end date as confirmed — "
+                    "then ask ONLY for student count and start date, one at a time."
+                )
 
         if need_draft:
             captured = []
@@ -669,25 +770,31 @@ Conversational rules:
                     captured.append(f"{label}: {display}")
             if captured:
                 prompt += "\n\nCAPTURED SO FAR:\n" + "\n".join(captured)
+                if stage != "pending_approval":
+                    prompt += (
+                        "\n\nIMPORTANT: Do NOT repeat or summarise the captured fields above in your reply. "
+                        "The coordinator already told you these — just acknowledge briefly if relevant, "
+                        "then ask only about the next missing thing."
+                    )
 
         if missing_fields:
             field_labels = {
                 "subjects": "what subjects students need help with",
                 "grade_levels": "which grade levels",
-                "student_count": "how many students",
+                "student_count": "how many students in total (if they give per-grade counts like 'Grade 6 - 30, Grade 7 - 40', add them up and use the total)",
                 "schedule_preference": "which days of the week (e.g. Monday & Wednesday, weekdays, twice a week)",
                 "start_date": "when they want to start",
                 "time_slots": "what time of day works best",
                 "duration_weeks": "how many weeks of support",
             }
-            readable = [field_labels.get(f, f) for f in missing_fields[:2]]
-            prompt += f"\n\nSTILL NEEDED: {', '.join(readable)}. Ask about one naturally."
+            next_field = field_labels.get(missing_fields[0], missing_fields[0])
+            prompt += f"\n\nNEXT QUESTION: Ask only about {next_field}. One question, nothing else."
 
         return prompt
 
     def _get_fallback_response(self, stage: str, missing_fields: Optional[List[str]] = None) -> str:
         fallbacks = {
-            "initiated": "Hello! Welcome to eVidyaloka. I'm here to help you register teaching support for your school. Could you share your phone number to get started?",
+            "initiated": "Hello! Welcome to Project Serve. I'm here to help you register teaching support for your school. Could you share your phone number to get started?",
             "capturing_phone": "Could you share your phone number? It helps us quickly link you to your school.",
             "resolving_coordinator": "Could you share your email address so I can look up your details?",
             "resolving_school": "Could you share your school's UDISE code? It's an 11-digit number, or you can share the school name.",
@@ -718,3 +825,4 @@ llm_adapter = NeedLLMAdapter()
 
 # Populate combined tools list after class is fully defined
 NeedLLMAdapter.COMBINED_RESOLUTION_TOOLS = NeedLLMAdapter.COORDINATOR_TOOLS + NeedLLMAdapter.SCHOOL_TOOLS
+
