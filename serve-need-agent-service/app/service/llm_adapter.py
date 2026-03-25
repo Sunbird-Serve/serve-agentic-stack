@@ -76,8 +76,7 @@ _STAGE_PROMPTS: Dict[str, str] = {
         "- Subjects (mathematics, science, english, etc.)\n"
         "- Grade levels (1-12)\n"
         "- Number of students\n"
-        "- Which days of the week for classes\n"
-        "- Start date — IMPORTANT: always use year 2026 unless the coordinator explicitly states otherwise\n\n"
+        "- Which days of the week for classes\n\n"
         "FIRST MESSAGE ONLY — if this is the opening of the need capture (no fields captured yet), "
         "start by warmly greeting the coordinator by name and confirming their school name naturally "
         "before moving to the need. Example: 'Namaste [Name] ji! Aapka school [School] — sab theek hai. "
@@ -102,6 +101,11 @@ _STAGE_PROMPTS: Dict[str, str] = {
         "You are ONLY collecting information. You cannot submit, send, or register anything.\n"
         "NEVER say 'bhej diya', 'submitted', 'registered', 'sent to team', or anything implying submission.\n"
         "When all fields are collected, simply confirm what you have and wait — the system handles submission.\n\n"
+        "STRICT RULE — NEVER DECLARE COMPLETION:\n"
+        "NEVER say 'sab ho gaya', 'need capture complete', 'all done', 'need ready', or any phrase that implies\n"
+        "the process is finished. You do NOT control when the process ends — the system does.\n"
+        "If the NEXT QUESTION section below lists a missing field, you MUST ask for it. No exceptions.\n"
+        "Even if the conversation history looks complete, trust NEXT QUESTION over the chat history.\n\n"
         "Acknowledge what the coordinator has already shared before asking the next question."
     ),
     "pending_approval": (
@@ -637,6 +641,107 @@ Conversational rules:
             logger.warning(f"extract_student_count LLM call failed: {exc}")
             return None
 
+    async def extract_need_fields(
+        self,
+        conversation_history: List[Dict],
+        user_message: str,
+        existing_draft: Dict,
+        previous_needs: Optional[List[Dict]] = None,
+    ) -> Dict:
+        """
+        Ask the LLM to extract all need fields from the conversation so far.
+        Handles renewal ("same as last year"), partial changes, any language/phrasing.
+        Returns a dict with only the fields that are now known (never overwrites with None).
+        """
+        client = self._get_client()
+        if client is None:
+            return {}
+
+        # Build previous need summary for context
+        prev_block = ""
+        if previous_needs:
+            parts = []
+            for p in previous_needs[:3]:
+                name = p.get("name", "")
+                subj = p.get("subjects") or []
+                grades = p.get("grade_levels") or []
+                days = p.get("days", "")
+                freq = p.get("frequency", "")
+                slots = p.get("time_slots") or []
+                slot_str = ""
+                if slots and isinstance(slots, list):
+                    first = slots[0] if slots else {}
+                    if isinstance(first, dict):
+                        st = first.get("startTime", "")
+                        et = first.get("endTime", "")
+                        if st and et:
+                            slot_str = f"{st}–{et}"
+                desc = f"- Subjects: {subj}, Grades: {grades}, Days: {days} {freq}, Time: {slot_str}"
+                parts.append(desc)
+            prev_block = "PREVIOUS YEAR NEEDS:\n" + "\n".join(parts)
+
+        # Build current draft summary
+        draft_block = ""
+        if existing_draft:
+            captured = {k: v for k, v in existing_draft.items()
+                        if v is not None and v != "" and not (isinstance(v, list) and len(v) == 0)
+                        and k in ("subjects", "grade_levels", "student_count", "schedule_preference", "time_slots")}
+            if captured:
+                draft_block = f"ALREADY CAPTURED: {json.dumps(captured)}"
+
+        # Build recent conversation
+        convo = ""
+        for msg in conversation_history[-8:]:
+            role = "Coordinator" if msg.get("role") == "user" else "Agent"
+            convo += f"{role}: {msg.get('content', '')}\n"
+        convo += f"Coordinator: {user_message}"
+
+        system = """You are a data extraction assistant for Project Serve, an education NGO in India.
+Extract need fields from the conversation between a school coordinator and the agent.
+
+FIELDS TO EXTRACT:
+- subjects: list of subjects (e.g. ["english", "mathematics", "science", "hindi"])
+- grade_levels: list of grade numbers as strings (e.g. ["6", "7"])
+- student_count: integer total (if per-grade given like "grade 6 - 30, grade 7 - 20", add them up = 50)
+- schedule_preference: days of week as string (e.g. "Monday, Wednesday" or "Monday, Tuesday")
+- time_slots: list of time slot strings (e.g. ["10:00-11:00"] or ["10:00-11:00 AM"])
+
+RENEWAL RULE:
+If previous year needs are shown and the coordinator says anything meaning "same" (yes, haan, same, theek hai, wahi chahiye, copy karo, bilkul, correct, ok, etc.) — copy ALL fields from previous needs.
+If they say "same but change X" — copy all fields and apply the change.
+
+IMPORTANT:
+- Return ONLY fields you are confident about. Omit fields you don't know.
+- Do NOT invent data. Only extract what the coordinator explicitly said or confirmed from previous needs.
+- Return valid JSON only. No explanation, no markdown.
+- For subjects, use lowercase canonical names: english, mathematics, science, hindi, social_studies, computer_basics
+- grade_levels must be strings: ["6", "7"] not [6, 7]
+- student_count must be an integer
+
+Example output:
+{"subjects": ["english"], "grade_levels": ["6", "7"], "student_count": 50, "schedule_preference": "Monday, Wednesday", "time_slots": ["10:00-11:00"]}
+
+If nothing can be extracted, return: {}"""
+
+        user_content = f"{prev_block}\n\n{draft_block}\n\nCONVERSATION:\n{convo}".strip()
+
+        try:
+            response = await client.messages.create(
+                model=self._model,
+                max_tokens=256,
+                system=system,
+                messages=[{"role": "user", "content": user_content}],
+            )
+            raw = next((b.text.strip() for b in response.content if hasattr(b, "text") and b.text), "{}")
+            # Strip markdown code fences if present
+            raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
+            result = json.loads(raw)
+            logger.info(f"[extract_need_fields] extracted: {result}")
+            return result if isinstance(result, dict) else {}
+        except Exception as exc:
+            logger.warning(f"extract_need_fields failed: {exc}")
+            return {}
+
     async def generate_response(
         self,
         stage: str,
@@ -784,7 +889,6 @@ Conversational rules:
                 "grade_levels": "which grade levels",
                 "student_count": "how many students in total (if they give per-grade counts like 'Grade 6 - 30, Grade 7 - 40', add them up and use the total)",
                 "schedule_preference": "which days of the week (e.g. Monday & Wednesday, weekdays, twice a week)",
-                "start_date": "when they want to start",
                 "time_slots": "what time of day works best",
                 "duration_weeks": "how many weeks of support",
             }
@@ -814,7 +918,6 @@ Conversational rules:
                 "grade_levels": "Which grade levels need support?",
                 "student_count": "Approximately how many students will participate?",
                 "time_slots": "What time slots work best for online classes?",
-                "start_date": "When would you like the support to start?",
                 "duration_weeks": "For how many weeks would you like the support?",
             }
             base = field_prompts.get(missing_fields[0], base)

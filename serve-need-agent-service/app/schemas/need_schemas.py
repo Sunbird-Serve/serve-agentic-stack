@@ -232,7 +232,6 @@ MANDATORY_NEED_FIELDS = [
     "grade_levels",
     "student_count",
     "schedule_preference",
-    "start_date",
 ]
 
 OPTIONAL_NEED_FIELDS = [

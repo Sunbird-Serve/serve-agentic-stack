@@ -132,6 +132,27 @@ async def _wa_send(to: str, text: str) -> None:
             logger.error(f"WhatsApp send failed: {e}")
 
 
+async def _wa_mark_read(message_id: str) -> None:
+    """Mark a message as read (blue ticks) and show typing indicator to the sender."""
+    if not _WA_TOKEN or not _WA_PHONE_NUMBER_ID:
+        return
+    url = f"{_WA_GRAPH_URL}/{_WA_PHONE_NUMBER_ID}/messages"
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            await client.post(
+                url,
+                headers={"Authorization": f"Bearer {_WA_TOKEN}", "Content-Type": "application/json"},
+                json={
+                    "messaging_product": "whatsapp",
+                    "status": "read",
+                    "message_id": message_id,
+                    "typing_indicator": {"type": "text"},
+                },
+            )
+        except Exception as e:
+            logger.warning(f"WhatsApp mark-read failed: {e}")
+
+
 @app.get("/api/whatsapp/webhook")
 async def wa_verify(request: Request):
     """Meta webhook verification handshake."""
@@ -164,10 +185,15 @@ async def wa_receive(request: Request):
             for msg in change.get("value", {}).get("messages", []):
                 if msg.get("type") != "text":
                     continue
-                phone = msg.get("from", "")
-                text  = msg.get("text", {}).get("body", "").strip()
+                phone      = msg.get("from", "")
+                text       = msg.get("text", {}).get("body", "").strip()
+                message_id = msg.get("id", "")
                 if not phone or not text:
                     continue
+
+                # Option 2: mark message as read immediately (shows blue ticks)
+                if message_id:
+                    asyncio.create_task(_wa_mark_read(message_id))
 
                 if text.lower() in ("reset", "restart", "start over", "new"):
                     _wa_sessions.pop(phone, None)
@@ -175,20 +201,29 @@ async def wa_receive(request: Request):
                     continue
 
                 session_id = _wa_sessions.get(phone)
-                try:
-                    req = InteractionRequest(
-                        session_id=session_id,
-                        message=text,
-                        channel=ChannelType.WHATSAPP,
-                        persona=PersonaType.NEED_COORDINATOR,
-                        channel_metadata={"phone_number": phone},
-                    )
-                    resp = await orchestration_service.process_interaction(req)
-                    _wa_sessions[phone] = str(resp.session_id)
-                    await _wa_send(phone, resp.assistant_message)
-                except Exception as e:
-                    logger.error(f"Error handling WhatsApp message from {phone[:6]}***: {e}")
-                    await _wa_send(phone, "Something went wrong. Please try again in a moment.")
+
+                # Option 3: send instant ack on first message (no session yet)
+                # so user knows we received it while resolution runs in background
+                if not session_id:
+                    asyncio.create_task(_wa_send(phone, "Ek second... 🙏"))
+
+                async def _process(phone=phone, text=text, session_id=session_id):
+                    try:
+                        req = InteractionRequest(
+                            session_id=session_id,
+                            message=text,
+                            channel=ChannelType.WHATSAPP,
+                            persona=PersonaType.NEED_COORDINATOR,
+                            channel_metadata={"phone_number": phone},
+                        )
+                        resp = await orchestration_service.process_interaction(req)
+                        _wa_sessions[phone] = str(resp.session_id)
+                        await _wa_send(phone, resp.assistant_message)
+                    except Exception as e:
+                        logger.error(f"Error handling WhatsApp message from {phone[:6]}***: {e}")
+                        await _wa_send(phone, "Something went wrong. Please try again in a moment.")
+
+                asyncio.create_task(_process())
 
     return {"status": "ok"}
 

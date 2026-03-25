@@ -79,6 +79,7 @@ services:
       - LLM_PROVIDER=claude
       - LLM_MODEL=claude-sonnet-4-5-20250929
       - EMERGENT_LLM_KEY=${EMERGENT_LLM_KEY}
+      - NEED_START_DATE=${NEED_START_DATE:-2026-04-06}
     ports:
       - "8005:8005"
     depends_on:

@@ -32,6 +32,7 @@ Sub-state JSON schema (stored in session.sub_state between turns):
 import copy
 import json
 import logging
+import os
 import re
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
@@ -52,6 +53,10 @@ from app.clients import domain_client as _mcp_client
 from app.service.llm_adapter import llm_adapter
 
 logger = logging.getLogger(__name__)
+
+# ── Config ────────────────────────────────────────────────────────────────────
+# Start date is fixed per cohort — change NEED_START_DATE env var to update.
+NEED_START_DATE: str = os.environ.get("NEED_START_DATE", "2026-04-06")
 
 
 # ── Sub-state helpers ─────────────────────────────────────────────────────────
@@ -295,12 +300,12 @@ class NeedDetailExtractor:
 
         subjects = self.extract_subjects(text)
         if subjects:
-            merged = list(set(existing.get("subjects", []) + subjects))
+            merged = list(set((existing.get("subjects") or []) + subjects))
             extracted["subjects"] = merged
 
         grades = self.extract_grades(text)
         if grades:
-            merged = list(set(existing.get("grade_levels", []) + grades))
+            merged = list(set((existing.get("grade_levels") or []) + grades))
             extracted["grade_levels"] = sorted(merged, key=lambda x: int(x))
 
         # student_count: removed deterministic extraction — LLM handles this intelligently
@@ -732,7 +737,7 @@ class NeedAgentService:
                 coordinator_context=coord_ctx,
                 school_context=school_ctx,
                 need_draft={},
-                missing_fields=["subjects", "grade_levels", "student_count", "schedule_preference", "start_date"],
+                missing_fields=["subjects", "grade_levels", "student_count", "schedule_preference"],
                 previous_needs=previous_needs if previous_needs else None,
             )
             return self._build_response(
@@ -778,7 +783,7 @@ class NeedAgentService:
                 coordinator_context=coord_ctx,
                 school_context=school_ctx,
                 need_draft={},
-                missing_fields=["subjects", "grade_levels", "student_count", "schedule_preference", "start_date"],
+                missing_fields=["subjects", "grade_levels", "student_count", "schedule_preference"],
                 previous_needs=previous_needs if previous_needs else None,
             )
             return self._build_response(
@@ -961,77 +966,42 @@ class NeedAgentService:
         ctx_result = await domain_client.resume_need_context(session_id)
         existing_draft: Dict = {}
         if ctx_result.get("status") == "success":
-            existing_draft = ctx_result.get("need_draft") or ctx_result.get("data", {}).get("need_draft") or {}
+            raw_draft = ctx_result.get("need_draft") or ctx_result.get("data", {}).get("need_draft") or {}
+            # Normalize: DB returns [] for unset PGARRAY columns — treat as None so
+            # downstream logic correctly sees these fields as "not yet captured".
+            existing_draft = {
+                k: (None if isinstance(v, list) and len(v) == 0 else v)
+                for k, v in raw_draft.items()
+            }
 
         logger.info(f"[drafting] resume result status={ctx_result.get('status')} existing_draft_keys={list(existing_draft.keys())}")
 
-        # Extract from user message
-        extracted = _extractor.extract_all(request.user_message, existing_draft)
-
-        # If schedule_preference still missing, scan recent conversation history for day names
-        if not extracted.get("schedule_preference") and not existing_draft.get("schedule_preference"):
-            for msg in reversed(request.conversation_history[-6:]):
-                if msg.get("role") == "user":
-                    sched = _extractor.extract_schedule(msg.get("content", ""))
-                    if sched:
-                        extracted["schedule_preference"] = sched
-                        logger.info(f"[drafting] schedule_preference recovered from history: {sched}")
-                        break
-
-        # Renewal detection: if coordinator confirms "same as last year" and we have
-        # previous needs, pre-populate all fields except student_count and start_date
+        # LLM extracts all fields from conversation — handles renewal, partial changes,
+        # any language. Replaces all regex extraction and keyword-based renewal detection.
         previous_needs = school_ctx.get("previous_needs", [])
-        if previous_needs and not any(existing_draft.get(f) for f in ["subjects", "grade_levels"]):
-            msg_lower = request.user_message.lower()
-            renewal_signals = ["same", "haan", "yes", "ha ", "han ", "theek", "sahi", "bilkul", "correct", "right", "ok", "okay"]
-            if any(s in msg_lower for s in renewal_signals):
-                # Combine subjects + grades across ALL previous needs (not just first)
-                all_subjects: List[str] = []
-                all_grades: List[str] = []
-                for prev in previous_needs:
-                    prev_name = prev.get("name", "")
-                    s = prev.get("subjects") or _extractor.extract_subjects(prev_name)
-                    g = prev.get("grade_levels") or _extractor.extract_grades(prev_name)
-                    all_subjects.extend(s)
-                    all_grades.extend(g)
+        extracted = await llm_adapter.extract_need_fields(
+            conversation_history=request.conversation_history,
+            user_message=request.user_message,
+            existing_draft=existing_draft,
+            previous_needs=previous_needs if previous_needs else None,
+        )
 
-                if not extracted.get("subjects") and all_subjects:
-                    extracted["subjects"] = list(dict.fromkeys(all_subjects))  # dedup, preserve order
-                if not extracted.get("grade_levels") and all_grades:
-                    extracted["grade_levels"] = sorted(list(dict.fromkeys(all_grades)), key=lambda x: int(x))
-
-                # schedule/timeslots from first need (they're usually the same across needs)
-                first = previous_needs[0]
-                if not extracted.get("schedule_preference"):
-                    days = first.get("days", "")
-                    freq = first.get("frequency", "")
-                    if days:
-                        extracted["schedule_preference"] = f"{days} ({freq})" if freq else days
-
-                if not extracted.get("time_slots") and first.get("time_slots"):
-                    extracted["time_slots"] = first["time_slots"]
-
-                if not extracted.get("end_date"):
-                    extracted["end_date"] = "2027-03-31"
-
-                logger.info(
-                    f"[drafting] renewal confirmed — pre-populated from {len(previous_needs)} need(s): "
-                    f"subjects={extracted.get('subjects')} grades={extracted.get('grade_levels')} "
-                    f"schedule={extracted.get('schedule_preference')}"
-                )
-        # student_count: delegate to LLM — handles any free-text format
-        # (bare number, "X students", "grade 6 - 30 and grade 7 - 20", etc.)
-        if not extracted.get("student_count") and not existing_draft.get("student_count"):
-            count = await llm_adapter.extract_student_count(request.user_message)
-            logger.info(f"[drafting] extract_student_count from '{request.user_message[:50]}' → {count}")
-            if count:
-                extracted["student_count"] = count
+        # start_date is fixed from config — always inject, never ask
+        if not existing_draft.get("start_date"):
+            extracted["start_date"] = NEED_START_DATE
 
         logger.info(f"[drafting] extracted keys before merge: {list(extracted.keys())}")
         # Strip None/empty from existing_draft before merging so we don't overwrite
-        # previously saved values with None (DB returns all columns, even unset ones)
-        clean_existing = {k: v for k, v in existing_draft.items()
-                          if v is not None and v != "" and not (isinstance(v, list) and len(v) == 0)}
+        # previously saved values with None (DB returns all columns, even unset ones).
+        # IMPORTANT: for list fields, only strip if the field is NOT in extracted (i.e. we
+        # just captured it this turn). This prevents DB returning [] from wiping a freshly
+        # populated value before it is persisted.
+        clean_existing = {
+            k: v for k, v in existing_draft.items()
+            if v is not None
+            and v != ""
+            and not (isinstance(v, list) and len(v) == 0 and k not in extracted)
+        }
         merged = {**clean_existing, **extracted}
         need_data = {k: v for k, v in merged.items() if v is not None and v != "" and not (isinstance(v, list) and len(v) == 0)}
         coordinator_osid = coord_ctx.get("coordinator_id") or None
@@ -1045,7 +1015,10 @@ class NeedAgentService:
             session_id=session_id,
             need_data=need_data,
         )
-        existing_draft = merged
+        # Use need_data (what was actually sent to DB) as source of truth for
+        # completeness check — avoids stale empty-list fields from DB response
+        # polluting the missing-fields calculation.
+        existing_draft = need_data
 
         missing = self._get_missing_fields(existing_draft)
         completion_pct = self._calculate_completion(existing_draft)
@@ -1058,8 +1031,6 @@ class NeedAgentService:
             if not missing
             else NeedWorkflowState.DRAFTING_NEED.value
         )
-
-        previous_needs = school_ctx.get("previous_needs", [])
 
         if not missing:
             # All mandatory fields captured — show summary for approval
