@@ -120,6 +120,22 @@ export const healthApi = {
   },
 };
 
+/**
+ * Tech Dashboard API
+ */
+export const dashboardApi = {
+  getStats: async () => {
+    const response = await apiClient.get('/mcp/dashboard/stats');
+    return response.data;
+  },
+  getConversation: async (sessionId, limit = 50) => {
+    const response = await apiClient.get(`/mcp/dashboard/conversation/${sessionId}`, {
+      params: { limit },
+    });
+    return response.data;
+  },
+};
+
 export default {
   orchestrator: orchestratorApi,
   mcp: mcpApi,

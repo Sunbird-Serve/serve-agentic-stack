@@ -19,7 +19,7 @@ from app.schemas import HealthResponse, InteractionRequest, ChannelType, Persona
 from app.service.agent_router import agent_router
 from app.service import orchestration_service
 
-MCP_SERVICE_URL = os.environ.get("MCP_SERVICE_URL", "http://serve-agentic-mcp-service:8003")
+MCP_SERVICE_URL = os.environ.get("MCP_SERVICE_URL") or os.environ.get("MCP_SERVER_URL", "http://serve-mcp-server:8004")
 
 # Configure logging
 logging.basicConfig(

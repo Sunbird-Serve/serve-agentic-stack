@@ -1,350 +1,345 @@
 /**
- * SERVE AI - Tech Admin/Debug View
- * Full telemetry, MCP logs, and session debugging
+ * SERVE AI - Tech Team Dashboard
  */
-import { useState, useEffect } from 'react';
-import { RefreshCw, Terminal, Database, Cpu, Activity, Search, Copy, Check } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import {
+  RefreshCw, Activity, Users, MessageSquare, BookOpen,
+  CheckCircle, Clock, Wifi, WifiOff, ChevronRight, X,
+} from 'lucide-react';
 import { Button } from '../components/ui/button';
-import { Input } from '../components/ui/input';
 import { Badge } from '../components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { ScrollArea } from '../components/ui/scroll-area';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
-import { mcpApi, healthApi } from '../services/api';
+import { dashboardApi, healthApi } from '../services/api';
 
-// JSON viewer component
-const JsonViewer = ({ data, maxHeight = '300px' }) => {
-  const [copied, setCopied] = useState(false);
+// ── helpers ──────────────────────────────────────────────────────────────────
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(JSON.stringify(data, null, 2));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
+const fmt = (n) => (n ?? 0).toLocaleString();
 
+const timeAgo = (iso) => {
+  if (!iso) return '—';
+  const diff = Math.floor((Date.now() - new Date(iso)) / 1000);
+  if (diff < 60)  return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+};
+
+const STAGE_COLOR = {
+  initiated:              'bg-slate-100 text-slate-600',
+  capturing_phone:        'bg-yellow-100 text-yellow-700',
+  resolving_coordinator:  'bg-blue-100 text-blue-700',
+  confirming_identity:    'bg-indigo-100 text-indigo-700',
+  resolving_school:       'bg-purple-100 text-purple-700',
+  drafting_need:          'bg-orange-100 text-orange-700',
+  pending_approval:       'bg-amber-100 text-amber-700',
+  submitted:              'bg-green-100 text-green-700',
+  paused:                 'bg-slate-100 text-slate-500',
+};
+
+const NEED_STATUS_COLOR = {
+  draft:              'bg-slate-100 text-slate-600',
+  pending_approval:   'bg-amber-100 text-amber-700',
+  submitted:          'bg-green-100 text-green-700',
+  approved:           'bg-emerald-100 text-emerald-700',
+  rejected:           'bg-red-100 text-red-700',
+  refinement_required:'bg-orange-100 text-orange-700',
+};
+
+// ── sub-components ────────────────────────────────────────────────────────────
+
+const StatCard = ({ icon: Icon, label, value, sub, color = 'text-slate-700' }) => (
+  <Card className="border-none shadow-sm">
+    <CardContent className="pt-5 pb-4">
+      <div className="flex items-start justify-between">
+        <div>
+          <p className="text-xs text-slate-500 mb-1">{label}</p>
+          <p className={`text-2xl font-bold ${color}`}>{fmt(value)}</p>
+          {sub && <p className="text-xs text-slate-400 mt-1">{sub}</p>}
+        </div>
+        <div className="p-2 rounded-lg bg-slate-50">
+          <Icon className="w-5 h-5 text-slate-400" />
+        </div>
+      </div>
+    </CardContent>
+  </Card>
+);
+
+const BarChart = ({ data, title }) => {
+  const max = Math.max(...Object.values(data), 1);
   return (
-    <div className="relative">
-      <Button
-        variant="ghost"
-        size="sm"
-        className="absolute top-2 right-2 z-10"
-        onClick={handleCopy}
-      >
-        {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-      </Button>
-      <pre
-        className="bg-slate-950 text-slate-100 p-4 rounded-lg overflow-auto text-xs font-mono"
-        style={{ maxHeight }}
-      >
-        {JSON.stringify(data, null, 2)}
-      </pre>
+    <div>
+      <p className="text-xs font-medium text-slate-500 mb-3 uppercase tracking-wide">{title}</p>
+      <div className="space-y-2">
+        {Object.entries(data).map(([key, val]) => (
+          <div key={key} className="flex items-center gap-2">
+            <span className="text-xs text-slate-500 w-32 truncate">{key}</span>
+            <div className="flex-1 bg-slate-100 rounded-full h-2">
+              <div
+                className="bg-blue-400 h-2 rounded-full transition-all"
+                style={{ width: `${(val / max) * 100}%` }}
+              />
+            </div>
+            <span className="text-xs font-medium text-slate-700 w-6 text-right">{val}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 };
 
-// Telemetry event row
-const TelemetryRow = ({ event }) => {
-  const eventColors = {
-    session_start: 'bg-green-100 text-green-700',
-    session_end: 'bg-red-100 text-red-700',
-    state_transition: 'bg-blue-100 text-blue-700',
-    mcp_call: 'bg-purple-100 text-purple-700',
-    agent_response: 'bg-cyan-100 text-cyan-700',
-    user_message: 'bg-slate-100 text-slate-700',
-    handoff: 'bg-orange-100 text-orange-700',
-    error: 'bg-red-100 text-red-700',
-  };
-
-  return (
-    <div className="debug-entry flex items-start gap-3">
-      <span className="text-slate-500 text-[10px] whitespace-nowrap">
-        {new Date(event.timestamp).toLocaleTimeString()}
-      </span>
-      <Badge className={`text-[10px] ${eventColors[event.event_type] || 'bg-slate-100'}`}>
-        {event.event_type}
-      </Badge>
-      {event.agent && (
-        <Badge variant="outline" className="text-[10px]">
-          {event.agent}
-        </Badge>
-      )}
-      <span className="text-slate-300 text-xs truncate flex-1">
-        {JSON.stringify(event.data || {}).substring(0, 100)}
-      </span>
-    </div>
-  );
-};
-
-export const AdminView = () => {
-  const [sessions, setSessions] = useState([]);
-  const [selectedSessionId, setSelectedSessionId] = useState('');
-  const [sessionData, setSessionData] = useState(null);
-  const [telemetry, setTelemetry] = useState([]);
-  const [conversation, setConversation] = useState([]);
-  const [healthStatus, setHealthStatus] = useState(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-
-  // Fetch sessions list
-  const fetchSessions = async () => {
-    try {
-      const response = await mcpApi.listSessions(null, 50);
-      if (response.status === 'success' && response.data?.sessions) {
-        setSessions(response.data.sessions);
-      }
-    } catch (error) {
-      console.error('Failed to fetch sessions:', error);
-    }
-  };
-
-  // Fetch health status
-  const fetchHealth = async () => {
-    try {
-      const response = await healthApi.checkAll();
-      setHealthStatus(response);
-    } catch (error) {
-      console.error('Failed to fetch health:', error);
-      setHealthStatus({ status: 'error', error: error.message });
-    }
-  };
-
-  // Fetch session details
-  const fetchSessionDetails = async (sessionId) => {
-    setIsLoading(true);
-    try {
-      const [sessionRes, telemetryRes, convRes] = await Promise.all([
-        mcpApi.getSession(sessionId),
-        mcpApi.getTelemetry(sessionId, 100),
-        mcpApi.getConversation(sessionId, 50),
-      ]);
-
-      if (sessionRes.status === 'success') {
-        setSessionData(sessionRes.data);
-      }
-      if (telemetryRes.status === 'success') {
-        setTelemetry(telemetryRes.data?.events || []);
-      }
-      if (convRes.status === 'success') {
-        setConversation(convRes.data?.messages || []);
-      }
-    } catch (error) {
-      console.error('Failed to fetch session details:', error);
-    }
-    setIsLoading(false);
-  };
+const ConversationPanel = ({ sessionId, onClose }) => {
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchSessions();
-    fetchHealth();
-    const interval = setInterval(fetchHealth, 60000);
-    return () => clearInterval(interval);
+    dashboardApi.getConversation(sessionId)
+      .then(r => setMessages(r.messages || []))
+      .catch(() => setMessages([]))
+      .finally(() => setLoading(false));
+  }, [sessionId]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-4 flex flex-col max-h-[80vh]">
+        <div className="flex items-center justify-between px-5 py-4 border-b">
+          <div>
+            <p className="font-semibold text-slate-800">Conversation</p>
+            <p className="text-xs text-slate-400 font-mono">{sessionId.slice(0, 16)}…</p>
+          </div>
+          <Button variant="ghost" size="sm" onClick={onClose}><X className="w-4 h-4" /></Button>
+        </div>
+        <ScrollArea className="flex-1 px-4 py-3">
+          {loading ? (
+            <div className="flex justify-center py-8"><RefreshCw className="w-5 h-5 animate-spin text-slate-300" /></div>
+          ) : messages.length === 0 ? (
+            <p className="text-center text-slate-400 text-sm py-8">No messages yet</p>
+          ) : (
+            <div className="space-y-3">
+              {messages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[80%] px-3 py-2 rounded-xl text-sm ${
+                    msg.role === 'user'
+                      ? 'bg-blue-500 text-white rounded-br-sm'
+                      : 'bg-slate-100 text-slate-800 rounded-bl-sm'
+                  }`}>
+                    <p>{msg.content}</p>
+                    <p className={`text-[10px] mt-1 ${msg.role === 'user' ? 'text-blue-200' : 'text-slate-400'}`}>
+                      {timeAgo(msg.timestamp)}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </ScrollArea>
+      </div>
+    </div>
+  );
+};
+
+// ── main view ─────────────────────────────────────────────────────────────────
+
+export const AdminView = () => {
+  const [data, setData]           = useState(null);
+  const [health, setHealth]       = useState(null);
+  const [loading, setLoading]     = useState(true);
+  const [activeConv, setActiveConv] = useState(null);
+  const [lastRefresh, setLastRefresh] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [stats, h] = await Promise.all([
+        dashboardApi.getStats(),
+        healthApi.checkAll().catch(() => null),
+      ]);
+      if (stats.status === 'success') setData(stats);
+      setHealth(h);
+      setLastRefresh(new Date());
+    } catch (e) {
+      console.error('Dashboard load failed', e);
+    }
+    setLoading(false);
   }, []);
 
   useEffect(() => {
-    if (selectedSessionId) {
-      fetchSessionDetails(selectedSessionId);
-    }
-  }, [selectedSessionId]);
+    load();
+    const t = setInterval(load, 30000);
+    return () => clearInterval(t);
+  }, [load]);
 
-  const filteredSessions = sessions.filter(s =>
-    s.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (s.volunteer_name || '').toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const stats    = data?.stats;
+  const sessions = data?.recent_sessions || [];
+  const needs    = data?.recent_needs    || [];
 
   return (
-    <div className="p-6 bg-slate-100 min-h-[calc(100vh-64px)]" data-testid="admin-view">
+    <div className="p-6 bg-slate-50 min-h-[calc(100vh-64px)]">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h2 className="text-2xl font-semibold text-slate-900">Tech Admin Console</h2>
-          <p className="text-slate-500">Debug sessions, telemetry, and MCP calls</p>
+          <h2 className="text-xl font-semibold text-slate-900">Tech Dashboard</h2>
+          <p className="text-xs text-slate-400 mt-0.5">
+            {lastRefresh ? `Updated ${timeAgo(lastRefresh.toISOString())}` : 'Loading…'}
+          </p>
         </div>
         <div className="flex items-center gap-2">
-          <Badge
-            className={healthStatus?.status === 'healthy' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}
-          >
-            <Activity className="w-3 h-3 mr-1" />
-            {healthStatus?.status || 'Checking...'}
+          <Badge className={health?.status === 'healthy' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}>
+            {health?.status === 'healthy'
+              ? <><Wifi className="w-3 h-3 mr-1" />Healthy</>
+              : <><WifiOff className="w-3 h-3 mr-1" />{health?.status || 'Unknown'}</>
+            }
           </Badge>
-          <Button variant="outline" onClick={() => { fetchSessions(); fetchHealth(); }} data-testid="refresh-admin-btn">
-            <RefreshCw className="w-4 h-4 mr-2" />
+          <Button variant="outline" size="sm" onClick={load} disabled={loading}>
+            <RefreshCw className={`w-4 h-4 mr-1 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </Button>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        {/* Sessions List */}
-        <Card className="border-none shadow-sm">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm flex items-center gap-2">
-              <Database className="w-4 h-4" />
-              Sessions
-            </CardTitle>
-            <div className="relative mt-2">
-              <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-              <Input
-                placeholder="Search sessions..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-8 text-sm"
-                data-testid="session-search-input"
-              />
-            </div>
-          </CardHeader>
-          <CardContent>
-            <ScrollArea className="h-[600px]">
-              <div className="space-y-2">
-                {filteredSessions.map((session) => (
-                  <div
-                    key={session.id}
-                    className={`p-3 rounded-lg cursor-pointer transition-colors ${
-                      selectedSessionId === session.id
-                        ? 'bg-blue-50 border border-blue-200'
-                        : 'bg-white hover:bg-slate-50 border border-slate-200'
-                    }`}
-                    onClick={() => setSelectedSessionId(session.id)}
-                    data-testid={`session-item-${session.id}`}
-                  >
-                    <p className="text-xs font-mono text-slate-500 truncate">{session.id}</p>
-                    <p className="text-sm font-medium text-slate-700 mt-1">
-                      {session.volunteer_name || 'Anonymous'}
-                    </p>
-                    <div className="flex items-center gap-2 mt-1">
-                      <Badge variant="outline" className="text-[10px]">
-                        {session.status}
-                      </Badge>
-                      <Badge variant="outline" className="text-[10px]">
-                        {session.stage}
-                      </Badge>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </ScrollArea>
-          </CardContent>
-        </Card>
+      {loading && !data ? (
+        <div className="flex items-center justify-center py-24">
+          <RefreshCw className="w-8 h-8 animate-spin text-slate-300" />
+        </div>
+      ) : (
+        <>
+          {/* Stat cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+            <StatCard icon={Users}        label="Total Sessions"   value={stats?.sessions?.total}    sub={`${fmt(stats?.sessions?.today)} today`} />
+            <StatCard icon={Activity}     label="Active Now"       value={stats?.sessions?.active}   color="text-green-600" />
+            <StatCard icon={BookOpen}     label="Needs Raised"     value={stats?.needs?.total}       sub={`${fmt(stats?.needs?.submitted)} submitted`} />
+            <StatCard icon={CheckCircle}  label="This Week"        value={stats?.sessions?.this_week} sub="new sessions" color="text-blue-600" />
+          </div>
 
-        {/* Session Details */}
-        <div className="lg:col-span-3">
-          {selectedSessionId ? (
+          {/* Charts row */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
             <Card className="border-none shadow-sm">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm flex items-center gap-2">
-                  <Cpu className="w-4 h-4" />
-                  Session Details
-                  <span className="font-mono text-xs text-slate-400 ml-2">
-                    {selectedSessionId}
-                  </span>
+              <CardHeader className="pb-2 pt-4 px-5">
+                <CardTitle className="text-sm text-slate-600">Sessions by Channel</CardTitle>
+              </CardHeader>
+              <CardContent className="px-5 pb-5">
+                {stats?.sessions?.by_channel && Object.keys(stats.sessions.by_channel).length > 0
+                  ? <BarChart data={stats.sessions.by_channel} title="" />
+                  : <p className="text-xs text-slate-400">No data</p>
+                }
+              </CardContent>
+            </Card>
+
+            <Card className="border-none shadow-sm">
+              <CardHeader className="pb-2 pt-4 px-5">
+                <CardTitle className="text-sm text-slate-600">Sessions by Stage</CardTitle>
+              </CardHeader>
+              <CardContent className="px-5 pb-5">
+                {stats?.sessions?.by_stage && Object.keys(stats.sessions.by_stage).length > 0
+                  ? <BarChart data={stats.sessions.by_stage} title="" />
+                  : <p className="text-xs text-slate-400">No data</p>
+                }
+              </CardContent>
+            </Card>
+
+            <Card className="border-none shadow-sm">
+              <CardHeader className="pb-2 pt-4 px-5">
+                <CardTitle className="text-sm text-slate-600">Needs by Status</CardTitle>
+              </CardHeader>
+              <CardContent className="px-5 pb-5">
+                {stats?.needs?.by_status && Object.keys(stats.needs.by_status).length > 0
+                  ? <BarChart data={stats.needs.by_status} title="" />
+                  : <p className="text-xs text-slate-400">No data</p>
+                }
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Tables row */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* Recent sessions */}
+            <Card className="border-none shadow-sm">
+              <CardHeader className="pb-2 pt-4 px-5">
+                <CardTitle className="text-sm text-slate-600 flex items-center gap-2">
+                  <MessageSquare className="w-4 h-4" /> Recent Sessions
                 </CardTitle>
               </CardHeader>
-              <CardContent>
-                {isLoading ? (
-                  <div className="flex items-center justify-center py-8">
-                    <RefreshCw className="w-6 h-6 animate-spin text-slate-400" />
-                  </div>
-                ) : (
-                  <Tabs defaultValue="state">
-                    <TabsList className="mb-4">
-                      <TabsTrigger value="state">State</TabsTrigger>
-                      <TabsTrigger value="conversation">Conversation</TabsTrigger>
-                      <TabsTrigger value="telemetry">Telemetry</TabsTrigger>
-                      <TabsTrigger value="raw">Raw Data</TabsTrigger>
-                    </TabsList>
-
-                    <TabsContent value="state">
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="space-y-4">
-                          <div>
-                            <h4 className="text-sm font-semibold text-slate-700 mb-2">Session</h4>
-                            <JsonViewer data={sessionData?.session || {}} />
-                          </div>
-                        </div>
-                        <div>
-                          <h4 className="text-sm font-semibold text-slate-700 mb-2">Volunteer Profile</h4>
-                          <JsonViewer data={sessionData?.volunteer_profile || {}} />
-                        </div>
-                      </div>
-                    </TabsContent>
-
-                    <TabsContent value="conversation">
-                      <ScrollArea className="h-[500px]">
-                        <div className="space-y-3">
-                          {conversation.map((msg, idx) => (
-                            <div
-                              key={idx}
-                              className={`p-3 rounded-lg ${
-                                msg.role === 'user'
-                                  ? 'bg-blue-50 ml-8'
-                                  : 'bg-slate-50 mr-8'
-                              }`}
-                            >
-                              <div className="flex items-center gap-2 mb-1">
-                                <Badge variant="outline" className="text-[10px] capitalize">
-                                  {msg.role}
-                                </Badge>
-                                {msg.agent && (
-                                  <Badge variant="outline" className="text-[10px]">
-                                    {msg.agent}
-                                  </Badge>
-                                )}
-                                <span className="text-[10px] text-slate-400">
-                                  {new Date(msg.timestamp).toLocaleTimeString()}
-                                </span>
-                              </div>
-                              <p className="text-sm text-slate-700">{msg.content}</p>
-                            </div>
-                          ))}
-                        </div>
-                      </ScrollArea>
-                    </TabsContent>
-
-                    <TabsContent value="telemetry">
-                      <div className="debug-panel">
-                        <div className="debug-header flex items-center gap-2">
-                          <Terminal className="w-4 h-4" />
-                          <span>Telemetry Events</span>
-                          <Badge variant="outline" className="ml-auto text-[10px]">
-                            {telemetry.length} events
+              <CardContent className="px-0 pb-2">
+                <ScrollArea className="h-72">
+                  {sessions.length === 0 ? (
+                    <p className="text-xs text-slate-400 px-5 py-4">No sessions yet</p>
+                  ) : sessions.map((s) => (
+                    <div
+                      key={s.id}
+                      className="flex items-center gap-3 px-5 py-2.5 hover:bg-slate-50 cursor-pointer group"
+                      onClick={() => setActiveConv(s.id)}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-mono text-slate-400 truncate">{s.actor_id?.slice(0, 14) || '—'}</span>
+                          <Badge className={`text-[10px] px-1.5 py-0 ${STAGE_COLOR[s.stage] || 'bg-slate-100 text-slate-500'}`}>
+                            {s.stage}
                           </Badge>
                         </div>
-                        <ScrollArea className="h-[400px]">
-                          <div className="debug-content">
-                            {telemetry.map((event, idx) => (
-                              <TelemetryRow key={idx} event={event} />
-                            ))}
-                          </div>
-                        </ScrollArea>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-[10px] text-slate-400">{s.channel}</span>
+                          <span className="text-[10px] text-slate-300">·</span>
+                          <span className="text-[10px] text-slate-400">{timeAgo(s.last_message_at || s.created_at)}</span>
+                        </div>
                       </div>
-                    </TabsContent>
+                      <ChevronRight className="w-3 h-3 text-slate-300 group-hover:text-slate-500" />
+                    </div>
+                  ))}
+                </ScrollArea>
+              </CardContent>
+            </Card>
 
-                    <TabsContent value="raw">
-                      <JsonViewer
-                        data={{
-                          session: sessionData?.session,
-                          volunteer_profile: sessionData?.volunteer_profile,
-                          telemetry_count: telemetry.length,
-                          conversation_count: conversation.length,
-                        }}
-                        maxHeight="500px"
-                      />
-                    </TabsContent>
-                  </Tabs>
-                )}
-              </CardContent>
-            </Card>
-          ) : (
+            {/* Recent needs */}
             <Card className="border-none shadow-sm">
-              <CardContent className="flex items-center justify-center py-16">
-                <div className="text-center">
-                  <Database className="w-12 h-12 text-slate-300 mx-auto mb-4" />
-                  <p className="text-slate-500">Select a session to view details</p>
-                </div>
+              <CardHeader className="pb-2 pt-4 px-5">
+                <CardTitle className="text-sm text-slate-600 flex items-center gap-2">
+                  <BookOpen className="w-4 h-4" /> Recent Needs
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="px-0 pb-2">
+                <ScrollArea className="h-72">
+                  {needs.length === 0 ? (
+                    <p className="text-xs text-slate-400 px-5 py-4">No needs raised yet</p>
+                  ) : needs.map((n) => (
+                    <div key={n.id} className="px-5 py-2.5 hover:bg-slate-50">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-slate-700 font-medium">
+                          {(n.subjects || []).join(', ') || '—'}
+                        </span>
+                        {(n.grade_levels || []).length > 0 && (
+                          <span className="text-[10px] text-slate-400">
+                            Grade {n.grade_levels.join(', ')}
+                          </span>
+                        )}
+                        <Badge className={`ml-auto text-[10px] px-1.5 py-0 ${NEED_STATUS_COLOR[n.status] || 'bg-slate-100 text-slate-500'}`}>
+                          {n.status}
+                        </Badge>
+                      </div>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        {n.student_count && (
+                          <span className="text-[10px] text-slate-400">{n.student_count} students</span>
+                        )}
+                        {n.schedule_preference && (
+                          <><span className="text-[10px] text-slate-300">·</span>
+                          <span className="text-[10px] text-slate-400">{n.schedule_preference}</span></>
+                        )}
+                        <span className="text-[10px] text-slate-300 ml-auto">
+                          {timeAgo(n.submitted_at || n.created_at)}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </ScrollArea>
               </CardContent>
             </Card>
-          )}
-        </div>
-      </div>
+          </div>
+        </>
+      )}
+
+      {/* Conversation modal */}
+      {activeConv && (
+        <ConversationPanel sessionId={activeConv} onClose={() => setActiveConv(null)} />
+      )}
     </div>
   );
 };

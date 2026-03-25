@@ -1105,6 +1105,36 @@ Always call `resume_session` or `get_memory_summary` first to load their profile
 # ENTRY POINT
 # ─────────────────────────────────────────────────────────────────────────────
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DASHBOARD HTTP ENDPOINTS
+# Must be registered BEFORE mcp.run() is called.
+# ─────────────────────────────────────────────────────────────────────────────
+
+from starlette.requests import Request as _Request
+from starlette.responses import JSONResponse as _JSONResponse
+
+from services.dashboard_service import get_dashboard_stats, get_conversation_for_session
+
+
+@mcp.custom_route("/api/dashboard/stats", methods=["GET"])
+async def dashboard_stats(_request: _Request) -> _JSONResponse:
+    data = await get_dashboard_stats()
+    return _JSONResponse(data)
+
+
+@mcp.custom_route("/api/dashboard/conversation/{session_id}", methods=["GET"])
+async def dashboard_conversation(request: _Request) -> _JSONResponse:
+    session_id = request.path_params.get("session_id", "")
+    limit = int(request.query_params.get("limit", 50))
+    data = await get_conversation_for_session(session_id, limit)
+    return _JSONResponse(data)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ENTRY POINT
+# ─────────────────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     import sys
     transport = "sse" if "--http" in sys.argv else "stdio"
