@@ -978,9 +978,13 @@ class NeedAgentService:
 
         # LLM extracts all fields from conversation — handles renewal, partial changes,
         # any language. Replaces all regex extraction and keyword-based renewal detection.
+        # For second/subsequent needs, only pass history from the current need's start
+        # so the LLM doesn't confuse the previous need's data with the new one.
         previous_needs = school_ctx.get("previous_needs", [])
+        need_start_index = sub.get("need_start_index", 0)
+        relevant_history = request.conversation_history[need_start_index:]
         extracted = await llm_adapter.extract_need_fields(
-            conversation_history=request.conversation_history,
+            conversation_history=relevant_history,
             user_message=request.user_message,
             existing_draft=existing_draft,
             previous_needs=previous_needs if previous_needs else None,
@@ -1043,10 +1047,7 @@ class NeedAgentService:
                 need_draft=existing_draft,
             )
         else:
-            # Still collecting — nudge for next missing field, optionally schedule too
-            optional_missing = []
-            if not existing_draft.get("schedule_preference"):
-                optional_missing.append("schedule_preference")
+            # Still collecting — nudge for next missing field
             msg = await llm_adapter.generate_response(
                 stage="drafting_need",
                 messages=request.conversation_history,
@@ -1054,7 +1055,7 @@ class NeedAgentService:
                 coordinator_context=coord_ctx,
                 school_context=school_ctx,
                 need_draft=existing_draft,
-                missing_fields=missing + optional_missing,
+                missing_fields=missing,
                 previous_needs=previous_needs if not any(existing_draft.get(f) for f in ["subjects", "grade_levels", "student_count"]) else None,
             )
 
@@ -1187,6 +1188,9 @@ class NeedAgentService:
                     "start_date": NEED_START_DATE,
                 },
             )
+            # Record where the new need's conversation starts so extract_need_fields
+            # only sees messages from this need, not the previous one.
+            sub["need_start_index"] = len(request.conversation_history)
             msg = await llm_adapter.generate_response(
                 stage="drafting_need",
                 messages=request.conversation_history,
@@ -1194,7 +1198,7 @@ class NeedAgentService:
                 coordinator_context=coord_ctx,
                 school_context=school_ctx,
                 need_draft={"start_date": NEED_START_DATE},
-                missing_fields=["subjects", "grade_levels", "student_count", "schedule_preference"],
+                missing_fields=["subjects", "grade_levels", "student_count", "schedule_preference", "time_slots"],
             )
             return self._build_response(
                 message=msg,

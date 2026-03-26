@@ -76,7 +76,8 @@ _STAGE_PROMPTS: Dict[str, str] = {
         "- Subjects (mathematics, science, english, etc.)\n"
         "- Grade levels (1-12)\n"
         "- Number of students\n"
-        "- Which days of the week for classes\n\n"
+        "- Which days of the week for classes\n"
+        "- What time of day (e.g. 10:00–11:00 AM, morning, afternoon)\n\n"
         "FIRST MESSAGE ONLY — if this is the opening of the need capture (no fields captured yet), "
         "start by warmly greeting the coordinator by name and confirming their school name naturally "
         "before moving to the need. Example: 'Namaste [Name] ji! Aapka school [School] — sab theek hai. "
@@ -118,6 +119,7 @@ _STAGE_PROMPTS: Dict[str, str] = {
         "• Grade(s): {grades}\n"
         "• Students: {count}\n"
         "• Days: {schedule}\n"
+        "• Time: {time_slots}\n"
         "• Starting: {start_date}\n\n"
         "Kya sab theek hai? Confirm karein toh hum aage badhte hain.\n\n"
         "Fill in the actual values from CAPTURED SO FAR. "
@@ -902,7 +904,7 @@ If nothing can be extracted, return: {}"""
                 ("grade_levels", "Grades"),
                 ("student_count", "Students"),
                 ("schedule_preference", "Days/schedule"),
-                ("start_date", "Start date"),
+                ("time_slots", "Time"),
             ]:
                 val = need_draft.get(key)
                 if val:
@@ -923,7 +925,7 @@ If nothing can be extracted, return: {}"""
                 "grade_levels": "which grade levels",
                 "student_count": "how many students in total (if they give per-grade counts like 'Grade 6 - 30, Grade 7 - 40', add them up and use the total)",
                 "schedule_preference": "which days of the week (e.g. Monday & Wednesday, weekdays, twice a week)",
-                "time_slots": "what time of day works best",
+                "time_slots": "what time of day works best (e.g. 10:00–11:00 AM, morning, afternoon)",
                 "duration_weeks": "how many weeks of support",
             }
             next_field = field_labels.get(missing_fields[0], missing_fields[0])
