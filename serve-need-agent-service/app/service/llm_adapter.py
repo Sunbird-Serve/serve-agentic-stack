@@ -641,6 +641,40 @@ Conversational rules:
             logger.warning(f"extract_student_count LLM call failed: {exc}")
             return None
 
+    async def classify_post_submission_intent(self, user_message: str) -> str:
+        """
+        Classify what the coordinator wants after a need has been submitted.
+        Returns one of: 'another_need' | 'done' | 'unclear'
+        """
+        client = self._get_client()
+        if client is None:
+            return "unclear"
+        try:
+            response = await client.messages.create(
+                model=self._model,
+                max_tokens=10,
+                system=(
+                    "You are classifying a school coordinator's intent after they just submitted a teaching need.\n"
+                    "Reply with EXACTLY one of these three words — nothing else:\n"
+                    "  another_need  — they want to raise a new/additional need (different subject, grade, or class)\n"
+                    "  done          — they are finished and just acknowledging or saying goodbye\n"
+                    "  unclear       — the message is ambiguous\n"
+                    "Examples of another_need: 'ek aur need hai', 'maths bhi chahiye', 'one more', "
+                    "'different class ke liye bhi', 'science ke liye bhi', 'aur ek subject hai'\n"
+                    "Examples of done: 'thank you', 'ok', 'shukriya', 'theek hai', 'bye', 'great'"
+                ),
+                messages=[{"role": "user", "content": user_message}],
+            )
+            raw = next((b.text.strip().lower() for b in response.content if hasattr(b, "text") and b.text), "unclear")
+            if "another_need" in raw:
+                return "another_need"
+            if "done" in raw:
+                return "done"
+            return "unclear"
+        except Exception as exc:
+            logger.warning(f"classify_post_submission_intent failed: {exc}")
+            return "unclear"
+
     async def extract_need_fields(
         self,
         conversation_history: List[Dict],

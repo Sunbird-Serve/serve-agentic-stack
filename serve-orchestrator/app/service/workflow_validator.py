@@ -161,8 +161,8 @@ NEED_COORDINATION_WORKFLOW = WorkflowDefinition(
             display_name='Capturing Your Need',
             responsible_agent='need',
             valid_next_stages=['pending_approval', 'paused'],
-            required_fields=['subjects', 'grade_levels', 'student_count', 'schedule_preference', 'start_date'],
-            optional_fields=['time_slots', 'duration_weeks', 'special_requirements'],
+            required_fields=['subjects', 'grade_levels', 'student_count', 'schedule_preference'],
+            optional_fields=['time_slots', 'duration_weeks', 'special_requirements', 'start_date'],
             can_pause=True
         ),
         'pending_approval': WorkflowStageDefinition(
@@ -177,7 +177,7 @@ NEED_COORDINATION_WORKFLOW = WorkflowDefinition(
             stage_id='submitted',
             display_name='Need Registered',
             responsible_agent='need',
-            valid_next_stages=['fulfillment_handoff_ready', 'refinement_required'],
+            valid_next_stages=['fulfillment_handoff_ready', 'refinement_required', 'drafting_need'],
             required_fields=[],
             can_pause=False
         ),

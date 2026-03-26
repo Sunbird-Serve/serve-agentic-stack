@@ -1163,6 +1163,63 @@ class NeedAgentService:
     async def _handle_submitted(
         self, request: NeedAgentTurnRequest, sub: Dict
     ) -> NeedAgentTurnResponse:
+        session_id = str(request.session_id)
+        coord_ctx = sub["coordinator"]
+        school_ctx = sub["school"]
+
+        # Classify intent — did the coordinator just acknowledge, or do they want another need?
+        intent = await llm_adapter.classify_post_submission_intent(request.user_message)
+        logger.info(f"[submitted] post-submission intent={intent!r} message={request.user_message[:50]!r}")
+
+        if intent == "another_need":
+            # Clear the draft content fields so drafting starts fresh.
+            # coordinator_osid and entity_id are preserved — no re-resolution needed.
+            await domain_client.create_or_update_need_draft(
+                session_id=session_id,
+                need_data={
+                    "coordinator_osid": coord_ctx.get("coordinator_id"),
+                    "entity_id": school_ctx.get("school_id"),
+                    "subjects": [],
+                    "grade_levels": [],
+                    "student_count": None,
+                    "schedule_preference": None,
+                    "time_slots": [],
+                    "start_date": NEED_START_DATE,
+                },
+            )
+            msg = await llm_adapter.generate_response(
+                stage="drafting_need",
+                messages=request.conversation_history,
+                user_message=request.user_message,
+                coordinator_context=coord_ctx,
+                school_context=school_ctx,
+                need_draft={"start_date": NEED_START_DATE},
+                missing_fields=["subjects", "grade_levels", "student_count", "schedule_preference"],
+            )
+            return self._build_response(
+                message=msg,
+                next_state=NeedWorkflowState.DRAFTING_NEED.value,
+                sub=sub,
+                session_state=request.session_state,
+            )
+
+        if intent == "unclear":
+            msg = await llm_adapter.generate_response(
+                stage="submitted",
+                messages=request.conversation_history,
+                user_message=request.user_message,
+            )
+            # Append a gentle prompt to clarify
+            msg += "\n\nKya aap koi aur need raise karna chahte hain?"
+            return self._build_response(
+                message=msg,
+                next_state=NeedWorkflowState.SUBMITTED.value,
+                sub=sub,
+                session_state=request.session_state,
+                completion_pct=100,
+            )
+
+        # intent == "done" — normal thank-you response
         msg = await llm_adapter.generate_response(
             stage="submitted",
             messages=request.conversation_history,
