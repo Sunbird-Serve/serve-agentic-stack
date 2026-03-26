@@ -121,6 +121,31 @@ services:
     networks:
       - serve-network
 
+  # Engagement Agent Service - Port 8006
+  serve-engagement-agent-service:
+    build:
+      context: ./serve-engagement-agent-service
+      dockerfile: Dockerfile
+    container_name: serve-engagement-agent-service
+    environment:
+      - PORT=8006
+      - CORS_ORIGINS=*
+      - MCP_SERVER_URL=http://serve-mcp-server:8004
+      - LLM_PROVIDER=claude
+      - LLM_MODEL=claude-sonnet-4-5-20250929
+      - EMERGENT_LLM_KEY=${EMERGENT_LLM_KEY}
+    ports:
+      - "8006:8006"
+    depends_on:
+      - serve-mcp-server
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8006/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - serve-network
+
   # Frontend UI - Port 3000
   serve-ai-ui:
     build:
