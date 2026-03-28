@@ -31,6 +31,10 @@ NEED_SERVICE_URL = f"{SERVE_BASE_URL}{NEED_API_PATH}"
 # deployments; an empty string means the Authorization header is omitted.
 SERVE_BEARER_TOKEN = os.environ.get("SERVE_BEARER_TOKEN", "")
 
+# Static API key protecting the dashboard endpoints.
+# Set DASHBOARD_API_KEY in .env — if empty, dashboard is unprotected (dev only).
+DASHBOARD_API_KEY = os.environ.get("DASHBOARD_API_KEY", "")
+
 # ─── HTTP Client Settings ─────────────────────────────────────────────────────
 SERVE_REGISTRY_TIMEOUT = int(os.environ.get("SERVE_REGISTRY_TIMEOUT", "10"))
 SERVE_REGISTRY_RETRIES = int(os.environ.get("SERVE_REGISTRY_RETRIES", "2"))

@@ -125,20 +125,39 @@ export const healthApi = {
  */
 export const dashboardApi = {
   getStats: async () => {
-    const response = await apiClient.get('/mcp/dashboard/stats');
+    const response = await apiClient.get('/mcp/dashboard/stats', { headers: _dashboardAuthHeader() });
     return response.data;
   },
   getConversation: async (sessionId, limit = 50) => {
     const response = await apiClient.get(`/mcp/dashboard/conversation/${sessionId}`, {
       params: { limit },
+      headers: _dashboardAuthHeader(),
     });
     return response.data;
   },
   getSessionDetail: async (sessionId) => {
-    const response = await apiClient.get(`/mcp/dashboard/session/${sessionId}`);
+    const response = await apiClient.get(`/mcp/dashboard/session/${sessionId}`, {
+      headers: _dashboardAuthHeader(),
+    });
     return response.data;
   },
 };
+
+// ── Dashboard auth helpers ────────────────────────────────────────────────────
+
+const DASHBOARD_TOKEN_KEY = 'serve_dashboard_token';
+
+export const dashboardAuth = {
+  getToken: () => localStorage.getItem(DASHBOARD_TOKEN_KEY) || '',
+  setToken: (token) => localStorage.setItem(DASHBOARD_TOKEN_KEY, token),
+  clearToken: () => localStorage.removeItem(DASHBOARD_TOKEN_KEY),
+  isAuthenticated: () => Boolean(localStorage.getItem(DASHBOARD_TOKEN_KEY)),
+};
+
+function _dashboardAuthHeader() {
+  const token = dashboardAuth.getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 export default {
   orchestrator: orchestratorApi,

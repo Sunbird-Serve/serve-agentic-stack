@@ -12,7 +12,68 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
 import { ScrollArea } from '../components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Input } from '../components/ui/input';
-import { dashboardApi, healthApi, orchestratorApi } from '../services/api';
+import { dashboardApi, healthApi, orchestratorApi, dashboardAuth } from '../services/api';
+
+// ── DashboardLogin ────────────────────────────────────────────────────────────
+
+const DashboardLogin = ({ onAuthenticated }) => {
+  const [token, setToken] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    dashboardAuth.setToken(token.trim());
+    try {
+      const result = await dashboardApi.getStats();
+      if (result?.error === 'Unauthorized') {
+        dashboardAuth.clearToken();
+        setError('Invalid API key. Please try again.');
+      } else {
+        onAuthenticated();
+      }
+    } catch (err) {
+      if (err.response?.status === 401) {
+        dashboardAuth.clearToken();
+        setError('Invalid API key. Please try again.');
+      } else {
+        // Network error but token saved — let them through
+        onAuthenticated();
+      }
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div className="bg-slate-900 min-h-[calc(100vh-64px)] flex items-center justify-center">
+      <div className="bg-slate-800 rounded-xl p-8 w-full max-w-sm shadow-xl">
+        <h2 className="text-lg font-semibold text-slate-100 mb-1">Tech Dashboard</h2>
+        <p className="text-xs text-slate-500 mb-6">Enter your API key to continue</p>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <Input
+            type="password"
+            placeholder="API key"
+            value={token}
+            onChange={e => setToken(e.target.value)}
+            className="bg-slate-700 border-slate-600 text-slate-200 placeholder:text-slate-500"
+            autoFocus
+          />
+          {error && <p className="text-xs text-red-400">{error}</p>}
+          <Button
+            type="submit"
+            disabled={!token.trim() || loading}
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+          >
+            {loading ? <RefreshCw className="w-4 h-4 animate-spin mr-2" /> : null}
+            Sign in
+          </Button>
+        </form>
+      </div>
+    </div>
+  );
+};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -479,6 +540,7 @@ const NeedsTable = ({ needs, onJumpToSession }) => (
             <thead>
               <tr className="border-b border-slate-700">
                 <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">School</th>
+                <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Coordinator</th>
                 <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Subjects</th>
                 <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Grades</th>
                 <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Students</th>
@@ -494,8 +556,11 @@ const NeedsTable = ({ needs, onJumpToSession }) => (
                   className="border-b border-slate-700 hover:bg-slate-750 cursor-pointer"
                   onClick={() => onJumpToSession(n.session_id)}
                 >
-                  <td className="px-4 py-2 text-xs text-slate-400 font-mono">
-                    {n.entity_id ? n.entity_id.slice(0, 12) + '…' : '—'}
+                  <td className="px-4 py-2 text-xs text-slate-300 max-w-[160px] truncate" title={n.school_name || n.entity_id}>
+                    {n.school_name || (n.entity_id ? n.entity_id.slice(0, 12) + '…' : '—')}
+                  </td>
+                  <td className="px-4 py-2 text-xs text-slate-400 max-w-[120px] truncate" title={n.coordinator_name}>
+                    {n.coordinator_name || '—'}
                   </td>
                   <td className="px-4 py-2 text-xs text-slate-300">
                     {(n.subjects || []).join(', ') || '—'}
@@ -524,6 +589,7 @@ const NeedsTable = ({ needs, onJumpToSession }) => (
 // ── AdminView (main) ──────────────────────────────────────────────────────────
 
 export const AdminView = () => {
+  const [authed, setAuthed] = useState(dashboardAuth.isAuthenticated());
   const [data, setData]             = useState(null);
   const [health, setHealth]         = useState(null);
   const [loading, setLoading]       = useState(true);
@@ -565,6 +631,15 @@ export const AdminView = () => {
   const sessions = data?.recent_sessions || [];
   const needs    = data?.recent_needs    || [];
 
+  if (!authed) {
+    return <DashboardLogin onAuthenticated={() => setAuthed(true)} />;
+  }
+
+  const handleSignOut = () => {
+    dashboardAuth.clearToken();
+    setAuthed(false);
+  };
+
   const handleJumpToSession = (sessionId) => {
     setSelectedSession(sessionId);
     // Scroll to top of sessions list if needed
@@ -602,6 +677,14 @@ export const AdminView = () => {
             >
               <RefreshCw className={`w-4 h-4 mr-1 ${loading ? 'animate-spin' : ''}`} />
               Refresh
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleSignOut}
+              className="bg-slate-800 border-slate-700 text-slate-500 hover:bg-slate-700 hover:text-slate-300"
+            >
+              Sign out
             </Button>
           </div>
         </div>

@@ -13,7 +13,7 @@ services:
       POSTGRES_PASSWORD: servepassword
       POSTGRES_DB: serve_db
     ports:
-      - "55432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -33,6 +33,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://serve:servepassword@postgres:5432/serve_db
       - PORT=8004
+      - DASHBOARD_API_KEY=${DASHBOARD_API_KEY:-serve-dashboard-secret-2026}
     ports:
       - "8004:8004"
     depends_on:
@@ -80,6 +81,7 @@ services:
       - LLM_MODEL=claude-sonnet-4-5-20250929
       - EMERGENT_LLM_KEY=${EMERGENT_LLM_KEY}
       - NEED_START_DATE=${NEED_START_DATE:-2026-04-06}
+      - APPLICABLE_GRADES=${APPLICABLE_GRADES:-6,7,8}
     ports:
       - "8005:8005"
     depends_on:

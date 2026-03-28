@@ -1114,17 +1114,31 @@ Always call `resume_session` or `get_memory_summary` first to load their profile
 from starlette.requests import Request as _Request
 from starlette.responses import JSONResponse as _JSONResponse
 
+from config import DASHBOARD_API_KEY
 from services.dashboard_service import get_dashboard_stats, get_conversation_for_session, get_session_detail
 
 
+def _check_dashboard_auth(request: _Request) -> bool:
+    """Return True if the request carries a valid dashboard API key (or no key is configured)."""
+    if not DASHBOARD_API_KEY:
+        return True  # dev mode — no key set
+    auth = request.headers.get("Authorization", "")
+    token = auth.removeprefix("Bearer ").strip()
+    return token == DASHBOARD_API_KEY
+
+
 @mcp.custom_route("/api/dashboard/stats", methods=["GET"])
-async def dashboard_stats(_request: _Request) -> _JSONResponse:
+async def dashboard_stats(request: _Request) -> _JSONResponse:
+    if not _check_dashboard_auth(request):
+        return _JSONResponse({"error": "Unauthorized"}, status_code=401)
     data = await get_dashboard_stats()
     return _JSONResponse(data)
 
 
 @mcp.custom_route("/api/dashboard/conversation/{session_id}", methods=["GET"])
 async def dashboard_conversation(request: _Request) -> _JSONResponse:
+    if not _check_dashboard_auth(request):
+        return _JSONResponse({"error": "Unauthorized"}, status_code=401)
     session_id = request.path_params.get("session_id", "")
     limit = int(request.query_params.get("limit", 50))
     data = await get_conversation_for_session(session_id, limit)
@@ -1133,6 +1147,8 @@ async def dashboard_conversation(request: _Request) -> _JSONResponse:
 
 @mcp.custom_route("/api/dashboard/session/{session_id}", methods=["GET"])
 async def dashboard_session_detail(request: _Request) -> _JSONResponse:
+    if not _check_dashboard_auth(request):
+        return _JSONResponse({"error": "Unauthorized"}, status_code=401)
     session_id = request.path_params.get("session_id", "")
     data = await get_session_detail(session_id)
     return _JSONResponse(data)

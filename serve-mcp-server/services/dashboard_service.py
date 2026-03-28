@@ -125,12 +125,31 @@ async def get_dashboard_stats() -> Dict[str, Any]:
                 .limit(20)
             )).all()
 
+            # Fetch sub_state for each session to extract school/coordinator names
+            session_ids = [r.session_id for r in need_rows]
+            sub_state_map: Dict = {}
+            if session_ids:
+                from uuid import UUID as _UUID
+                sess_rows = (await db.execute(
+                    select(DBSession.id, DBSession.sub_state)
+                    .where(DBSession.id.in_(session_ids))
+                )).all()
+                for sr in sess_rows:
+                    try:
+                        import json as _json
+                        ss = _json.loads(sr.sub_state) if sr.sub_state else {}
+                        sub_state_map[str(sr.id)] = ss
+                    except Exception:
+                        sub_state_map[str(sr.id)] = {}
+
             recent_needs = [
                 {
                     "id":                  str(r.id),
                     "session_id":          str(r.session_id),
                     "coordinator_osid":    r.coordinator_osid,
+                    "coordinator_name":    sub_state_map.get(str(r.session_id), {}).get("coordinator", {}).get("coordinator_name"),
                     "entity_id":           r.entity_id,
+                    "school_name":         sub_state_map.get(str(r.session_id), {}).get("school", {}).get("school_name"),
                     "subjects":            r.subjects or [],
                     "grade_levels":        r.grade_levels or [],
                     "student_count":       r.student_count,
