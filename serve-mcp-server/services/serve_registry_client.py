@@ -19,6 +19,7 @@ import httpx
 from config import (
     VOLUNTEERING_SERVICE_URL,
     NEED_SERVICE_URL,
+    FULFILL_SERVICE_URL,
     SERVE_BEARER_TOKEN,
     SERVE_REGISTRY_TIMEOUT,
     SERVE_REGISTRY_RETRIES,
@@ -711,6 +712,224 @@ class NeedServiceClient:
         }
 
 
+
+# ─── Fulfillment Service Client ───────────────────────────────────────────────
+
+class FulfillmentClient:
+    """
+    Calls the Serve Fulfillment Service.
+    Handles fulfillment record reads and writes.
+
+    Base URL: FULFILL_SERVICE_URL  (SERVE_BASE_URL + FULFILL_API_PATH)
+    """
+
+    # ── Read ──────────────────────────────────────────────────────────────────
+
+    async def get_fulfillments_for_volunteer(
+        self,
+        volunteer_id: str,
+        page: int = 0,
+        size: int = 50,
+    ) -> List[Dict]:
+        """
+        GET /fulfillment/volunteer-read/{assignedUserId}?page=&size=
+        Returns all fulfillment records for a volunteer (paginated).
+        """
+        url = f"{FULFILL_SERVICE_URL}/fulfillment/volunteer-read/{volunteer_id}"
+        data = await _request("GET", url, params={"page": page, "size": size})
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return data.get("content", [])
+        return []
+
+    async def get_fulfillment_for_need(self, need_id: str) -> Optional[Dict]:
+        """
+        GET /fulfillment/fulfill-read/{needId}
+        Returns the single fulfillment record for a need.
+        """
+        url = f"{FULFILL_SERVICE_URL}/fulfillment/fulfill-read/{need_id}"
+        return await _request("GET", url)
+
+    async def get_fulfillments_for_coordinator(
+        self,
+        coord_user_id: str,
+        page: int = 0,
+        size: int = 50,
+    ) -> List[Dict]:
+        """
+        GET /fulfillment/coordinator-read/{coordUserId}?page=&size=
+        Returns all fulfillment records for a coordinator.
+        """
+        url = f"{FULFILL_SERVICE_URL}/fulfillment/coordinator-read/{coord_user_id}"
+        data = await _request("GET", url, params={"page": page, "size": size})
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return data.get("content", [])
+        return []
+
+    # ── Write ─────────────────────────────────────────────────────────────────
+
+    async def create_fulfillment(
+        self,
+        need_id: str,
+        assigned_user_id: str,
+        coord_user_id: str,
+        need_plan_id: Optional[str] = None,
+        occurrence_id: Optional[str] = None,
+        fulfillment_status: str = "NotStarted",
+    ) -> Optional[Dict]:
+        """
+        POST /fulfillment/{needId}
+        Creates a fulfillment record linking a volunteer to a need.
+        fulfillment_status: NotStarted | InProgress | Completed | Cancelled | Offline | Closed | Inactive
+        """
+        url = f"{FULFILL_SERVICE_URL}/fulfillment/{need_id}"
+        payload: Dict[str, Any] = {
+            "needId":            need_id,
+            "assignedUserId":    assigned_user_id,
+            "coordUserId":       coord_user_id,
+            "fulfillmentStatus": fulfillment_status,
+        }
+        if need_plan_id:
+            payload["needPlanId"] = need_plan_id
+        if occurrence_id:
+            payload["occurrenceId"] = occurrence_id
+        return await _request("POST", url, json=payload)
+
+    async def update_fulfillment(
+        self,
+        fulfillment_id: str,
+        fulfillment_status: Optional[str] = None,
+        assigned_user_id: Optional[str] = None,
+        coord_user_id: Optional[str] = None,
+        need_plan_id: Optional[str] = None,
+        occurrence_id: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """
+        PUT /fulfillment/update/{fulfillmentId}
+        Updates a fulfillment record. All fields optional.
+        """
+        url = f"{FULFILL_SERVICE_URL}/fulfillment/update/{fulfillment_id}"
+        payload: Dict[str, Any] = {}
+        if fulfillment_status:
+            payload["fulfillmentStatus"] = fulfillment_status
+        if assigned_user_id:
+            payload["assignedUserId"] = assigned_user_id
+        if coord_user_id:
+            payload["coordUserId"] = coord_user_id
+        if need_plan_id:
+            payload["needPlanId"] = need_plan_id
+        if occurrence_id:
+            payload["occurrenceId"] = occurrence_id
+        return await _request("PUT", url, json=payload)
+
+
+# ─── Nomination Service Client ────────────────────────────────────────────────
+
+class NominationClient:
+    """
+    Calls the Serve Nomination Service.
+    Handles volunteer nominations for needs.
+
+    Base URL: FULFILL_SERVICE_URL  (same service, different path prefix)
+    nominationStatus values: Nominated | Approved | Proposed | Backfill | Rejected
+    """
+
+    # ── Read ──────────────────────────────────────────────────────────────────
+
+    async def get_nominations_for_volunteer(
+        self,
+        volunteer_id: str,
+        page: int = 0,
+        size: int = 50,
+    ) -> List[Dict]:
+        """
+        GET /nomination/{nominatedUserId}?page=&size=
+        Returns all nominations for a volunteer (paginated).
+        """
+        url = f"{FULFILL_SERVICE_URL}/nomination/{volunteer_id}"
+        data = await _request("GET", url, params={"page": page, "size": size})
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return data.get("content", [])
+        return []
+
+    async def get_nominations_for_need(self, need_id: str) -> List[Dict]:
+        """
+        GET /nomination/{needId}/nominate
+        Returns all nominations for a need.
+        """
+        url = f"{FULFILL_SERVICE_URL}/nomination/{need_id}/nominate"
+        data = await _request("GET", url)
+        return data if isinstance(data, list) else []
+
+    async def get_nominations_for_need_by_status(
+        self,
+        need_id: str,
+        status: str,
+    ) -> List[Dict]:
+        """
+        GET /nomination/{needId}/nominate/{status}
+        Returns nominations for a need filtered by status.
+        status: Nominated | Approved | Proposed | Backfill | Rejected
+        """
+        url = f"{FULFILL_SERVICE_URL}/nomination/{need_id}/nominate/{status}"
+        data = await _request("GET", url)
+        return data if isinstance(data, list) else []
+
+    async def get_recommended_not_nominated(self) -> List[Dict]:
+        """
+        GET /volunteer/recommendedNotNominated
+        Returns recommended volunteers not yet nominated for any need.
+        """
+        url = f"{FULFILL_SERVICE_URL}/volunteer/recommendedNotNominated"
+        data = await _request("GET", url)
+        return data if isinstance(data, list) else []
+
+    async def get_recommended_nominated(self) -> List[Dict]:
+        """
+        GET /volunteer/recommendedNominated
+        Returns recommended volunteers already nominated.
+        """
+        url = f"{FULFILL_SERVICE_URL}/volunteer/recommendedNominated"
+        data = await _request("GET", url)
+        return data if isinstance(data, list) else []
+
+    # ── Write ─────────────────────────────────────────────────────────────────
+
+    async def nominate_volunteer(
+        self,
+        need_id: str,
+        volunteer_id: str,
+    ) -> Optional[Dict]:
+        """
+        POST /nomination/{needId}/nominate/{nominatedUserId}
+        Nominates a volunteer for a need.
+        Returns the created Nomination object with nominationStatus='Nominated'.
+        """
+        url = f"{FULFILL_SERVICE_URL}/nomination/{need_id}/nominate/{volunteer_id}"
+        return await _request("POST", url, json={})
+
+    async def confirm_nomination(
+        self,
+        volunteer_id: str,
+        nomination_id: str,
+        status: str,
+    ) -> Optional[Dict]:
+        """
+        POST /nomination/nominate/{nominatedUserId}/confirm/{nominationId}?status={status}
+        Confirms or rejects a nomination.
+        status: Nominated | Approved | Proposed | Backfill | Rejected
+        """
+        url = f"{FULFILL_SERVICE_URL}/nomination/nominate/{volunteer_id}/confirm/{nomination_id}"
+        return await _request("POST", url, params={"status": status}, json={})
+
+
 # ─── Singletons ───────────────────────────────────────────────────────────────
 volunteering_client = VolunteeringClient()
 need_service_client = NeedServiceClient()
+fulfillment_client  = FulfillmentClient()
+nomination_client   = NominationClient()

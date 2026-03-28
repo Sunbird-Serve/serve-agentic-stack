@@ -489,3 +489,56 @@ class GetSessionAnalyticsInput(BaseModel):
             except ValueError:
                 raise ValueError(f"Date must be ISO format YYYY-MM-DD, got: {v}")
         return v
+
+
+# ─── Engagement / Fulfillment — Volunteer History & Nominations ───────────────
+
+class GetVolunteerFulfillmentHistoryInput(BaseModel):
+    volunteer_id: str = Field(
+        min_length=1,
+        description="Serve Registry volunteer osid"
+    )
+    page: int = Field(default=0, ge=0)
+    size: int = Field(default=50, ge=1, le=200)
+
+
+class CheckActiveNominationsInput(BaseModel):
+    volunteer_id: str = Field(
+        min_length=1,
+        description="Serve Registry volunteer osid"
+    )
+
+
+class GetEngagementContextInput(BaseModel):
+    volunteer_id: str = Field(
+        min_length=1,
+        description="Serve Registry volunteer osid — returns fulfillment history + active nominations + profile in one call"
+    )
+
+
+class NominateVolunteerInput(BaseModel):
+    need_id: str = Field(min_length=1, description="Serve Need Service need UUID")
+    volunteer_id: str = Field(min_length=1, description="Serve Registry volunteer osid")
+
+
+class ConfirmNominationInput(BaseModel):
+    volunteer_id: str = Field(min_length=1, description="Serve Registry volunteer osid")
+    nomination_id: str = Field(min_length=1, description="Nomination UUID")
+    status: Literal["Nominated", "Approved", "Proposed", "Backfill", "Rejected"] = Field(
+        description="New nomination status"
+    )
+
+
+class GetNominationsForNeedInput(BaseModel):
+    need_id: str = Field(min_length=1, description="Serve Need Service need UUID")
+    status: Optional[Literal["Nominated", "Approved", "Proposed", "Backfill", "Rejected"]] = Field(
+        default=None,
+        description="Filter by status (omit for all nominations)"
+    )
+
+
+class GetRecommendedVolunteersInput(BaseModel):
+    already_nominated: bool = Field(
+        default=False,
+        description="False → recommendedNotNominated, True → recommendedNominated"
+    )

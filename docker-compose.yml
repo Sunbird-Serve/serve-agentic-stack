@@ -34,6 +34,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://serve:servepassword@postgres:5432/serve_db
       - PORT=8004
       - DASHBOARD_API_KEY=${DASHBOARD_API_KEY:-serve-dashboard-secret-2026}
+      - FULFILL_API_PATH=${FULFILL_API_PATH:-/api/v1/serve-fulfill}
     ports:
       - "8004:8004"
     depends_on:
