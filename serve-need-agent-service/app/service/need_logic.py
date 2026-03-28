@@ -58,6 +58,12 @@ logger = logging.getLogger(__name__)
 # Start date is fixed per cohort — change NEED_START_DATE env var to update.
 NEED_START_DATE: str = os.environ.get("NEED_START_DATE", "2026-04-06")
 
+# Grades applicable this cohort — agent nudges for any not yet mentioned.
+# Change APPLICABLE_GRADES env var to update (comma-separated, e.g. "6,7,8,9").
+APPLICABLE_GRADES: List[str] = [
+    g.strip() for g in os.environ.get("APPLICABLE_GRADES", "6,7,8").split(",") if g.strip()
+]
+
 
 # ── Sub-state helpers ─────────────────────────────────────────────────────────
 
@@ -994,6 +1000,10 @@ class NeedAgentService:
         if not existing_draft.get("start_date"):
             extracted["start_date"] = NEED_START_DATE
 
+        # Subject restriction — only English is supported this year
+        if extracted.get("subjects"):
+            extracted["subjects"] = [s for s in extracted["subjects"] if s == "english"]
+
         logger.info(f"[drafting] extracted keys before merge: {list(extracted.keys())}")
         # Strip None/empty from existing_draft before merging so we don't overwrite
         # previously saved values with None (DB returns all columns, even unset ones).
@@ -1025,10 +1035,35 @@ class NeedAgentService:
         existing_draft = need_data
 
         missing = self._get_missing_fields(existing_draft)
+
+        # Grade nudge: if all mandatory fields are captured but some applicable grades
+        # are missing and we haven't nudged yet, hold in drafting_need for one more turn.
+        grade_nudge: Optional[str] = None
+        captured_grades = existing_draft.get("grade_levels") or []
+        if captured_grades and not sub.get("grades_nudge_done") and not missing:
+            missing_applicable = [g for g in APPLICABLE_GRADES if g not in captured_grades]
+            if missing_applicable:
+                grades_str = ", ".join(f"Grade {g}" for g in missing_applicable)
+                grade_nudge = (
+                    f"GRADE NUDGE: The coordinator mentioned some grades but not all applicable ones. "
+                    f"Ask once: 'Kya {grades_str} ke bacchon ke liye bhi English support chahiye is saal?' "
+                    f"If they say yes, capture those grades. If they say no, accept it and move on."
+                )
+                missing = missing + ["grade_nudge"]  # keep in drafting_need this turn
+            sub["grades_nudge_done"] = True
+            # Persist sub_state to DB explicitly — orchestrator only saves it on stage
+            # transitions, but we're staying in drafting_need so we call advance_session_state
+            # directly which writes to the sessions table.
+            await _mcp_client.call_capability("advance-state", {
+                "session_id": session_id,
+                "new_state": NeedWorkflowState.DRAFTING_NEED.value,
+                "sub_state": _dump_sub_state(sub),
+            })
+
         completion_pct = self._calculate_completion(existing_draft)
 
         collected = [k for k, v in existing_draft.items() if v is not None and v != "" and not (isinstance(v, list) and len(v) == 0)]
-        logger.info(f"[drafting] session={session_id[:8]} collected={collected} missing={missing} completion={completion_pct}%")
+        logger.info(f"[drafting] session={session_id[:8]} collected={collected} missing={missing} completion={completion_pct}% grade_nudge={bool(grade_nudge)}")
 
         next_state = (
             NeedWorkflowState.PENDING_APPROVAL.value
@@ -1047,7 +1082,7 @@ class NeedAgentService:
                 need_draft=existing_draft,
             )
         else:
-            # Still collecting — nudge for next missing field
+            # Still collecting or nudging for missing applicable grades
             msg = await llm_adapter.generate_response(
                 stage="drafting_need",
                 messages=request.conversation_history,
@@ -1055,8 +1090,9 @@ class NeedAgentService:
                 coordinator_context=coord_ctx,
                 school_context=school_ctx,
                 need_draft=existing_draft,
-                missing_fields=missing,
+                missing_fields=[f for f in missing if f != "grade_nudge"],
                 previous_needs=previous_needs if not any(existing_draft.get(f) for f in ["subjects", "grade_levels", "student_count"]) else None,
+                grade_nudge=grade_nudge,
             )
 
         return self._build_response(

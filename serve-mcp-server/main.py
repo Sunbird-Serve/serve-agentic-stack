@@ -1114,7 +1114,7 @@ Always call `resume_session` or `get_memory_summary` first to load their profile
 from starlette.requests import Request as _Request
 from starlette.responses import JSONResponse as _JSONResponse
 
-from services.dashboard_service import get_dashboard_stats, get_conversation_for_session
+from services.dashboard_service import get_dashboard_stats, get_conversation_for_session, get_session_detail
 
 
 @mcp.custom_route("/api/dashboard/stats", methods=["GET"])
@@ -1128,6 +1128,13 @@ async def dashboard_conversation(request: _Request) -> _JSONResponse:
     session_id = request.path_params.get("session_id", "")
     limit = int(request.query_params.get("limit", 50))
     data = await get_conversation_for_session(session_id, limit)
+    return _JSONResponse(data)
+
+
+@mcp.custom_route("/api/dashboard/session/{session_id}", methods=["GET"])
+async def dashboard_session_detail(request: _Request) -> _JSONResponse:
+    session_id = request.path_params.get("session_id", "")
+    data = await get_session_detail(session_id)
     return _JSONResponse(data)
 
 

@@ -77,7 +77,9 @@ _STAGE_PROMPTS: Dict[str, str] = {
         "- Grade levels (1-12)\n"
         "- Number of students\n"
         "- Which days of the week for classes\n"
-        "- What time of day (e.g. 10:00–11:00 AM, morning, afternoon)\n\n"
+        "- What time of day (e.g. 10:00–11:00 AM, morning, afternoon)\n"
+        "NOTE: 'time of day' means the daily class timing (e.g. 10 AM–11 AM). "
+        "This is NOT the program start date. The start date is already fixed — NEVER ask for it.\n\n"
         "FIRST MESSAGE ONLY — if this is the opening of the need capture (no fields captured yet), "
         "start by warmly greeting the coordinator by name and confirming their school name naturally "
         "before moving to the need. Example: 'Namaste [Name] ji! Aapka school [School] — sab theek hai. "
@@ -107,6 +109,18 @@ _STAGE_PROMPTS: Dict[str, str] = {
         "the process is finished. You do NOT control when the process ends — the system does.\n"
         "If the NEXT QUESTION section below lists a missing field, you MUST ask for it. No exceptions.\n"
         "Even if the conversation history looks complete, trust NEXT QUESTION over the chat history.\n\n"
+        "SUBJECT RESTRICTION — IMPORTANT:\n"
+        "This year, Project Serve is only accepting needs for English subject.\n"
+        "If the coordinator asks for any other subject (mathematics, science, hindi, etc.):\n"
+        "- Acknowledge their request warmly\n"
+        "- Politely explain that this year we are focusing only on English\n"
+        "- Mention that other subjects will open up soon\n"
+        "- Ask if they would like to proceed with English\n"
+        "- Do NOT capture any subject other than 'english' in the draft\n"
+        "Example (Hinglish): 'Aapki zaroorat note kar li hai — is saal hum sirf English ke liye volunteers arrange kar rahe hain. "
+        "Jald hi doosre subjects bhi shuru honge. Kya aap English ke liye proceed karna chahenge?'\n"
+        "Example (English): 'I've noted your request — this year we are focusing only on English. "
+        "Other subjects will open up soon. Would you like to proceed with English?'\n\n"
         "Acknowledge what the coordinator has already shared before asking the next question."
     ),
     "pending_approval": (
@@ -788,6 +802,7 @@ If nothing can be extracted, return: {}"""
         need_draft: Optional[Dict] = None,
         missing_fields: Optional[List[str]] = None,
         previous_needs: Optional[List[Dict]] = None,
+        grade_nudge: Optional[str] = None,
     ) -> str:
         """
         Generate a plain conversational response for non-resolution stages.
@@ -804,6 +819,7 @@ If nothing can be extracted, return: {}"""
             need_draft=need_draft,
             missing_fields=missing_fields,
             previous_needs=previous_needs,
+            grade_nudge=grade_nudge,
         )
 
         # Build conversation context (last 6 messages)
@@ -836,6 +852,7 @@ If nothing can be extracted, return: {}"""
         need_draft: Optional[Dict],
         missing_fields: Optional[List[str]],
         previous_needs: Optional[List[Dict]],
+        grade_nudge: Optional[str] = None,
     ) -> str:
         stage_instr = _STAGE_PROMPTS.get(stage, _STAGE_PROMPTS["initiated"])
         prompt = f"{_EVID_CONTEXT}\n\n{stage_instr}"
@@ -925,11 +942,14 @@ If nothing can be extracted, return: {}"""
                 "grade_levels": "which grade levels",
                 "student_count": "how many students in total (if they give per-grade counts like 'Grade 6 - 30, Grade 7 - 40', add them up and use the total)",
                 "schedule_preference": "which days of the week (e.g. Monday & Wednesday, weekdays, twice a week)",
-                "time_slots": "what time of day works best (e.g. 10:00–11:00 AM, morning, afternoon)",
+                "time_slots": "the class timing — what time of day the classes should happen (e.g. 10:00 AM to 11:00 AM). Ask: 'Kaunse time pe classes honi chahiye?' NOT 'kab se shuru karna hai' — do NOT ask about start date",
                 "duration_weeks": "how many weeks of support",
             }
             next_field = field_labels.get(missing_fields[0], missing_fields[0])
             prompt += f"\n\nNEXT QUESTION: Ask only about {next_field}. One question, nothing else."
+
+        if grade_nudge:
+            prompt += f"\n\n{grade_nudge}"
 
         return prompt
 

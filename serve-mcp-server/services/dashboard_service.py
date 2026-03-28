@@ -202,3 +202,132 @@ async def get_conversation_for_session(session_id: str, limit: int = 50) -> Dict
     except Exception as e:
         logger.error(f"get_conversation error: {e}")
         return {"status": "error", "error": str(e)}
+
+
+async def get_session_detail(session_id: str) -> Dict[str, Any]:
+    """Return full detail for one session: session row, need draft, messages, telemetry."""
+    from services.database import check_db_health, TelemetryEvent
+    db_ok = await check_db_health()
+    if not db_ok:
+        return {"status": "error", "error": "Database not available"}
+    try:
+        from uuid import UUID
+        sid = UUID(session_id)
+        async with get_db() as db:
+            # Session row
+            sess_row = (await db.execute(
+                select(DBSession).where(DBSession.id == sid)
+            )).scalar_one_or_none()
+            if not sess_row:
+                return {"status": "error", "error": "Session not found"}
+
+            session_data = {
+                "id":               str(sess_row.id),
+                "actor_id":         sess_row.actor_id,
+                "identity_type":    sess_row.identity_type,
+                "channel":          sess_row.channel,
+                "persona":          sess_row.persona,
+                "user_type":        sess_row.user_type,
+                "volunteer_id":     sess_row.volunteer_id,
+                "coordinator_id":   sess_row.coordinator_id,
+                "workflow":         sess_row.workflow,
+                "active_agent":     sess_row.active_agent,
+                "status":           sess_row.status,
+                "stage":            sess_row.stage,
+                "sub_state":        sess_row.sub_state,
+                "context_summary":  sess_row.context_summary,
+                "channel_metadata": sess_row.channel_metadata,
+                "last_message_at":  sess_row.last_message_at.isoformat() if sess_row.last_message_at else None,
+                "created_at":       sess_row.created_at.isoformat() if sess_row.created_at else None,
+                "updated_at":       sess_row.updated_at.isoformat() if sess_row.updated_at else None,
+            }
+
+            # Need draft (optional)
+            need_row = (await db.execute(
+                select(NeedDraft).where(NeedDraft.session_id == sid)
+            )).scalar_one_or_none()
+
+            need_data = None
+            if need_row:
+                need_data = {
+                    "id":                   str(need_row.id),
+                    "session_id":           str(need_row.session_id),
+                    "serve_need_id":        need_row.serve_need_id,
+                    "coordinator_osid":     need_row.coordinator_osid,
+                    "entity_id":            need_row.entity_id,
+                    "subjects":             need_row.subjects or [],
+                    "grade_levels":         need_row.grade_levels or [],
+                    "student_count":        need_row.student_count,
+                    "time_slots":           need_row.time_slots,
+                    "start_date":           need_row.start_date,
+                    "end_date":             need_row.end_date,
+                    "duration_weeks":       need_row.duration_weeks,
+                    "schedule_preference":  need_row.schedule_preference,
+                    "special_requirements": need_row.special_requirements,
+                    "status":               need_row.status,
+                    "admin_comments":       need_row.admin_comments,
+                    "submitted_at":         need_row.submitted_at.isoformat() if need_row.submitted_at else None,
+                    "created_at":           need_row.created_at.isoformat() if need_row.created_at else None,
+                    "updated_at":           need_row.updated_at.isoformat() if need_row.updated_at else None,
+                }
+
+            # Conversation messages
+            msg_rows = (await db.execute(
+                select(
+                    ConversationMessage.role,
+                    ConversationMessage.content,
+                    ConversationMessage.agent,
+                    ConversationMessage.created_at,
+                )
+                .where(ConversationMessage.session_id == sid)
+                .order_by(ConversationMessage.created_at)
+            )).all()
+            messages = [
+                {
+                    "role":      r.role,
+                    "content":   r.content,
+                    "agent":     r.agent,
+                    "timestamp": r.created_at.isoformat() if r.created_at else None,
+                }
+                for r in msg_rows
+            ]
+
+            # Telemetry events (last 50)
+            tel_rows = (await db.execute(
+                select(
+                    TelemetryEvent.event_type,
+                    TelemetryEvent.agent,
+                    TelemetryEvent.data,
+                    TelemetryEvent.timestamp,
+                    TelemetryEvent.duration_ms,
+                    TelemetryEvent.source_service,
+                    TelemetryEvent.domain,
+                )
+                .where(TelemetryEvent.session_id == sid)
+                .order_by(desc(TelemetryEvent.timestamp))
+                .limit(50)
+            )).all()
+            telemetry = [
+                {
+                    "event_type":     r.event_type,
+                    "agent":          r.agent,
+                    "source_service": r.source_service,
+                    "domain":         r.domain,
+                    "data":           r.data,
+                    "timestamp":      r.timestamp.isoformat() if r.timestamp else None,
+                    "duration_ms":    r.duration_ms,
+                }
+                for r in tel_rows
+            ]
+
+            return {
+                "status":    "success",
+                "session":   session_data,
+                "need_draft": need_data,
+                "messages":  messages,
+                "telemetry": telemetry,
+            }
+
+    except Exception as e:
+        logger.error(f"get_session_detail error: {e}")
+        return {"status": "error", "error": str(e)}

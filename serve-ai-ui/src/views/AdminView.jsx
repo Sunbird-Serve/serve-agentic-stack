@@ -1,16 +1,18 @@
 /**
  * SERVE AI - Tech Team Dashboard
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   RefreshCw, Activity, Users, MessageSquare, BookOpen,
-  CheckCircle, Clock, Wifi, WifiOff, ChevronRight, X,
+  CheckCircle, Wifi, WifiOff, Search, ChevronDown,
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { ScrollArea } from '../components/ui/scroll-area';
-import { dashboardApi, healthApi } from '../services/api';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import { Input } from '../components/ui/input';
+import { dashboardApi, healthApi, orchestratorApi } from '../services/api';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -19,45 +21,73 @@ const fmt = (n) => (n ?? 0).toLocaleString();
 const timeAgo = (iso) => {
   if (!iso) return '—';
   const diff = Math.floor((Date.now() - new Date(iso)) / 1000);
-  if (diff < 60)  return `${diff}s ago`;
+  if (diff < 60)   return `${diff}s ago`;
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
   return `${Math.floor(diff / 86400)}d ago`;
 };
 
+const fmtTime = (iso) => {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+};
+
 const STAGE_COLOR = {
-  initiated:              'bg-slate-100 text-slate-600',
-  capturing_phone:        'bg-yellow-100 text-yellow-700',
-  resolving_coordinator:  'bg-blue-100 text-blue-700',
-  confirming_identity:    'bg-indigo-100 text-indigo-700',
-  resolving_school:       'bg-purple-100 text-purple-700',
-  drafting_need:          'bg-orange-100 text-orange-700',
-  pending_approval:       'bg-amber-100 text-amber-700',
-  submitted:              'bg-green-100 text-green-700',
-  paused:                 'bg-slate-100 text-slate-500',
+  initiated:             'bg-slate-700 text-slate-200',
+  capturing_phone:       'bg-yellow-900 text-yellow-300',
+  resolving_coordinator: 'bg-blue-900 text-blue-300',
+  confirming_identity:   'bg-indigo-900 text-indigo-300',
+  resolving_school:      'bg-purple-900 text-purple-300',
+  drafting_need:         'bg-orange-900 text-orange-300',
+  pending_approval:      'bg-amber-900 text-amber-300',
+  submitted:             'bg-green-900 text-green-300',
+  paused:                'bg-slate-800 text-slate-400',
+  init:                  'bg-slate-700 text-slate-300',
 };
 
 const NEED_STATUS_COLOR = {
-  draft:              'bg-slate-100 text-slate-600',
-  pending_approval:   'bg-amber-100 text-amber-700',
-  submitted:          'bg-green-100 text-green-700',
-  approved:           'bg-emerald-100 text-emerald-700',
-  rejected:           'bg-red-100 text-red-700',
-  refinement_required:'bg-orange-100 text-orange-700',
+  draft:               'bg-slate-700 text-slate-300',
+  pending_approval:    'bg-amber-900 text-amber-300',
+  submitted:           'bg-green-900 text-green-300',
+  approved:            'bg-emerald-900 text-emerald-300',
+  rejected:            'bg-red-900 text-red-300',
+  refinement_required: 'bg-orange-900 text-orange-300',
 };
 
-// ── sub-components ────────────────────────────────────────────────────────────
+const TELEMETRY_COLOR = {
+  state_transition: 'bg-blue-900 text-blue-300',
+  agent_response:   'bg-green-900 text-green-300',
+  error:            'bg-red-900 text-red-300',
+  agent_handoff:    'bg-purple-900 text-purple-300',
+  llm_call:         'bg-cyan-900 text-cyan-300',
+  tool_call:        'bg-teal-900 text-teal-300',
+  session_start:    'bg-slate-700 text-slate-300',
+  session_end:      'bg-slate-700 text-slate-300',
+};
 
-const StatCard = ({ icon: Icon, label, value, sub, color = 'text-slate-700' }) => (
-  <Card className="border-none shadow-sm">
+const stageBadge = (stage) => (
+  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${STAGE_COLOR[stage] || 'bg-slate-700 text-slate-300'}`}>
+    {stage || '—'}
+  </span>
+);
+
+const channelBadge = (ch) => (
+  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-300 font-medium">{ch || '—'}</span>
+);
+
+
+// ── StatCard ──────────────────────────────────────────────────────────────────
+
+const StatCard = ({ icon: Icon, label, value, sub, color = 'text-slate-100' }) => (
+  <Card className="border-none shadow-sm bg-slate-800">
     <CardContent className="pt-5 pb-4">
       <div className="flex items-start justify-between">
         <div>
-          <p className="text-xs text-slate-500 mb-1">{label}</p>
+          <p className="text-xs text-slate-400 mb-1">{label}</p>
           <p className={`text-2xl font-bold ${color}`}>{fmt(value)}</p>
-          {sub && <p className="text-xs text-slate-400 mt-1">{sub}</p>}
+          {sub && <p className="text-xs text-slate-500 mt-1">{sub}</p>}
         </div>
-        <div className="p-2 rounded-lg bg-slate-50">
+        <div className="p-2 rounded-lg bg-slate-700">
           <Icon className="w-5 h-5 text-slate-400" />
         </div>
       </div>
@@ -65,98 +95,454 @@ const StatCard = ({ icon: Icon, label, value, sub, color = 'text-slate-700' }) =
   </Card>
 );
 
-const BarChart = ({ data, title }) => {
-  const max = Math.max(...Object.values(data), 1);
+// ── AgentHealthStrip ──────────────────────────────────────────────────────────
+
+const AGENTS = [
+  { key: 'need',        label: 'Need Agent' },
+  { key: 'onboarding',  label: 'Onboarding Agent' },
+  { key: 'engagement',  label: 'Engagement Agent' },
+];
+
+const AgentHealthStrip = ({ orchestratorHealth }) => {
+  // orchestratorHealth comes from /api/health which includes agent registry info
+  const agentStatuses = orchestratorHealth?.agents || {};
+
   return (
-    <div>
-      <p className="text-xs font-medium text-slate-500 mb-3 uppercase tracking-wide">{title}</p>
-      <div className="space-y-2">
-        {Object.entries(data).map(([key, val]) => (
-          <div key={key} className="flex items-center gap-2">
-            <span className="text-xs text-slate-500 w-32 truncate">{key}</span>
-            <div className="flex-1 bg-slate-100 rounded-full h-2">
-              <div
-                className="bg-blue-400 h-2 rounded-full transition-all"
-                style={{ width: `${(val / max) * 100}%` }}
-              />
-            </div>
-            <span className="text-xs font-medium text-slate-700 w-6 text-right">{val}</span>
+    <div className="flex items-center gap-3 flex-wrap">
+      <span className="text-xs text-slate-500 font-medium uppercase tracking-wide">Agents</span>
+      {AGENTS.map(({ key, label }) => {
+        const info = agentStatuses[key];
+        const healthy = info?.status === 'healthy' || info?.healthy === true;
+        const unknown = !info;
+        return (
+          <div key={key} className="flex items-center gap-1.5 bg-slate-800 rounded-full px-3 py-1">
+            <span className={`w-2 h-2 rounded-full ${unknown ? 'bg-slate-500' : healthy ? 'bg-green-400' : 'bg-red-400'}`} />
+            <span className="text-xs text-slate-300">{label}</span>
           </div>
-        ))}
+        );
+      })}
+      <div className="flex items-center gap-1.5 bg-slate-800 rounded-full px-3 py-1">
+        <span className={`w-2 h-2 rounded-full ${orchestratorHealth ? 'bg-green-400' : 'bg-red-400'}`} />
+        <span className="text-xs text-slate-300">Orchestrator</span>
       </div>
     </div>
   );
 };
 
-const ConversationPanel = ({ sessionId, onClose }) => {
-  const [messages, setMessages] = useState([]);
+// ── SessionsList ──────────────────────────────────────────────────────────────
+
+const SessionsList = ({ sessions, selectedId, onSelect, onJumpToSession }) => {
+  const [search, setSearch] = useState('');
+  const [filterStage, setFilterStage] = useState('');
+  const [filterChannel, setFilterChannel] = useState('');
+
+  const stages   = [...new Set(sessions.map(s => s.stage).filter(Boolean))];
+  const channels = [...new Set(sessions.map(s => s.channel).filter(Boolean))];
+
+  const filtered = sessions.filter(s => {
+    if (filterStage   && s.stage   !== filterStage)   return false;
+    if (filterChannel && s.channel !== filterChannel) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      return (s.actor_id || '').toLowerCase().includes(q) ||
+             (s.id || '').toLowerCase().includes(q);
+    }
+    return true;
+  });
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Filters */}
+      <div className="p-3 border-b border-slate-700 space-y-2">
+        <div className="relative">
+          <Search className="absolute left-2.5 top-2 w-3.5 h-3.5 text-slate-500" />
+          <Input
+            className="pl-7 h-7 text-xs bg-slate-800 border-slate-700 text-slate-200 placeholder:text-slate-500"
+            placeholder="Search actor / session ID…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+        </div>
+        <div className="flex gap-2">
+          <select
+            className="flex-1 text-xs bg-slate-800 border border-slate-700 text-slate-300 rounded px-2 py-1"
+            value={filterStage}
+            onChange={e => setFilterStage(e.target.value)}
+          >
+            <option value="">All stages</option>
+            {stages.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <select
+            className="flex-1 text-xs bg-slate-800 border border-slate-700 text-slate-300 rounded px-2 py-1"
+            value={filterChannel}
+            onChange={e => setFilterChannel(e.target.value)}
+          >
+            <option value="">All channels</option>
+            {channels.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {/* List */}
+      <ScrollArea className="flex-1">
+        {filtered.length === 0 ? (
+          <p className="text-xs text-slate-500 px-4 py-6 text-center">No sessions match</p>
+        ) : filtered.map(s => (
+          <div
+            key={s.id}
+            className={`px-3 py-2.5 cursor-pointer border-b border-slate-800 hover:bg-slate-750 transition-colors ${
+              selectedId === s.id ? 'bg-slate-700 border-l-2 border-l-blue-500' : ''
+            }`}
+            onClick={() => onSelect(s.id)}
+          >
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-xs font-mono text-slate-300 truncate flex-1">
+                {s.actor_id?.slice(0, 18) || '—'}
+              </span>
+              {channelBadge(s.channel)}
+            </div>
+            <div className="flex items-center gap-2">
+              {stageBadge(s.stage)}
+              <span className="text-[10px] text-slate-500 ml-auto">{timeAgo(s.last_message_at || s.created_at)}</span>
+            </div>
+          </div>
+        ))}
+      </ScrollArea>
+    </div>
+  );
+};
+
+
+// ── SessionDetail ─────────────────────────────────────────────────────────────
+
+const FieldRow = ({ label, value }) => (
+  <div className="flex gap-3 py-1.5 border-b border-slate-800 last:border-0">
+    <span className="text-xs text-slate-500 w-40 shrink-0">{label}</span>
+    {value != null && value !== '' && value !== undefined ? (
+      <span className="text-xs text-slate-200 break-all">{String(value)}</span>
+    ) : (
+      <span className="text-xs text-slate-600 italic">Not captured</span>
+    )}
+  </div>
+);
+
+const CollapsibleJson = ({ label, value }) => {
+  const [open, setOpen] = useState(false);
+  if (!value) return <FieldRow label={label} value={null} />;
+  let display = value;
+  try { display = JSON.stringify(typeof value === 'string' ? JSON.parse(value) : value, null, 2); }
+  catch { display = String(value); }
+  return (
+    <div className="py-1.5 border-b border-slate-800 last:border-0">
+      <button
+        className="flex items-center gap-2 text-xs text-slate-400 hover:text-slate-200 w-full text-left"
+        onClick={() => setOpen(o => !o)}
+      >
+        <span className="w-40 shrink-0 text-slate-500">{label}</span>
+        <ChevronDown className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} />
+        <span className="text-slate-600">{open ? 'collapse' : 'expand'}</span>
+      </button>
+      {open && (
+        <pre className="mt-2 text-[10px] text-slate-300 bg-slate-900 rounded p-3 overflow-x-auto max-h-48 leading-relaxed">
+          {display}
+        </pre>
+      )}
+    </div>
+  );
+};
+
+const TelemetryRow = ({ event }) => {
+  const [open, setOpen] = useState(false);
+  const colorClass = TELEMETRY_COLOR[event.event_type] || 'bg-slate-700 text-slate-300';
+  return (
+    <>
+      <tr
+        className="border-b border-slate-800 hover:bg-slate-800 cursor-pointer"
+        onClick={() => setOpen(o => !o)}
+      >
+        <td className="px-3 py-2 text-[10px] text-slate-500 font-mono whitespace-nowrap">{fmtTime(event.timestamp)}</td>
+        <td className="px-3 py-2">
+          <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${colorClass}`}>{event.event_type}</span>
+        </td>
+        <td className="px-3 py-2 text-xs text-slate-400">{event.agent || event.source_service || '—'}</td>
+        <td className="px-3 py-2 text-xs text-slate-500 text-right">{event.duration_ms != null ? `${event.duration_ms}ms` : '—'}</td>
+      </tr>
+      {open && event.data && Object.keys(event.data).length > 0 && (
+        <tr className="bg-slate-900">
+          <td colSpan={4} className="px-4 py-2">
+            <pre className="text-[10px] text-slate-400 overflow-x-auto max-h-32 leading-relaxed">
+              {JSON.stringify(event.data, null, 2)}
+            </pre>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+};
+
+const SessionDetail = ({ sessionId }) => {
+  const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
-    dashboardApi.getConversation(sessionId)
-      .then(r => setMessages(r.messages || []))
-      .catch(() => setMessages([]))
+    if (!sessionId) return;
+    setLoading(true);
+    setError(null);
+    dashboardApi.getSessionDetail(sessionId)
+      .then(r => {
+        if (r.status === 'success') setDetail(r);
+        else setError(r.error || 'Failed to load');
+      })
+      .catch(e => setError(e.message))
       .finally(() => setLoading(false));
   }, [sessionId]);
 
+  if (!sessionId) return (
+    <div className="flex items-center justify-center h-full text-slate-600 text-sm">
+      Select a session to inspect
+    </div>
+  );
+
+  if (loading) return (
+    <div className="flex items-center justify-center h-full">
+      <RefreshCw className="w-6 h-6 animate-spin text-slate-600" />
+    </div>
+  );
+
+  if (error) return (
+    <div className="flex items-center justify-center h-full text-red-400 text-sm">{error}</div>
+  );
+
+  const { session, need_draft, messages, telemetry } = detail;
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-4 flex flex-col max-h-[80vh]">
-        <div className="flex items-center justify-between px-5 py-4 border-b">
-          <div>
-            <p className="font-semibold text-slate-800">Conversation</p>
-            <p className="text-xs text-slate-400 font-mono">{sessionId.slice(0, 16)}…</p>
+    <div className="flex flex-col h-full">
+      {/* Session header */}
+      <div className="px-4 py-3 border-b border-slate-700 flex items-center gap-3">
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-mono text-slate-300 truncate">{session.id}</p>
+          <div className="flex items-center gap-2 mt-1">
+            {channelBadge(session.channel)}
+            {stageBadge(session.stage)}
+            <span className="text-[10px] text-slate-500">{session.persona}</span>
           </div>
-          <Button variant="ghost" size="sm" onClick={onClose}><X className="w-4 h-4" /></Button>
         </div>
-        <ScrollArea className="flex-1 px-4 py-3">
-          {loading ? (
-            <div className="flex justify-center py-8"><RefreshCw className="w-5 h-5 animate-spin text-slate-300" /></div>
-          ) : messages.length === 0 ? (
-            <p className="text-center text-slate-400 text-sm py-8">No messages yet</p>
-          ) : (
-            <div className="space-y-3">
-              {messages.map((msg, i) => (
-                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[80%] px-3 py-2 rounded-xl text-sm ${
-                    msg.role === 'user'
-                      ? 'bg-blue-500 text-white rounded-br-sm'
-                      : 'bg-slate-100 text-slate-800 rounded-bl-sm'
-                  }`}>
-                    <p>{msg.content}</p>
-                    <p className={`text-[10px] mt-1 ${msg.role === 'user' ? 'text-blue-200' : 'text-slate-400'}`}>
-                      {timeAgo(msg.timestamp)}
-                    </p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </ScrollArea>
+        <span className="text-[10px] text-slate-500">{timeAgo(session.last_message_at)}</span>
       </div>
+
+      <Tabs defaultValue="conversation" className="flex-1 flex flex-col min-h-0">
+        <TabsList className="mx-4 mt-2 bg-slate-800 shrink-0">
+          <TabsTrigger value="conversation" className="text-xs data-[state=active]:bg-slate-700">
+            Conversation <span className="ml-1 text-slate-500">({messages.length})</span>
+          </TabsTrigger>
+          <TabsTrigger value="need" className="text-xs data-[state=active]:bg-slate-700">
+            Need Draft
+          </TabsTrigger>
+          <TabsTrigger value="info" className="text-xs data-[state=active]:bg-slate-700">
+            Session Info
+          </TabsTrigger>
+          <TabsTrigger value="telemetry" className="text-xs data-[state=active]:bg-slate-700">
+            Telemetry <span className="ml-1 text-slate-500">({telemetry.length})</span>
+          </TabsTrigger>
+        </TabsList>
+
+        {/* Tab: Conversation */}
+        <TabsContent value="conversation" className="flex-1 min-h-0 mt-0">
+          <ScrollArea className="h-full px-4 py-3">
+            {messages.length === 0 ? (
+              <p className="text-center text-slate-600 text-sm py-8">No messages yet</p>
+            ) : (
+              <div className="space-y-3">
+                {messages.map((msg, i) => (
+                  <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`max-w-[78%] px-3 py-2 rounded-xl text-sm ${
+                      msg.role === 'user'
+                        ? 'bg-blue-600 text-white rounded-br-sm'
+                        : 'bg-slate-700 text-slate-200 rounded-bl-sm'
+                    }`}>
+                      {msg.role !== 'user' && msg.agent && (
+                        <p className="text-[10px] text-slate-400 mb-1 font-medium">{msg.agent}</p>
+                      )}
+                      <p className="leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+                      <p className={`text-[10px] mt-1 ${msg.role === 'user' ? 'text-blue-300' : 'text-slate-500'}`}>
+                        {fmtTime(msg.timestamp)}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </ScrollArea>
+        </TabsContent>
+
+        {/* Tab: Need Draft */}
+        <TabsContent value="need" className="flex-1 min-h-0 mt-0">
+          <ScrollArea className="h-full px-4 py-3">
+            {!need_draft ? (
+              <p className="text-center text-slate-600 text-sm py-8">No need draft for this session</p>
+            ) : (
+              <div>
+                <div className="flex items-center gap-2 mb-4">
+                  <span className={`text-xs px-2 py-0.5 rounded font-medium ${NEED_STATUS_COLOR[need_draft.status] || 'bg-slate-700 text-slate-300'}`}>
+                    {need_draft.status}
+                  </span>
+                  {need_draft.submitted_at && (
+                    <span className="text-xs text-slate-500">Submitted {timeAgo(need_draft.submitted_at)}</span>
+                  )}
+                </div>
+                <FieldRow label="Subjects"            value={(need_draft.subjects || []).join(', ') || null} />
+                <FieldRow label="Grade Levels"        value={(need_draft.grade_levels || []).join(', ') || null} />
+                <FieldRow label="Student Count"       value={need_draft.student_count} />
+                <FieldRow label="Schedule Preference" value={need_draft.schedule_preference} />
+                <FieldRow label="Start Date"          value={need_draft.start_date} />
+                <FieldRow label="Duration (weeks)"    value={need_draft.duration_weeks} />
+                <FieldRow label="Coordinator OSID"    value={need_draft.coordinator_osid} />
+                <FieldRow label="Entity ID"           value={need_draft.entity_id} />
+                <FieldRow label="Serve Need ID"       value={need_draft.serve_need_id} />
+                <FieldRow label="Special Requirements" value={need_draft.special_requirements} />
+                <FieldRow label="Admin Comments"      value={need_draft.admin_comments} />
+                <CollapsibleJson label="Time Slots"   value={need_draft.time_slots} />
+                <FieldRow label="Created"             value={need_draft.created_at ? new Date(need_draft.created_at).toLocaleString() : null} />
+                <FieldRow label="Updated"             value={need_draft.updated_at ? new Date(need_draft.updated_at).toLocaleString() : null} />
+              </div>
+            )}
+          </ScrollArea>
+        </TabsContent>
+
+        {/* Tab: Session Info */}
+        <TabsContent value="info" className="flex-1 min-h-0 mt-0">
+          <ScrollArea className="h-full px-4 py-3">
+            <FieldRow label="Session ID"    value={session.id} />
+            <FieldRow label="Actor ID"      value={session.actor_id} />
+            <FieldRow label="Identity Type" value={session.identity_type} />
+            <FieldRow label="Channel"       value={session.channel} />
+            <FieldRow label="Persona"       value={session.persona} />
+            <FieldRow label="User Type"     value={session.user_type} />
+            <FieldRow label="Workflow"      value={session.workflow} />
+            <FieldRow label="Stage"         value={session.stage} />
+            <FieldRow label="Status"        value={session.status} />
+            <FieldRow label="Active Agent"  value={session.active_agent} />
+            <FieldRow label="Volunteer ID"  value={session.volunteer_id} />
+            <FieldRow label="Coordinator ID" value={session.coordinator_id} />
+            <CollapsibleJson label="Sub State"        value={session.sub_state} />
+            <CollapsibleJson label="Channel Metadata" value={session.channel_metadata} />
+            <FieldRow label="Created"       value={session.created_at ? new Date(session.created_at).toLocaleString() : null} />
+            <FieldRow label="Updated"       value={session.updated_at ? new Date(session.updated_at).toLocaleString() : null} />
+            <FieldRow label="Last Message"  value={session.last_message_at ? new Date(session.last_message_at).toLocaleString() : null} />
+          </ScrollArea>
+        </TabsContent>
+
+        {/* Tab: Telemetry */}
+        <TabsContent value="telemetry" className="flex-1 min-h-0 mt-0">
+          <ScrollArea className="h-full">
+            {telemetry.length === 0 ? (
+              <p className="text-center text-slate-600 text-sm py-8">No telemetry events</p>
+            ) : (
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="border-b border-slate-700">
+                    <th className="px-3 py-2 text-[10px] text-slate-500 font-medium uppercase">Time</th>
+                    <th className="px-3 py-2 text-[10px] text-slate-500 font-medium uppercase">Event</th>
+                    <th className="px-3 py-2 text-[10px] text-slate-500 font-medium uppercase">Agent</th>
+                    <th className="px-3 py-2 text-[10px] text-slate-500 font-medium uppercase text-right">Duration</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {telemetry.map((ev, i) => <TelemetryRow key={i} event={ev} />)}
+                </tbody>
+              </table>
+            )}
+          </ScrollArea>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 };
 
-// ── main view ─────────────────────────────────────────────────────────────────
+
+// ── NeedsTable ────────────────────────────────────────────────────────────────
+
+const NeedsTable = ({ needs, onJumpToSession }) => (
+  <Card className="border-none shadow-sm bg-slate-800">
+    <CardHeader className="pb-2 pt-4 px-5">
+      <CardTitle className="text-sm text-slate-300 flex items-center gap-2">
+        <BookOpen className="w-4 h-4" /> Recent Needs
+      </CardTitle>
+    </CardHeader>
+    <CardContent className="px-0 pb-2">
+      {needs.length === 0 ? (
+        <p className="text-xs text-slate-500 px-5 py-4">No needs raised yet</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left">
+            <thead>
+              <tr className="border-b border-slate-700">
+                <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">School</th>
+                <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Subjects</th>
+                <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Grades</th>
+                <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Students</th>
+                <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Schedule</th>
+                <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Status</th>
+                <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Submitted</th>
+              </tr>
+            </thead>
+            <tbody>
+              {needs.map(n => (
+                <tr
+                  key={n.id}
+                  className="border-b border-slate-700 hover:bg-slate-750 cursor-pointer"
+                  onClick={() => onJumpToSession(n.session_id)}
+                >
+                  <td className="px-4 py-2 text-xs text-slate-400 font-mono">
+                    {n.entity_id ? n.entity_id.slice(0, 12) + '…' : '—'}
+                  </td>
+                  <td className="px-4 py-2 text-xs text-slate-300">
+                    {(n.subjects || []).join(', ') || '—'}
+                  </td>
+                  <td className="px-4 py-2 text-xs text-slate-400">
+                    {(n.grade_levels || []).join(', ') || '—'}
+                  </td>
+                  <td className="px-4 py-2 text-xs text-slate-400">{n.student_count ?? '—'}</td>
+                  <td className="px-4 py-2 text-xs text-slate-400">{n.schedule_preference || '—'}</td>
+                  <td className="px-4 py-2">
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${NEED_STATUS_COLOR[n.status] || 'bg-slate-700 text-slate-300'}`}>
+                      {n.status}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2 text-xs text-slate-500">{timeAgo(n.submitted_at || n.created_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </CardContent>
+  </Card>
+);
+
+// ── AdminView (main) ──────────────────────────────────────────────────────────
 
 export const AdminView = () => {
-  const [data, setData]           = useState(null);
-  const [health, setHealth]       = useState(null);
-  const [loading, setLoading]     = useState(true);
-  const [activeConv, setActiveConv] = useState(null);
+  const [data, setData]             = useState(null);
+  const [health, setHealth]         = useState(null);
+  const [loading, setLoading]       = useState(true);
+  const [selectedSession, setSelectedSession] = useState(null);
   const [lastRefresh, setLastRefresh] = useState(null);
+  const [secondsAgo, setSecondsAgo] = useState(0);
+  const timerRef = useRef(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const [stats, h] = await Promise.all([
         dashboardApi.getStats(),
-        healthApi.checkAll().catch(() => null),
+        orchestratorApi.health().catch(() => null),
       ]);
       if (stats.status === 'success') setData(stats);
       setHealth(h);
       setLastRefresh(new Date());
+      setSecondsAgo(0);
     } catch (e) {
       console.error('Dashboard load failed', e);
     }
@@ -165,181 +551,107 @@ export const AdminView = () => {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 30000);
-    return () => clearInterval(t);
+    const refresh = setInterval(load, 30000);
+    return () => clearInterval(refresh);
   }, [load]);
+
+  // Tick "X seconds ago" counter
+  useEffect(() => {
+    timerRef.current = setInterval(() => setSecondsAgo(s => s + 1), 1000);
+    return () => clearInterval(timerRef.current);
+  }, []);
 
   const stats    = data?.stats;
   const sessions = data?.recent_sessions || [];
   const needs    = data?.recent_needs    || [];
 
+  const handleJumpToSession = (sessionId) => {
+    setSelectedSession(sessionId);
+    // Scroll to top of sessions list if needed
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   return (
-    <div className="p-6 bg-slate-50 min-h-[calc(100vh-64px)]">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h2 className="text-xl font-semibold text-slate-900">Tech Dashboard</h2>
-          <p className="text-xs text-slate-400 mt-0.5">
-            {lastRefresh ? `Updated ${timeAgo(lastRefresh.toISOString())}` : 'Loading…'}
-          </p>
+    <div className="bg-slate-900 min-h-[calc(100vh-64px)] text-slate-100">
+      <div className="p-5 max-w-[1600px] mx-auto space-y-4">
+
+        {/* ── Header ── */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-100">Tech Dashboard</h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {lastRefresh
+                ? `Updated ${secondsAgo}s ago`
+                : 'Loading…'}
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <AgentHealthStrip orchestratorHealth={health} />
+            <div className="flex items-center gap-1.5 bg-slate-800 rounded-full px-3 py-1">
+              {health
+                ? <><Wifi className="w-3 h-3 text-green-400" /><span className="text-xs text-green-400">Online</span></>
+                : <><WifiOff className="w-3 h-3 text-red-400" /><span className="text-xs text-red-400">Offline</span></>
+              }
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={load}
+              disabled={loading}
+              className="bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700"
+            >
+              <RefreshCw className={`w-4 h-4 mr-1 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Badge className={health?.status === 'healthy' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}>
-            {health?.status === 'healthy'
-              ? <><Wifi className="w-3 h-3 mr-1" />Healthy</>
-              : <><WifiOff className="w-3 h-3 mr-1" />{health?.status || 'Unknown'}</>
-            }
-          </Badge>
-          <Button variant="outline" size="sm" onClick={load} disabled={loading}>
-            <RefreshCw className={`w-4 h-4 mr-1 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
-        </div>
+
+        {loading && !data ? (
+          <div className="flex items-center justify-center py-24">
+            <RefreshCw className="w-8 h-8 animate-spin text-slate-600" />
+          </div>
+        ) : (
+          <>
+            {/* ── Stat cards ── */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <StatCard icon={Users}       label="Total Sessions"  value={stats?.sessions?.total}     sub={`${fmt(stats?.sessions?.today)} today`} />
+              <StatCard icon={Activity}    label="Active Now"      value={stats?.sessions?.active}    color="text-green-400" />
+              <StatCard icon={BookOpen}    label="Needs Raised"    value={stats?.needs?.total}        sub={`${fmt(stats?.needs?.submitted)} submitted`} />
+              <StatCard icon={CheckCircle} label="This Week"       value={stats?.sessions?.this_week} sub="new sessions" color="text-blue-400" />
+            </div>
+
+            {/* ── Sessions + Detail ── */}
+            <div className="grid grid-cols-1 lg:grid-cols-[35%_65%] gap-3" style={{ height: '60vh' }}>
+              {/* Sessions list */}
+              <Card className="border-none shadow-sm bg-slate-800 flex flex-col overflow-hidden">
+                <CardHeader className="pb-2 pt-3 px-3 shrink-0">
+                  <CardTitle className="text-sm text-slate-300 flex items-center gap-2">
+                    <MessageSquare className="w-4 h-4" />
+                    Sessions
+                    <span className="text-slate-600 font-normal text-xs ml-1">({sessions.length})</span>
+                  </CardTitle>
+                </CardHeader>
+                <div className="flex-1 min-h-0">
+                  <SessionsList
+                    sessions={sessions}
+                    selectedId={selectedSession}
+                    onSelect={setSelectedSession}
+                    onJumpToSession={handleJumpToSession}
+                  />
+                </div>
+              </Card>
+
+              {/* Session detail */}
+              <Card className="border-none shadow-sm bg-slate-800 flex flex-col overflow-hidden">
+                <SessionDetail sessionId={selectedSession} />
+              </Card>
+            </div>
+
+            {/* ── Needs table ── */}
+            <NeedsTable needs={needs} onJumpToSession={handleJumpToSession} />
+          </>
+        )}
       </div>
-
-      {loading && !data ? (
-        <div className="flex items-center justify-center py-24">
-          <RefreshCw className="w-8 h-8 animate-spin text-slate-300" />
-        </div>
-      ) : (
-        <>
-          {/* Stat cards */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-            <StatCard icon={Users}        label="Total Sessions"   value={stats?.sessions?.total}    sub={`${fmt(stats?.sessions?.today)} today`} />
-            <StatCard icon={Activity}     label="Active Now"       value={stats?.sessions?.active}   color="text-green-600" />
-            <StatCard icon={BookOpen}     label="Needs Raised"     value={stats?.needs?.total}       sub={`${fmt(stats?.needs?.submitted)} submitted`} />
-            <StatCard icon={CheckCircle}  label="This Week"        value={stats?.sessions?.this_week} sub="new sessions" color="text-blue-600" />
-          </div>
-
-          {/* Charts row */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
-            <Card className="border-none shadow-sm">
-              <CardHeader className="pb-2 pt-4 px-5">
-                <CardTitle className="text-sm text-slate-600">Sessions by Channel</CardTitle>
-              </CardHeader>
-              <CardContent className="px-5 pb-5">
-                {stats?.sessions?.by_channel && Object.keys(stats.sessions.by_channel).length > 0
-                  ? <BarChart data={stats.sessions.by_channel} title="" />
-                  : <p className="text-xs text-slate-400">No data</p>
-                }
-              </CardContent>
-            </Card>
-
-            <Card className="border-none shadow-sm">
-              <CardHeader className="pb-2 pt-4 px-5">
-                <CardTitle className="text-sm text-slate-600">Sessions by Stage</CardTitle>
-              </CardHeader>
-              <CardContent className="px-5 pb-5">
-                {stats?.sessions?.by_stage && Object.keys(stats.sessions.by_stage).length > 0
-                  ? <BarChart data={stats.sessions.by_stage} title="" />
-                  : <p className="text-xs text-slate-400">No data</p>
-                }
-              </CardContent>
-            </Card>
-
-            <Card className="border-none shadow-sm">
-              <CardHeader className="pb-2 pt-4 px-5">
-                <CardTitle className="text-sm text-slate-600">Needs by Status</CardTitle>
-              </CardHeader>
-              <CardContent className="px-5 pb-5">
-                {stats?.needs?.by_status && Object.keys(stats.needs.by_status).length > 0
-                  ? <BarChart data={stats.needs.by_status} title="" />
-                  : <p className="text-xs text-slate-400">No data</p>
-                }
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Tables row */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {/* Recent sessions */}
-            <Card className="border-none shadow-sm">
-              <CardHeader className="pb-2 pt-4 px-5">
-                <CardTitle className="text-sm text-slate-600 flex items-center gap-2">
-                  <MessageSquare className="w-4 h-4" /> Recent Sessions
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="px-0 pb-2">
-                <ScrollArea className="h-72">
-                  {sessions.length === 0 ? (
-                    <p className="text-xs text-slate-400 px-5 py-4">No sessions yet</p>
-                  ) : sessions.map((s) => (
-                    <div
-                      key={s.id}
-                      className="flex items-center gap-3 px-5 py-2.5 hover:bg-slate-50 cursor-pointer group"
-                      onClick={() => setActiveConv(s.id)}
-                    >
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-mono text-slate-400 truncate">{s.actor_id?.slice(0, 14) || '—'}</span>
-                          <Badge className={`text-[10px] px-1.5 py-0 ${STAGE_COLOR[s.stage] || 'bg-slate-100 text-slate-500'}`}>
-                            {s.stage}
-                          </Badge>
-                        </div>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          <span className="text-[10px] text-slate-400">{s.channel}</span>
-                          <span className="text-[10px] text-slate-300">·</span>
-                          <span className="text-[10px] text-slate-400">{timeAgo(s.last_message_at || s.created_at)}</span>
-                        </div>
-                      </div>
-                      <ChevronRight className="w-3 h-3 text-slate-300 group-hover:text-slate-500" />
-                    </div>
-                  ))}
-                </ScrollArea>
-              </CardContent>
-            </Card>
-
-            {/* Recent needs */}
-            <Card className="border-none shadow-sm">
-              <CardHeader className="pb-2 pt-4 px-5">
-                <CardTitle className="text-sm text-slate-600 flex items-center gap-2">
-                  <BookOpen className="w-4 h-4" /> Recent Needs
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="px-0 pb-2">
-                <ScrollArea className="h-72">
-                  {needs.length === 0 ? (
-                    <p className="text-xs text-slate-400 px-5 py-4">No needs raised yet</p>
-                  ) : needs.map((n) => (
-                    <div key={n.id} className="px-5 py-2.5 hover:bg-slate-50">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-slate-700 font-medium">
-                          {(n.subjects || []).join(', ') || '—'}
-                        </span>
-                        {(n.grade_levels || []).length > 0 && (
-                          <span className="text-[10px] text-slate-400">
-                            Grade {n.grade_levels.join(', ')}
-                          </span>
-                        )}
-                        <Badge className={`ml-auto text-[10px] px-1.5 py-0 ${NEED_STATUS_COLOR[n.status] || 'bg-slate-100 text-slate-500'}`}>
-                          {n.status}
-                        </Badge>
-                      </div>
-                      <div className="flex items-center gap-2 mt-0.5">
-                        {n.student_count && (
-                          <span className="text-[10px] text-slate-400">{n.student_count} students</span>
-                        )}
-                        {n.schedule_preference && (
-                          <><span className="text-[10px] text-slate-300">·</span>
-                          <span className="text-[10px] text-slate-400">{n.schedule_preference}</span></>
-                        )}
-                        <span className="text-[10px] text-slate-300 ml-auto">
-                          {timeAgo(n.submitted_at || n.created_at)}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </ScrollArea>
-              </CardContent>
-            </Card>
-          </div>
-        </>
-      )}
-
-      {/* Conversation modal */}
-      {activeConv && (
-        <ConversationPanel sessionId={activeConv} onClose={() => setActiveConv(null)} />
-      )}
     </div>
   );
 };

@@ -134,6 +134,10 @@ export const dashboardApi = {
     });
     return response.data;
   },
+  getSessionDetail: async (sessionId) => {
+    const response = await apiClient.get(`/mcp/dashboard/session/${sessionId}`);
+    return response.data;
+  },
 };
 
 export default {
