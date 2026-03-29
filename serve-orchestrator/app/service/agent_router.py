@@ -102,6 +102,18 @@ class AgentRegistry:
             'stages': [],
         }
 
+        # ── Fulfillment agent — L4 volunteer-to-need matching ────────────────
+        self._agents['fulfillment'] = {
+            'url': os.environ.get('FULFILLMENT_AGENT_URL', 'http://serve-fulfillment-agent-service:8007'),
+            'health_path': '/api/health',
+            'endpoint': '/api/turn',
+            'timeout': 90.0,
+            'healthy': False,  # Conservative — undeployed; first probe may flip to True
+            'last_check': None,
+            'workflows': ['returning_volunteer'],
+            'stages': ['active', 'complete', 'human_review', 'paused'],
+        }
+
     # ── Health probing ───────────────────────────────────────────────────────
 
     async def _probe_health(self, agent_id: str, config: Dict) -> None:
@@ -223,6 +235,21 @@ class AgentRouter:
                     reason=f"User needs help at stage '{current_stage}' — routing to {current_agent} with help hint",
                     routing_context={
                         'decision_type': 'help',
+                        'stage': current_stage,
+                        'workflow': workflow,
+                        'intent': intent_value,
+                    }
+                )
+
+        # ── Fulfillment agent: route when active_agent is explicitly "fulfillment"
+        if current_agent == 'fulfillment':
+            if self.registry.is_agent_available('fulfillment'):
+                return RoutingDecision(
+                    target_agent='fulfillment',
+                    confidence=1.0,
+                    reason=f"Active agent is fulfillment — routing to fulfillment agent (stage '{current_stage}')",
+                    routing_context={
+                        'decision_type': 'fulfillment',
                         'stage': current_stage,
                         'workflow': workflow,
                         'intent': intent_value,
