@@ -37,6 +37,14 @@ TOOL_CATEGORIES: Dict[str, Dict] = {
         "description": "Long-term conversation memory summaries (persisted to DB)",
         "tools": ["save_memory_summary", "get_memory_summary"],
     },
+    "engagement": {
+        "description": "Hybrid engagement lifecycle helpers for continuity state and fulfillment handoff prep",
+        "tools": [
+            "engagement_save_confirmed_signals",
+            "engagement_update_volunteer_status",
+            "engagement_prepare_fulfillment_handoff",
+        ],
+    },
     "telemetry": {
         "description": "Telemetry, audit events and agent handoff logging",
         "tools": ["log_event", "emit_handoff_event"],
@@ -73,6 +81,16 @@ TOOL_CATEGORIES: Dict[str, Dict] = {
             "save_need_message",
             "log_need_event",
             "emit_need_handoff_event",
+        ],
+    },
+    "engagement_fulfillment": {
+        "description": "Volunteer re-engagement context and fulfillment matching helpers",
+        "tools": [
+            "get_engagement_context",
+            "get_needs_for_entity",
+            "get_need_details",
+            "nominate_volunteer_for_need",
+            "get_nominations_for_need",
         ],
     },
     "observability": {

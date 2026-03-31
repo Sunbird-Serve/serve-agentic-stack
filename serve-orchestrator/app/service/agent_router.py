@@ -87,7 +87,7 @@ class AgentRegistry:
             'healthy': False,  # Conservative — undeployed; first probe may flip to True
             'last_check': None,
             'workflows': ['returning_volunteer', 'volunteer_engagement'],
-            'stages': ['re_engaging', 'profile_refresh', 'matching_ready', 'paused'],
+            'stages': ['re_engaging', 'profile_refresh', 'matching_ready', 'human_review', 'paused'],
         }
 
         # ── Helpline agent — cross-cutting support queries ───────────────────

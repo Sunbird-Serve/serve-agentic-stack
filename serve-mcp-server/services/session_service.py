@@ -245,6 +245,70 @@ class SessionService:
         return {"status": "error", "error_code": "SESSION_NOT_FOUND",
                 "error_message": f"Session {session_id} not found"}
 
+    async def update_session_context(
+        self,
+        session_id: str,
+        *,
+        sub_state: Optional[str] = None,
+        context_summary: Optional[str] = None,
+        status: Optional[str] = None,
+        active_agent: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Patch non-stage session fields without advancing the workflow state."""
+        values: Dict[str, Any] = {"updated_at": datetime.utcnow()}
+        if sub_state is not None:
+            values["sub_state"] = sub_state
+        if context_summary is not None:
+            values["context_summary"] = context_summary
+        if status is not None:
+            values["status"] = status
+        if active_agent is not None:
+            values["active_agent"] = active_agent
+
+        if len(values) == 1:
+            return {"status": "success", "updated_fields": []}
+
+        if is_db_healthy():
+            try:
+                async with get_db() as db:
+                    result = await db.execute(
+                        select(DBSession).where(DBSession.id == UUID(session_id))
+                    )
+                    row = result.scalar_one_or_none()
+                    if row:
+                        await db.execute(
+                            update(DBSession)
+                            .where(DBSession.id == UUID(session_id))
+                            .values(**values)
+                        )
+                        return {
+                            "status": "success",
+                            "updated_fields": [k for k in values if k != "updated_at"],
+                        }
+            except Exception as e:
+                logger.warning(f"DB update_session_context failed: {e}")
+
+        if session_id in _mem.sessions:
+            if sub_state is not None:
+                _mem.sessions[session_id]["sub_state"] = sub_state
+            if context_summary is not None:
+                _mem.sessions[session_id]["context_summary"] = context_summary
+            if status is not None:
+                _mem.sessions[session_id]["status"] = status
+            if active_agent is not None:
+                _mem.sessions[session_id]["active_agent"] = active_agent
+            _mem.sessions[session_id]["updated_at"] = datetime.utcnow().isoformat()
+            return {
+                "status": "success",
+                "updated_fields": [k for k in values if k != "updated_at"],
+            }
+
+        return {
+            "status": "error",
+            "error_code": "SESSION_NOT_FOUND",
+            "error_message": f"Session {session_id} not found",
+        }
+
     # ── Messages ──────────────────────────────────────────────────────────────
 
     async def save_message(

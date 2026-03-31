@@ -119,7 +119,8 @@ WORKFLOW — follow this exactly:
 
 STEP 1 — FIND THE NEED (no user interaction):
 - Call get_engagement_context(volunteer_id) to load their history.
-- If continuity=same: call get_needs_for_entity(preferred_school_id).
+- If continuity=same and preferred_school_id is present: call get_needs_for_entity(preferred_school_id).
+- If continuity=same but preferred_school_id is missing: call resolve_school_context(school_hint=preference_notes).
 - If continuity=different: call resolve_school_context(school_hint=preference_notes).
 - For each candidate need, call get_need_details(need_id).
 - Call get_nominations_for_need(need_id, status="Approved") — skip needs with Approved nominations.
