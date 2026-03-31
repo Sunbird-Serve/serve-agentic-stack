@@ -32,6 +32,7 @@ from config import MCP_PORT, MCP_HOST
 from services.session_service     import SessionService
 from services.profile_service     import ProfileService
 from services.memory_service      import MemoryService
+from services.engagement_service  import engagement_service
 from services.coordinator_service import coordinator_service
 from services.school_service      import school_service
 from services.need_service        import need_service
@@ -46,6 +47,8 @@ from schemas import (
     GetMissingFieldsInput, SaveVolunteerFieldsInput, EvaluateReadinessInput,
     SaveMessageInput, GetConversationInput,
     SaveMemorySummaryInput, GetMemorySummaryInput,
+    EngagementSaveConfirmedSignalsInput,
+    EngagementUpdateVolunteerStatusInput, EngagementPrepareFulfillmentHandoffInput,
     LogEventInput, EmitHandoffEventInput,
     ResolveCoordinatorInput, CreateCoordinatorInput, MapCoordinatorToSchoolInput,
     ResolveSchoolContextInput, CreateSchoolContextInput, FetchPreviousNeedContextInput,
@@ -417,6 +420,45 @@ async def get_memory_summary(params: GetMemorySummaryInput) -> dict:
               or null if no summary exists
     """
     return await memory_service.get_summary(params.session_id)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ENGAGEMENT HYBRID TOOLS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+async def engagement_save_confirmed_signals(params: EngagementSaveConfirmedSignalsInput) -> dict:
+    """
+    Persist confirmed engagement signals into the session sub_state.
+    """
+    return await engagement_service.save_confirmed_signals(
+        session_id=params.session_id,
+        signals=params.signals,
+    )
+
+
+@mcp.tool()
+async def engagement_update_volunteer_status(params: EngagementUpdateVolunteerStatusInput) -> dict:
+    """
+    Persist the current engagement status and reason into the session state.
+    """
+    return await engagement_service.update_volunteer_status(
+        session_id=params.session_id,
+        volunteer_status=params.volunteer_status,
+        reason=params.reason,
+        signals=params.signals,
+    )
+
+
+@mcp.tool()
+async def engagement_prepare_fulfillment_handoff(params: EngagementPrepareFulfillmentHandoffInput) -> dict:
+    """
+    Build and persist the fulfillment handoff payload for the current engagement session.
+    """
+    return await engagement_service.prepare_fulfillment_handoff(
+        session_id=params.session_id,
+        signals=params.signals,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1213,58 +1255,53 @@ async def get_engagement_context(params: GetEngagementContextInput) -> dict:
         active_nominations:     list
         volunteer_profile:      profile dict from Serve Registry (may be null)
     """
-    from services.serve_registry_client import (
-        fulfillment_client, nomination_client, need_service_client, volunteering_client
+    return await engagement_service.get_engagement_context(params.volunteer_id)
+
+
+@mcp.tool()
+async def get_needs_for_entity(params: GetNeedsForEntityInput) -> dict:
+    """
+    Get open needs for a school/entity.
+
+    Used by: Fulfillment Agent
+
+    Args:
+        entity_id: Serve Need Service entity UUID
+        page: page number
+        size: page size
+
+    Returns:
+        needs: list of needs for the entity
+    """
+    from services.serve_registry_client import need_service_client
+
+    needs = await need_service_client.get_needs_for_entity(
+        params.entity_id,
+        page=params.page,
+        size=params.size,
     )
+    return {"status": "success", "needs": needs, "total": len(needs)}
 
-    COMPLETED_STATUSES = {"Completed", "Closed"}
-    ACTIVE_NOM_STATUSES = {"Nominated", "Approved", "Proposed"}
 
-    # Run all three fetches
-    raw_fulfillments, all_nominations, profile = await asyncio.gather(
-        fulfillment_client.get_fulfillments_for_volunteer(params.volunteer_id),
-        nomination_client.get_nominations_for_volunteer(params.volunteer_id),
-        volunteering_client.get_user_profile(params.volunteer_id),
-        return_exceptions=True,
-    )
+@mcp.tool()
+async def get_need_details(params: GetNeedDetailsInput) -> dict:
+    """
+    Get enriched details for a need.
 
-    # Fulfillment history — enrich completed ones
-    enriched = []
-    if isinstance(raw_fulfillments, list):
-        for f in raw_fulfillments:
-            if f.get("fulfillmentStatus") not in COMPLETED_STATUSES:
-                continue
-            need_id = f.get("needId", "")
-            need_detail = {}
-            if need_id:
-                try:
-                    need_detail = await need_service_client.get_need_details(need_id) or {}
-                except Exception:
-                    pass
-            enriched.append({
-                "fulfillment_id":    f.get("id"),
-                "need_id":           need_id,
-                "school_name":       need_detail.get("name", ""),
-                "subjects":          need_detail.get("subjects", []),
-                "grade_levels":      need_detail.get("grade_levels", []),
-                "schedule":          need_detail.get("days", ""),
-                "start_date":        need_detail.get("start_date", ""),
-                "end_date":          need_detail.get("end_date", ""),
-                "fulfillment_status": f.get("fulfillmentStatus"),
-            })
+    Used by: Fulfillment Agent
 
-    # Active nominations
-    active_noms = []
-    if isinstance(all_nominations, list):
-        active_noms = [n for n in all_nominations if n.get("nominationStatus") in ACTIVE_NOM_STATUSES]
+    Args:
+        need_id: Serve Need Service need UUID
 
-    return {
-        "status":               "success",
-        "fulfillment_history":  enriched,
-        "has_active_nomination": len(active_noms) > 0,
-        "active_nominations":   active_noms,
-        "volunteer_profile":    profile if isinstance(profile, dict) else None,
-    }
+    Returns:
+        need_details: flattened need detail object
+    """
+    from services.serve_registry_client import need_service_client
+
+    details = await need_service_client.get_need_details(params.need_id)
+    if not details:
+        return {"status": "error", "error": f"Need {params.need_id} not found"}
+    return {"status": "success", "need_details": details}
 
 
 @mcp.tool()

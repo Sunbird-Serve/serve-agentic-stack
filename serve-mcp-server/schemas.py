@@ -277,6 +277,61 @@ class GetMemorySummaryInput(BaseModel):
         return v
 
 
+# ─── Engagement Hybrid Tools ─────────────────────────────────────────────────
+
+class EngagementSaveConfirmedSignalsInput(BaseModel):
+    session_id: str
+    signals: Dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("session_id")
+    @classmethod
+    def validate_uuid(cls, v: str) -> str:
+        import uuid
+        try:
+            uuid.UUID(v)
+        except ValueError:
+            raise ValueError(f"session_id must be a valid UUID, got: {v}")
+        return v
+
+
+class EngagementUpdateVolunteerStatusInput(BaseModel):
+    session_id: str
+    volunteer_status: Literal[
+        "continue_nurturing",
+        "opportunity_readiness",
+        "pause_outreach",
+        "opt_out",
+        "human_review",
+    ]
+    reason: Optional[str] = Field(default=None)
+    signals: Optional[Dict[str, Any]] = Field(default=None)
+
+    @field_validator("session_id")
+    @classmethod
+    def validate_uuid(cls, v: str) -> str:
+        import uuid
+        try:
+            uuid.UUID(v)
+        except ValueError:
+            raise ValueError(f"session_id must be a valid UUID, got: {v}")
+        return v
+
+
+class EngagementPrepareFulfillmentHandoffInput(BaseModel):
+    session_id: str
+    signals: Optional[Dict[str, Any]] = Field(default=None)
+
+    @field_validator("session_id")
+    @classmethod
+    def validate_uuid(cls, v: str) -> str:
+        import uuid
+        try:
+            uuid.UUID(v)
+        except ValueError:
+            raise ValueError(f"session_id must be a valid UUID, got: {v}")
+        return v
+
+
 # ─── Telemetry ────────────────────────────────────────────────────────────────
 
 class LogEventInput(BaseModel):
@@ -514,6 +569,16 @@ class GetEngagementContextInput(BaseModel):
         min_length=1,
         description="Serve Registry volunteer osid — returns fulfillment history + active nominations + profile in one call"
     )
+
+
+class GetNeedsForEntityInput(BaseModel):
+    entity_id: str = Field(min_length=1, description="Serve Need Service entity / school UUID")
+    page: int = Field(default=0, ge=0)
+    size: int = Field(default=20, ge=1, le=200)
+
+
+class GetNeedDetailsInput(BaseModel):
+    need_id: str = Field(min_length=1, description="Serve Need Service need UUID")
 
 
 class NominateVolunteerInput(BaseModel):

@@ -101,6 +101,66 @@ class DomainClient:
             "data": data or {},
         })
 
+    # ── Volunteer Context ─────────────────────────────────────────────────────
+
+    async def get_engagement_context(self, volunteer_id: str) -> Dict:
+        """Load fulfillment history, active nominations, and profile for engagement."""
+        return await _call_mcp_tool("get_engagement_context", {"volunteer_id": volunteer_id})
+
+    async def engagement_save_confirmed_signals(self, session_id: str, signals: Dict[str, Any]) -> Dict:
+        """Persist confirmed engagement signals in MCP-managed session state."""
+        return await _call_mcp_tool("engagement_save_confirmed_signals", {
+            "session_id": session_id,
+            "signals": signals,
+        })
+
+    async def engagement_update_volunteer_status(
+        self,
+        session_id: str,
+        volunteer_status: str,
+        reason: Optional[str] = None,
+        signals: Optional[Dict[str, Any]] = None,
+    ) -> Dict:
+        """Persist engagement status in MCP-managed session state."""
+        args: Dict[str, Any] = {
+            "session_id": session_id,
+            "volunteer_status": volunteer_status,
+        }
+        if reason:
+            args["reason"] = reason
+        if signals:
+            args["signals"] = signals
+        return await _call_mcp_tool("engagement_update_volunteer_status", args)
+
+    async def engagement_prepare_fulfillment_handoff(
+        self,
+        session_id: str,
+        signals: Optional[Dict[str, Any]] = None,
+    ) -> Dict:
+        """Build the fulfillment handoff payload for the engagement session."""
+        args: Dict[str, Any] = {"session_id": session_id}
+        if signals:
+            args["signals"] = signals
+        return await _call_mcp_tool("engagement_prepare_fulfillment_handoff", args)
+
+    async def save_memory_summary(
+        self,
+        session_id: str,
+        summary_text: str,
+        key_facts: Optional[list] = None,
+        volunteer_id: Optional[str] = None,
+    ) -> Dict:
+        """Persist a summary using the generic MCP memory tool."""
+        args: Dict[str, Any] = {
+            "session_id": session_id,
+            "summary_text": summary_text,
+        }
+        if key_facts is not None:
+            args["key_facts"] = key_facts
+        if volunteer_id:
+            args["volunteer_id"] = volunteer_id
+        return await _call_mcp_tool("save_memory_summary", args)
+
     # ── Volunteer Profile ─────────────────────────────────────────────────────
 
     async def get_volunteer_profile(self, session_id: str) -> Dict:
