@@ -280,6 +280,8 @@ class OrchestrationService:
             stage=session_context.current_stage,
             sub_state=session_context.sub_state,
             context_summary=session_context.context_summary,
+            volunteer_id=UUID(session_context.volunteer_id) if session_context.volunteer_id else None,
+            volunteer_name=session_context.volunteer_name,
             # Forward live channel metadata (e.g. phone_number from Web UI pre-screen)
             channel_metadata=event.raw_metadata if event.raw_metadata else None,
             created_at=session_context.created_at.isoformat() if session_context.created_at else None,
@@ -515,6 +517,11 @@ class OrchestrationService:
             sub_state=session_data.get("sub_state"),
             context_summary=session_data.get("context_summary"),
             volunteer_profile=data.get("volunteer_profile"),
+            volunteer_id=session_data.get("volunteer_id"),
+            volunteer_name=(
+                session_data.get("volunteer_name")
+                or (session_data.get("channel_metadata") or {}).get("volunteer_name")
+            ),
             created_at=datetime.fromisoformat(session_data["created_at"]) if session_data.get("created_at") else None,
             updated_at=datetime.fromisoformat(session_data["updated_at"]) if session_data.get("updated_at") else None
         )
@@ -540,10 +547,15 @@ class OrchestrationService:
             **event.raw_metadata,
         }
 
+        # Extract volunteer_id / volunteer_name if passed via channel_metadata (e.g. returning volunteer UI)
+        volunteer_id = event.raw_metadata.get("volunteer_id")
+        volunteer_name = event.raw_metadata.get("volunteer_name")
+
         start_result = await domain_client.start_session(
             channel=event.channel.value,
             persona=persona.value,
             channel_metadata=channel_metadata,
+            volunteer_id=volunteer_id,
         )
 
         if start_result.get("status") != "success":
@@ -564,6 +576,8 @@ class OrchestrationService:
             active_agent=initial_agent.value,
             status=SessionStatus.ACTIVE.value,
             current_stage=start_result["data"].get("stage", OnboardingState.INIT.value),
+            volunteer_id=volunteer_id,
+            volunteer_name=volunteer_name,
             created_at=now,
             updated_at=now
         )

@@ -11,6 +11,7 @@ import { VolunteerView } from './views/VolunteerView';
 import { NeedCoordinatorView } from './views/NeedCoordinatorView';
 import { OpsView } from './views/OpsView';
 import { AdminView } from './views/AdminView';
+import { ReturningVolunteerView } from './views/ReturningVolunteerView';
 import { Toaster } from './components/ui/sonner';
 
 // Check if we're on an internal route
@@ -108,6 +109,8 @@ function App() {
         return <VolunteerView onBack={handleBackToInternalSelector} />;
       case 'internal-need_coordinator':
         return <NeedCoordinatorView onBack={handleBackToInternalSelector} />;
+      case 'internal-returning_volunteer':
+        return <ReturningVolunteerView onBack={handleBackToInternalSelector} />;
       case 'internal-ops':
         return <OpsView />;
       case 'internal-admin':

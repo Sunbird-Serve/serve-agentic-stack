@@ -1,376 +1,324 @@
 """
-SERVE Engagement Agent Service - Core Logic
+SERVE Engagement Agent Service - Core Logic (L3.5)
 
-MVP engagement flow for recommended-but-not-utilised or returning volunteers:
-1. Re-engage and confirm whether they want to continue
-2. Capture continuity preferences (same school / same slot / alternatives)
-3. Hand off ready volunteers to fulfillment
-4. Pause or human-review the rest
+Thin state machine that wraps the LLM tool-calling loop.
+The LLM owns all branching logic. The state machine only enforces terminal conditions.
+
+Focused on: active volunteers who fulfilled needs and are re-engaging (user-initiated).
 """
 import logging
-import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from app.schemas.engagement_schemas import (
     EngagementWorkflowState,
     EngagementAgentTurnRequest,
     EngagementAgentTurnResponse,
     FulfillmentHandoffPayload,
-    _dump_sub_state,
     _load_sub_state,
+    _dump_sub_state,
 )
 from app.clients.domain_client import domain_client
+from app.service.llm_adapter import llm_adapter
 
 logger = logging.getLogger(__name__)
 
-_TERMINAL_MESSAGES = {
+_TERMINAL_STATES = {
+    EngagementWorkflowState.HUMAN_REVIEW.value,
+    EngagementWorkflowState.PAUSED.value,
+}
+
+_TERMINAL_FALLBACK_MESSAGES = {
     EngagementWorkflowState.HUMAN_REVIEW.value: (
-        "Thanks for sharing honestly. We'll update your preference and a team member can follow up if needed."
+        "Thanks for sharing. A team member will follow up with you shortly."
     ),
     EngagementWorkflowState.PAUSED.value: (
-        "No problem. We'll reconnect later, and you can come back whenever you're ready."
+        "No problem. We'll reconnect when your timing is better. Just message us whenever you're ready."
     ),
 }
 
-_DEFER_PATTERNS = [
-    r"\bnot now\b",
-    r"\bnot available\b",
-    r"\blater\b",
-    r"\bmaybe later\b",
-    r"\bnot sure\b",
-    r"\bbusy\b",
-    r"\bunavailable\b",
-    r"\bcurrently unavailable\b",
-    r"\bnext term\b",
-    r"\bnext year\b",
-    r"\babhi nahi\b",
-    r"\bbaad mein\b",
-]
-
-_DECLINE_PATTERNS = [
-    r"\bno\b",
-    r"\bnope\b",
-    r"\bnot interested\b",
-    r"\bdon't contact\b",
-    r"\bdo not contact\b",
-    r"\bopt out\b",
-    r"\bstop\b",
-    r"\bcannot continue\b",
-    r"\bcan't continue\b",
-    r"\bnahi\b",
-    r"\bnahin\b",
-]
-
-_CONTINUE_PATTERNS = [
-    r"\byes\b",
-    r"\bhaan\b",
-    r"\bhan\b",
-    r"\bcontinue\b",
-    r"\bready\b",
-    r"\binterested\b",
-    r"\bavailable\b",
-    r"\bstart\b",
-    r"\bkeep going\b",
-]
-
-_SAME_SCHOOL_PATTERNS = [
-    r"\bsame school\b",
-    r"\bsame place\b",
-    r"\bsame as before\b",
-    r"\busi school\b",
-]
-
-_FLEX_SCHOOL_PATTERNS = [
-    r"\bdifferent school\b",
-    r"\bany school\b",
-    r"\bflexible school\b",
-    r"\bopen to another school\b",
-    r"\bopen to a different school\b",
-    r"\bkahi bhi\b",
-]
-
-_SAME_SLOT_PATTERNS = [
-    r"\bsame slot\b",
-    r"\bsame time\b",
-    r"\bsame timing\b",
-    r"\bsame schedule\b",
-    r"\bsame days\b",
-    r"\bussi timing\b",
-]
-
-_FLEX_SLOT_PATTERNS = [
-    r"\bflexible slot\b",
-    r"\bflexible timing\b",
-    r"\bany time\b",
-    r"\bdifferent time\b",
-    r"\bchange time\b",
-    r"\bopen timing\b",
-    r"\bflexible on timing\b",
-]
-
-_ALTERNATIVE_PATTERNS = [
-    r"\bopen to alternatives\b",
-    r"\bopen to options\b",
-    r"\bfully flexible\b",
-    r"\bany option\b",
-]
-
 
 class EngagementAgentService:
-    """MVP engagement state machine for volunteer continuity."""
+    """
+    L3.5 engagement agent.
+    Routes all non-terminal turns to the LLM tool-calling loop.
+    Watches tool_results for signal_outcome to transition to terminal states.
+    """
 
     async def process_turn(self, request: EngagementAgentTurnRequest) -> EngagementAgentTurnResponse:
+        session_id = str(request.session_id)
         stage = request.session_state.stage
+
+        # ── Terminal state: return fallback, do not call LLM ─────────────────
+        if stage in _TERMINAL_STATES:
+            logger.info(f"Session {session_id} in terminal state '{stage}' — returning fallback")
+            return self._build_response(
+                message=_TERMINAL_FALLBACK_MESSAGES.get(stage, "How can I help you?"),
+                state=stage,
+                sub_state=request.session_state.sub_state,
+            )
+
+        # ── Load sub_state ────────────────────────────────────────────────────
         sub_state = _load_sub_state(request.session_state.sub_state)
 
-        await self._ensure_context_loaded(request, sub_state)
+        # ── Build conversation history (bounded to last 20 messages) ──────────
+        messages = list(request.conversation_history[-20:])
+        if request.user_message:
+            messages.append({"role": "user", "content": request.user_message})
 
-        if stage == EngagementWorkflowState.HUMAN_REVIEW.value:
-            return self._build_response(
-                message=_TERMINAL_MESSAGES[EngagementWorkflowState.HUMAN_REVIEW.value],
-                next_state=EngagementWorkflowState.HUMAN_REVIEW.value,
+        # ── Build system prompt ───────────────────────────────────────────────
+        session_context = self._build_session_context(request, sub_state)
+        system_prompt = llm_adapter.build_system_prompt(session_context)
+
+        # ── Build tool executor ───────────────────────────────────────────────
+        async def tool_executor(tool_name: str, tool_input: Dict[str, Any]) -> Any:
+            return await self._execute_tool(tool_name, tool_input, sub_state, session_id)
+
+        # ── Run L3.5 loop ─────────────────────────────────────────────────────
+        text, collected_tool_results = await llm_adapter.run_engagement_loop(
+            system_prompt=system_prompt,
+            messages=messages,
+            tool_executor=tool_executor,
+        )
+
+        # ── Check for signal_outcome ──────────────────────────────────────────
+        signal = collected_tool_results.get("signal_outcome")
+        if signal:
+            return await self._handle_signal(
+                signal=signal,
+                text=text,
                 sub_state=sub_state,
+                request=request,
+                session_id=session_id,
             )
 
-        #TODO: Consider moving this out of this function
-        dispatch = {
-            EngagementWorkflowState.RE_ENGAGING.value: self._handle_re_engaging,
-            EngagementWorkflowState.PROFILE_REFRESH.value: self._handle_profile_refresh,
-            EngagementWorkflowState.MATCHING_READY.value: self._handle_matching_ready,
-            EngagementWorkflowState.PAUSED.value: self._handle_paused,
-        }
-
-        handler = dispatch.get(stage, self._handle_fallback)
-        return await handler(request, sub_state)
-
-    async def _handle_re_engaging(
-        self,
-        request: EngagementAgentTurnRequest,
-        sub_state: Dict[str, Any],
-    ) -> EngagementAgentTurnResponse:
-        signals = self._extract_signals(request.user_message)
-        self._merge_signals(sub_state, signals)
-        await self._persist_signals(str(request.session_id), sub_state)
-
-        decision = sub_state.get("continue_decision")
-        if decision == "decline":
-            return await self._handle_decline(request, sub_state)
-        if decision == "defer":
-            return await self._handle_defer(request, sub_state)
-        if decision == "continue":
-            missing = self._get_missing_preference_fields(sub_state)
-            if missing:
-                return self._build_response(
-                    message=self._build_preference_question(sub_state),
-                    next_state=EngagementWorkflowState.PROFILE_REFRESH.value,
-                    sub_state=sub_state,
-                    completion_status="collecting_preferences",
-                    confirmed_fields=self._confirmed_fields(sub_state),
-                )
-            return await self._build_fulfillment_handoff_response(request, sub_state)
-
-        return self._build_response(
-            message=self._build_reengagement_prompt(request, sub_state),
-            next_state=EngagementWorkflowState.RE_ENGAGING.value,
-            sub_state=sub_state,
-            completion_status="awaiting_interest",
-            confirmed_fields=self._confirmed_fields(sub_state),
-        )
-
-    async def _handle_profile_refresh(
-        self,
-        request: EngagementAgentTurnRequest,
-        sub_state: Dict[str, Any],
-    ) -> EngagementAgentTurnResponse:
-        signals = self._extract_signals(request.user_message)
-        self._merge_signals(sub_state, signals)
-        await self._persist_signals(str(request.session_id), sub_state)
-
-        decision = sub_state.get("continue_decision")
-        if decision == "decline":
-            return await self._handle_decline(request, sub_state)
-        if decision == "defer":
-            return await self._handle_defer(request, sub_state)
-        if decision != "continue":
+        # ── Loop exhausted without signal → force human_review ────────────────
+        if not text:
+            logger.warning(f"Session {session_id}: loop exhausted without signal — forcing human_review")
+            sub_state["human_review_reason"] = "loop_exhausted"
+            await domain_client.log_event(session_id, "engagement_human_review", {"reason": "loop_exhausted"})
+            await domain_client.advance_state(
+                session_id, EngagementWorkflowState.HUMAN_REVIEW.value, _dump_sub_state(sub_state)
+            )
             return self._build_response(
-                message=self._build_reengagement_prompt(request, sub_state),
-                next_state=EngagementWorkflowState.RE_ENGAGING.value,
-                sub_state=sub_state,
-                completion_status="awaiting_interest",
-                confirmed_fields=self._confirmed_fields(sub_state),
+                message=_TERMINAL_FALLBACK_MESSAGES[EngagementWorkflowState.HUMAN_REVIEW.value],
+                state=EngagementWorkflowState.HUMAN_REVIEW.value,
+                sub_state=_dump_sub_state(sub_state),
             )
 
-        missing = self._get_missing_preference_fields(sub_state)
-        if missing:
+        # ── Active turn: persist and return ──────────────────────────────────
+        updated_sub_state = _dump_sub_state(sub_state)
+        await domain_client.save_message(session_id, "assistant", text)
+        await domain_client.advance_state(
+            session_id, EngagementWorkflowState.RE_ENGAGING.value, updated_sub_state
+        )
+
+        return self._build_response(
+            message=text,
+            state=EngagementWorkflowState.RE_ENGAGING.value,
+            sub_state=updated_sub_state,
+        )
+
+    async def _execute_tool(
+        self,
+        tool_name: str,
+        tool_input: Dict[str, Any],
+        sub_state: Dict[str, Any],
+        session_id: str,
+    ) -> Any:
+        """Route LLM tool calls to domain_client. Handle signal_outcome locally."""
+
+        if tool_name == "signal_outcome":
+            # Handled locally — store in sub_state, do NOT call MCP
+            outcome = tool_input.get("outcome")
+            if outcome == "ready":
+                sub_state["preference_notes"] = tool_input.get("preference_notes")
+                sub_state["continuity"] = tool_input.get("continuity", "same")
+                sub_state["preferred_need_id"] = tool_input.get("preferred_need_id")
+            elif outcome in ("declined", "already_active"):
+                sub_state["human_review_reason"] = outcome
+            elif outcome == "deferred":
+                sub_state["deferred"] = True
+            return tool_input
+
+        elif tool_name == "get_engagement_context":
+            volunteer_id = tool_input.get("volunteer_id")
+            if not volunteer_id:
+                return {"status": "error", "error": "volunteer_id required"}
+            result = await domain_client.get_engagement_context(volunteer_id)
+            # Cache in sub_state so we don't re-fetch on subsequent turns
+            if result.get("status") == "success":
+                sub_state["engagement_context"] = result
+            return result
+
+        else:
+            logger.warning(f"Unknown engagement tool: {tool_name}")
+            return {"status": "error", "message": f"Unknown tool: {tool_name}"}
+
+    async def _handle_signal(
+        self,
+        signal: Dict[str, Any],
+        text: str,
+        sub_state: Dict[str, Any],
+        request: EngagementAgentTurnRequest,
+        session_id: str,
+    ) -> EngagementAgentTurnResponse:
+        """Handle terminal state transitions from signal_outcome."""
+        outcome = signal.get("outcome")
+
+        if outcome == "ready":
+            return await self._handle_ready(signal, text, sub_state, request, session_id)
+
+        elif outcome == "already_active":
+            reason = signal.get("reason", "volunteer_already_nominated")
+            await domain_client.log_event(session_id, "engagement_already_active", {"reason": reason})
+            await domain_client.advance_state(
+                session_id, EngagementWorkflowState.HUMAN_REVIEW.value, _dump_sub_state(sub_state)
+            )
+            message = text or (
+                "It looks like you already have an active placement in progress. "
+                "A team member will be in touch with you shortly."
+            )
             return self._build_response(
-                message=self._build_preference_question(sub_state),
-                next_state=EngagementWorkflowState.PROFILE_REFRESH.value,
-                sub_state=sub_state,
-                completion_status="collecting_preferences",
-                confirmed_fields=self._confirmed_fields(sub_state),
+                message=message,
+                state=EngagementWorkflowState.HUMAN_REVIEW.value,
+                sub_state=_dump_sub_state(sub_state),
             )
 
-        return await self._build_fulfillment_handoff_response(request, sub_state)
+        elif outcome == "deferred":
+            await domain_client.engagement_update_volunteer_status(
+                session_id,
+                volunteer_status="pause_outreach",
+                reason="volunteer_deferred",
+            )
+            await domain_client.save_memory_summary(
+                session_id=session_id,
+                summary_text=f"Volunteer deferred re-engagement. Reason: {signal.get('reason', 'not specified')}.",
+                key_facts=["Outcome: deferred"],
+                volunteer_id=request.session_state.volunteer_id,
+            )
+            await domain_client.advance_state(
+                session_id, EngagementWorkflowState.PAUSED.value, _dump_sub_state(sub_state)
+            )
+            message = text or _TERMINAL_FALLBACK_MESSAGES[EngagementWorkflowState.PAUSED.value]
+            return self._build_response(
+                message=message,
+                state=EngagementWorkflowState.PAUSED.value,
+                sub_state=_dump_sub_state(sub_state),
+            )
 
-    async def _handle_matching_ready(
-        self,
-        request: EngagementAgentTurnRequest,
-        sub_state: Dict[str, Any],
-    ) -> EngagementAgentTurnResponse:
-        if sub_state.get("handoff"):
-            return await self._build_fulfillment_handoff_response(request, sub_state)
-        return await self._handle_profile_refresh(request, sub_state)
+        elif outcome == "declined":
+            sub_state["human_review_reason"] = "volunteer_declined"
+            await domain_client.engagement_update_volunteer_status(
+                session_id,
+                volunteer_status="opt_out",
+                reason="volunteer_declined",
+            )
+            await domain_client.save_memory_summary(
+                session_id=session_id,
+                summary_text="Volunteer declined re-engagement.",
+                key_facts=["Outcome: declined"],
+                volunteer_id=request.session_state.volunteer_id,
+            )
+            await domain_client.advance_state(
+                session_id, EngagementWorkflowState.HUMAN_REVIEW.value, _dump_sub_state(sub_state)
+            )
+            message = text or (
+                "Thank you for letting us know. We won't push further — come back whenever you're ready."
+            )
+            return self._build_response(
+                message=message,
+                state=EngagementWorkflowState.HUMAN_REVIEW.value,
+                sub_state=_dump_sub_state(sub_state),
+            )
 
-    async def _handle_paused(
-        self,
-        request: EngagementAgentTurnRequest,
-        sub_state: Dict[str, Any],
-    ) -> EngagementAgentTurnResponse:
-        if request.user_message.strip():
-            return await self._handle_re_engaging(request, sub_state)
-        return self._build_response(
-            message=_TERMINAL_MESSAGES[EngagementWorkflowState.PAUSED.value],
-            next_state=EngagementWorkflowState.PAUSED.value,
-            sub_state=sub_state,
-            completion_status="paused",
-            confirmed_fields=self._confirmed_fields(sub_state),
-        )
+        else:
+            logger.warning(f"Unknown signal_outcome outcome: {outcome} — defaulting to human_review")
+            await domain_client.advance_state(
+                session_id, EngagementWorkflowState.HUMAN_REVIEW.value, _dump_sub_state(sub_state)
+            )
+            return self._build_response(
+                message=text or _TERMINAL_FALLBACK_MESSAGES[EngagementWorkflowState.HUMAN_REVIEW.value],
+                state=EngagementWorkflowState.HUMAN_REVIEW.value,
+                sub_state=_dump_sub_state(sub_state),
+            )
 
-    async def _handle_fallback(
+    async def _handle_ready(
         self,
-        request: EngagementAgentTurnRequest,
+        signal: Dict[str, Any],
+        text: str,
         sub_state: Dict[str, Any],
+        request: EngagementAgentTurnRequest,
+        session_id: str,
     ) -> EngagementAgentTurnResponse:
-        logger.warning("Unknown engagement stage '%s' — falling back to re_engaging", request.session_state.stage)
-        return await self._handle_re_engaging(request, sub_state)
+        """Volunteer confirmed — build handoff payload and emit to fulfillment."""
 
-    async def _handle_decline(
-        self,
-        request: EngagementAgentTurnRequest,
-        sub_state: Dict[str, Any],
-    ) -> EngagementAgentTurnResponse:
-        sub_state["human_review_reason"] = "volunteer_declined"
-        await self._persist_signals(str(request.session_id), sub_state)
-        await domain_client.engagement_update_volunteer_status(
-            str(request.session_id),
-            volunteer_status="opt_out",
-            reason="volunteer_declined",
-            signals=self._confirmed_fields(sub_state),
-        )
-        await self._write_summary(
-            session_id=str(request.session_id),
-            volunteer_id=request.session_state.volunteer_id,
-            sub_state=sub_state,
-            outcome="declined",
-        )
-        return self._build_response(
-            message=(
-                "Thank you for letting us know. We won't push any further right now. "
-                "If you'd like to come back later, we'd be happy to reconnect."
-            ),
-            next_state=EngagementWorkflowState.HUMAN_REVIEW.value,
-            sub_state=sub_state,
-            completion_status="human_review",
-            confirmed_fields=self._confirmed_fields(sub_state),
-        )
-
-    async def _handle_defer(
-        self,
-        request: EngagementAgentTurnRequest,
-        sub_state: Dict[str, Any],
-    ) -> EngagementAgentTurnResponse:
-        await self._persist_signals(str(request.session_id), sub_state)
-        await domain_client.engagement_update_volunteer_status(
-            str(request.session_id),
-            volunteer_status="pause_outreach",
-            reason="volunteer_deferred",
-            signals=self._confirmed_fields(sub_state),
-        )
-        await self._write_summary(
-            session_id=str(request.session_id),
-            volunteer_id=request.session_state.volunteer_id,
-            sub_state=sub_state,
-            outcome="deferred",
-        )
-        return self._build_response(
-            message=(
-                "Absolutely. We can reconnect later when your timing is better. "
-                "Just message us whenever you're ready."
-            ),
-            next_state=EngagementWorkflowState.PAUSED.value,
-            sub_state=sub_state,
-            completion_status="paused",
-            confirmed_fields=self._confirmed_fields(sub_state),
-        )
-
-    async def _build_fulfillment_handoff_response(
-        self,
-        request: EngagementAgentTurnRequest,
-        sub_state: Dict[str, Any],
-    ) -> EngagementAgentTurnResponse:
-        await self._persist_signals(str(request.session_id), sub_state)
+        # Try MCP-side handoff preparation first
         handoff_result = await domain_client.engagement_prepare_fulfillment_handoff(
-            str(request.session_id),
-            signals=self._confirmed_fields(sub_state),
+            session_id,
+            signals={
+                "preference_notes": sub_state.get("preference_notes"),
+                "continuity": sub_state.get("continuity", "same"),
+                "preferred_need_id": sub_state.get("preferred_need_id"),
+            },
         )
-        updated_sub_state = handoff_result.get("sub_state") if isinstance(handoff_result, dict) else None
-        if isinstance(updated_sub_state, dict):
-            sub_state.update(updated_sub_state)
+
         payload = (
             handoff_result.get("handoff_payload")
-            or sub_state.get("handoff")
-            or self._build_fulfillment_payload(request, sub_state)
+            if isinstance(handoff_result, dict)
+            else None
         )
+
+        # Fall back to building payload locally from sub_state + cached context
+        if not payload:
+            payload = self._build_local_payload(request, sub_state)
+
         if not payload:
             sub_state["human_review_reason"] = "missing_handoff_context"
-            await self._persist_signals(str(request.session_id), sub_state)
             await domain_client.engagement_update_volunteer_status(
-                str(request.session_id),
-                volunteer_status="human_review",
-                reason="missing_handoff_context",
-                signals=self._confirmed_fields(sub_state),
+                session_id, volunteer_status="human_review", reason="missing_handoff_context"
             )
-            await self._write_summary(
-                session_id=str(request.session_id),
-                volunteer_id=request.session_state.volunteer_id,
-                sub_state=sub_state,
-                outcome="human_review",
+            await domain_client.advance_state(
+                session_id, EngagementWorkflowState.HUMAN_REVIEW.value, _dump_sub_state(sub_state)
             )
             return self._build_response(
                 message=(
-                    "Thanks. I have your preference, but I need a teammate to check the details before moving ahead."
+                    "Thanks — I have your preference, but I need a teammate to check the details before moving ahead."
                 ),
-                next_state=EngagementWorkflowState.HUMAN_REVIEW.value,
-                sub_state=sub_state,
-                completion_status="human_review",
-                confirmed_fields=self._confirmed_fields(sub_state),
+                state=EngagementWorkflowState.HUMAN_REVIEW.value,
+                sub_state=_dump_sub_state(sub_state),
             )
 
         sub_state["handoff"] = payload
-        await self._persist_signals(str(request.session_id), sub_state)
         await domain_client.engagement_update_volunteer_status(
-            str(request.session_id),
-            volunteer_status="opportunity_readiness",
-            reason="ready_for_fulfillment",
-            signals=self._confirmed_fields(sub_state),
+            session_id, volunteer_status="opportunity_readiness", reason="ready_for_fulfillment"
         )
-        await self._write_summary(
-            session_id=str(request.session_id),
+        await domain_client.save_memory_summary(
+            session_id=session_id,
+            summary_text=(
+                f"Volunteer confirmed re-engagement. "
+                f"Continuity: {sub_state.get('continuity', 'same')}. "
+                f"Preferences: {sub_state.get('preference_notes', '')}."
+            ),
+            key_facts=[
+                f"Outcome: ready_for_fulfillment",
+                f"Continuity: {sub_state.get('continuity', 'same')}",
+            ],
             volunteer_id=request.session_state.volunteer_id,
-            sub_state=sub_state,
-            outcome="handoff_to_fulfillment",
+        )
+        await domain_client.advance_state(
+            session_id, "active", _dump_sub_state(sub_state)
+        )
+
+        message = text or (
+            "Perfect. I've noted your preference and will now find the best teaching match for you."
         )
 
         return self._build_response(
-            message=(
-                "Perfect. I’ve noted your preference and I’ll now check for the best teaching continuation for you."
-            ),
-            next_state="active",
-            sub_state=sub_state,
-            completion_status="handoff_ready",
-            confirmed_fields=self._confirmed_fields(sub_state),
+            message=message,
+            state="active",
+            sub_state=_dump_sub_state(sub_state),
             handoff_event={
-                "session_id": request.session_id,
+                "session_id": str(request.session_id),
                 "from_agent": "engagement",
                 "to_agent": "fulfillment",
                 "handoff_type": "agent_transition",
@@ -379,111 +327,12 @@ class EngagementAgentService:
             },
         )
 
-    async def _ensure_context_loaded(
-        self,
-        request: EngagementAgentTurnRequest,
-        sub_state: Dict[str, Any],
-    ) -> None:
-        if sub_state.get("engagement_context"):
-            return
-
-        volunteer_id = request.session_state.volunteer_id
-        if not volunteer_id:
-            return
-
-        context = await domain_client.get_engagement_context(str(volunteer_id))
-        if context.get("status") == "success":
-            sub_state["engagement_context"] = context
-        else:
-            logger.warning("Failed to load engagement context for volunteer %s: %s", volunteer_id, context)
-
-    def _extract_signals(self, message: str) -> Dict[str, Any]:
-        text = self._normalise(message)
-        if not text:
-            return {}
-
-        decision = None
-        if self._matches_any(text, _DEFER_PATTERNS):
-            decision = "defer"
-        elif self._matches_any(text, _DECLINE_PATTERNS):
-            decision = "decline"
-        elif self._matches_any(text, _CONTINUE_PATTERNS):
-            decision = "continue"
-
-        same_school = True if self._matches_any(text, _SAME_SCHOOL_PATTERNS) else None
-        if same_school is None and self._matches_any(text, _FLEX_SCHOOL_PATTERNS):
-            same_school = False
-
-        same_slot = True if self._matches_any(text, _SAME_SLOT_PATTERNS) else None
-        if same_slot is None and self._matches_any(text, _FLEX_SLOT_PATTERNS):
-            same_slot = False
-
-        open_to_alternatives = True if self._matches_any(text, _ALTERNATIVE_PATTERNS) else None
-        if open_to_alternatives:
-            if same_school is None:
-                same_school = False
-            if same_slot is None:
-                same_slot = False
-
-        if decision is None and any(v is not None for v in (same_school, same_slot, open_to_alternatives)):
-            decision = "continue"
-
-        return {
-            "continue_decision": decision,
-            "same_school": same_school,
-            "same_slot": same_slot,
-            "open_to_alternatives": open_to_alternatives,
-        }
-
-    def _merge_signals(self, sub_state: Dict[str, Any], signals: Dict[str, Any]) -> None:
-        for key in ("continue_decision", "same_school", "same_slot", "open_to_alternatives"):
-            value = signals.get(key)
-            if value is not None:
-                sub_state[key] = value
-
-        if sub_state.get("same_school") is True:
-            sub_state["continuity"] = "same"
-        elif sub_state.get("same_school") is False or sub_state.get("open_to_alternatives") is True:
-            sub_state["continuity"] = "different"
-
-        sub_state["preference_notes"] = self._build_preference_notes(sub_state)
-
-    def _build_preference_notes(self, sub_state: Dict[str, Any]) -> str:
-        context = sub_state.get("engagement_context") or {}
-        history = context.get("fulfillment_history") or []
-        latest = history[0] if history else {}
-
-        notes: List[str] = []
-        school_name = latest.get("school_name")
-        schedule = latest.get("schedule")
-        subjects = latest.get("subjects") or []
-        grades = latest.get("grade_levels") or []
-
-        if sub_state.get("same_school") is True and school_name:
-            notes.append(f"Prefer same school as before: {school_name}.")
-        elif sub_state.get("same_school") is False:
-            notes.append("Open to a different school if needed.")
-
-        if sub_state.get("same_slot") is True and schedule:
-            notes.append(f"Prefer same schedule as before: {schedule}.")
-        elif sub_state.get("same_slot") is False:
-            notes.append("Flexible on time slot.")
-
-        if sub_state.get("open_to_alternatives") is True:
-            notes.append("Open to alternatives if the previous match is unavailable.")
-
-        if subjects:
-            notes.append(f"Recent teaching subjects: {', '.join(subjects)}.")
-        if grades:
-            notes.append(f"Recent grade levels: {', '.join(str(g) for g in grades)}.")
-
-        return " ".join(notes).strip()
-
-    def _build_fulfillment_payload(
+    def _build_local_payload(
         self,
         request: EngagementAgentTurnRequest,
         sub_state: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
+        """Build FulfillmentHandoffPayload locally when MCP doesn't return one."""
         volunteer_id = request.session_state.volunteer_id
         if not volunteer_id:
             return None
@@ -492,144 +341,58 @@ class EngagementAgentService:
         history = context.get("fulfillment_history") or []
         latest = history[0] if history else {}
 
+        continuity = sub_state.get("continuity") or "same"
+        preferred_need_id = sub_state.get("preferred_need_id")
+        if continuity == "same" and not preferred_need_id and latest.get("need_id"):
+            preferred_need_id = latest.get("need_id")
+
+        name = (
+            request.session_state.volunteer_name
+            or (context.get("volunteer_profile") or {}).get("full_name")
+            or "Volunteer"
+        )
+
         payload = FulfillmentHandoffPayload(
             volunteer_id=str(volunteer_id),
-            volunteer_name=self._resolve_volunteer_name(request, context),
-            continuity=sub_state.get("continuity") or "different",
-            preferred_need_id=latest.get("need_id") if sub_state.get("continuity") == "same" else None,
-            preferred_school_id=None,
-            preference_notes=sub_state.get("preference_notes") or None,
+            volunteer_name=name,
+            continuity=continuity,
+            preferred_need_id=preferred_need_id if continuity == "same" else None,
+            preferred_school_id=latest.get("school_id") if continuity == "same" else None,
+            preference_notes=sub_state.get("preference_notes"),
             fulfillment_history=history,
         )
         return payload.model_dump(mode="json")
 
-    def _build_reengagement_prompt(
+    def _build_session_context(
         self,
         request: EngagementAgentTurnRequest,
         sub_state: Dict[str, Any],
-    ) -> str:
-        context = sub_state.get("engagement_context") or {}
-        history = context.get("fulfillment_history") or []
-        latest = history[0] if history else {}
-        name = self._resolve_volunteer_name(request, context)
-
-        if latest.get("school_name"):
-            return (
-                f"Welcome back, {name}! Last time you supported {latest['school_name']}. "
-                "Would you like to continue this year? We can try the same school and timing, or look at alternatives."
-            )
-        return (
-            f"Welcome back, {name}! Would you like to continue volunteering this year? "
-            "If yes, we can try the same school and timing as before or look at alternatives."
-        )
-
-    def _build_preference_question(self, sub_state: Dict[str, Any]) -> str:
-        missing = self._get_missing_preference_fields(sub_state)
-        if "school_preference" in missing and "slot_preference" in missing:
-            return (
-                "Would you prefer the same school and same time slot as before, "
-                "or are you open to different options?"
-            )
-        if "school_preference" in missing:
-            return "Would you like the same school as before, or are you open to a different school?"
-        return "Should we try for the same time slot as before, or are you flexible on timing?"
-
-    def _get_missing_preference_fields(self, sub_state: Dict[str, Any]) -> List[str]:
-        missing: List[str] = []
-        if sub_state.get("continue_decision") != "continue":
-            return missing
-        if sub_state.get("same_school") is None:
-            missing.append("school_preference")
-        if sub_state.get("same_slot") is None:
-            missing.append("slot_preference")
-        return missing
-
-    def _confirmed_fields(self, sub_state: Dict[str, Any]) -> Dict[str, Any]:
-        return {
-            "continue_decision": sub_state.get("continue_decision"),
-            "same_school": sub_state.get("same_school"),
-            "same_slot": sub_state.get("same_slot"),
-            "open_to_alternatives": sub_state.get("open_to_alternatives"),
-            "continuity": sub_state.get("continuity"),
-            "preference_notes": sub_state.get("preference_notes"),
+    ) -> Dict[str, Any]:
+        """Assemble context dict for the system prompt."""
+        ctx: Dict[str, Any] = {
+            "volunteer_id": request.session_state.volunteer_id,
+            "volunteer_name": request.session_state.volunteer_name,
+            "last_active_at": request.session_state.last_active_at,
         }
-
-    async def _persist_signals(self, session_id: str, sub_state: Dict[str, Any]) -> None:
-        result = await domain_client.engagement_save_confirmed_signals(
-            session_id,
-            self._confirmed_fields(sub_state),
-        )
-        updated = result.get("sub_state") if isinstance(result, dict) else None
-        if isinstance(updated, dict):
-            sub_state.update(updated)
-
-    async def _write_summary(
-        self,
-        session_id: str,
-        volunteer_id: Optional[str],
-        sub_state: Dict[str, Any],
-        outcome: str,
-    ) -> None:
-        summary_text = self._build_summary_text(sub_state, outcome)
-        key_facts = [
-            f"Outcome: {outcome}",
-            f"Continue decision: {sub_state.get('continue_decision')}",
-            f"Continuity: {sub_state.get('continuity')}",
-            f"Same school: {sub_state.get('same_school')}",
-            f"Same slot: {sub_state.get('same_slot')}",
-        ]
-        await domain_client.save_memory_summary(
-            session_id=session_id,
-            summary_text=summary_text,
-            key_facts=[fact for fact in key_facts if not fact.endswith("None")],
-            volunteer_id=volunteer_id,
-        )
-
-    def _build_summary_text(self, sub_state: Dict[str, Any], outcome: str) -> str:
-        parts = [f"Engagement outcome: {outcome}."]
-        if sub_state.get("continue_decision"):
-            parts.append(f"Volunteer decision: {sub_state['continue_decision']}.")
-        if sub_state.get("continuity"):
-            parts.append(f"Continuity preference: {sub_state['continuity']}.")
-        if sub_state.get("preference_notes"):
-            parts.append(sub_state["preference_notes"])
-        if sub_state.get("human_review_reason"):
-            parts.append(f"Human review reason: {sub_state['human_review_reason']}.")
-        return " ".join(parts)
+        # Surface cached fulfillment history if already loaded
+        engagement_context = sub_state.get("engagement_context") or {}
+        if engagement_context.get("fulfillment_history"):
+            ctx["fulfillment_history"] = engagement_context["fulfillment_history"]
+        return ctx
 
     def _build_response(
         self,
         message: str,
-        next_state: str,
-        sub_state: Dict[str, Any],
-        completion_status: Optional[str] = None,
-        confirmed_fields: Optional[Dict[str, Any]] = None,
+        state: str,
+        sub_state: Optional[str],
         handoff_event: Optional[Dict[str, Any]] = None,
     ) -> EngagementAgentTurnResponse:
         return EngagementAgentTurnResponse(
             assistant_message=message,
-            state=next_state,
-            sub_state=_dump_sub_state(sub_state),
-            completion_status=completion_status,
-            confirmed_fields=confirmed_fields or {},
+            state=state,
+            sub_state=sub_state,
             handoff_event=handoff_event,
         )
-
-    def _resolve_volunteer_name(
-        self,
-        request: EngagementAgentTurnRequest,
-        context: Dict[str, Any],
-    ) -> str:
-        if request.session_state.volunteer_name:
-            return request.session_state.volunteer_name
-        profile = context.get("volunteer_profile") or {}
-        return profile.get("full_name") or profile.get("first_name") or "Volunteer"
-
-    def _normalise(self, message: str) -> str:
-        return re.sub(r"\s+", " ", (message or "").strip().lower())
-
-    def _matches_any(self, text: str, patterns: List[str]) -> bool:
-        return any(re.search(pattern, text) for pattern in patterns)
 
 
 # Singleton

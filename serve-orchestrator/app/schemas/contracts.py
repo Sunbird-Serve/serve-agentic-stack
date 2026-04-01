@@ -144,6 +144,8 @@ class SessionContext(BaseModel):
     sub_state: Optional[str] = None
     context_summary: Optional[str] = None
     volunteer_profile: Optional[Dict[str, Any]] = None
+    volunteer_id: Optional[str] = None
+    volunteer_name: Optional[str] = None
     conversation_history: List[Dict[str, str]] = Field(default_factory=list)
     confirmed_fields: Dict[str, Any] = Field(default_factory=dict)
     missing_fields: List[str] = Field(default_factory=list)

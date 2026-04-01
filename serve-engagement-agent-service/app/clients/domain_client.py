@@ -161,21 +161,21 @@ class DomainClient:
             args["volunteer_id"] = volunteer_id
         return await _call_mcp_tool("save_memory_summary", args)
 
-    # ── Volunteer Profile ─────────────────────────────────────────────────────
+    # ── Volunteer History ─────────────────────────────────────────────────────
 
-    async def get_volunteer_profile(self, session_id: str) -> Dict:
-        """Fetch the volunteer's profile from MCP cache."""
-        return await _call_mcp_tool("get_volunteer_profile", {"session_id": session_id})
-
-    async def save_volunteer_fields(self, session_id: str, fields: Dict[str, Any]) -> Dict:
-        """Save updated volunteer profile fields."""
-        return await _call_mcp_tool("save_volunteer_fields", {
-            "session_id": session_id,
-            "fields": fields,
+    async def get_volunteer_fulfillment_history(
+        self, volunteer_id: str, page: int = 0, size: int = 50
+    ) -> Dict:
+        """Fetch completed/closed fulfillment history for a volunteer."""
+        return await _call_mcp_tool("get_volunteer_fulfillment_history", {
+            "volunteer_id": volunteer_id,
+            "page": page,
+            "size": size,
         })
 
-    # TODO (contributor): add more methods as needed
-    # e.g. fetch_matching_opportunities, confirm_availability, etc.
+    async def check_active_nominations(self, volunteer_id: str) -> Dict:
+        """Check whether a volunteer already has an active nomination in the pipeline."""
+        return await _call_mcp_tool("check_active_nominations", {"volunteer_id": volunteer_id})
 
 
 # Singleton

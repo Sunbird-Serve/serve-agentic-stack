@@ -60,6 +60,7 @@ from schemas import (
     GetVolunteerFulfillmentHistoryInput, CheckActiveNominationsInput,
     GetEngagementContextInput, NominateVolunteerInput, ConfirmNominationInput,
     GetNominationsForNeedInput, GetRecommendedVolunteersInput,
+    GetNeedsForEntityInput, GetNeedDetailsInput,
 )
 session_service = SessionService()
 profile_service = ProfileService()

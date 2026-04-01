@@ -86,12 +86,15 @@ class DomainClient:
         self,
         channel: str,
         persona: str,
-        channel_metadata: Optional[Dict] = None
+        channel_metadata: Optional[Dict] = None,
+        volunteer_id: Optional[str] = None,
     ) -> Dict:
         """Start a new session via MCP, persisting channel_metadata (actor_id, trigger_type, …)."""
         args: Dict[str, Any] = {"channel": channel, "persona": persona}
         if channel_metadata:
             args["channel_metadata"] = channel_metadata
+        if volunteer_id:
+            args["volunteer_id"] = volunteer_id
         result = await _call_mcp_tool("start_session", args)
         if result.get("status") != "success":
             return result
