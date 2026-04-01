@@ -287,6 +287,8 @@ class NeedDraft(Base):
     end_date            = Column(String(50),  nullable=True)  # derived: start + duration_weeks*7
     duration_weeks      = Column(Integer,     nullable=True)
     schedule_preference = Column(String(255), nullable=True)
+    grade_schedule      = Column(JSONB,       nullable=True)  # {"6": {"days":["Monday"],"time_slot":"13:00-14:00"}}
+    skipped_grades      = Column(PGARRAY(String), nullable=True)  # grades coordinator opted out of
     special_requirements = Column(Text,       nullable=True)
     # Status tracking
     status              = Column(String(50),  nullable=False, default="draft")
@@ -321,6 +323,24 @@ async def init_db():
     except Exception as e:
         # Already TEXT or other benign error — log and continue
         logger.info(f"Migration sub_state skipped (likely already applied): {e}")
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE need_drafts ADD COLUMN IF NOT EXISTS grade_schedule JSONB"
+            ))
+        logger.info("Migration applied: need_drafts.grade_schedule JSONB column added")
+    except Exception as e:
+        logger.info(f"Migration grade_schedule skipped: {e}")
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE need_drafts ADD COLUMN IF NOT EXISTS skipped_grades TEXT[]"
+            ))
+        logger.info("Migration applied: need_drafts.skipped_grades TEXT[] column added")
+    except Exception as e:
+        logger.info(f"Migration skipped_grades skipped: {e}")
 
     logger.info("Database tables initialised")
 

@@ -657,6 +657,8 @@ async def create_or_update_need_draft(params: CreateOrUpdateNeedDraftInput) -> d
     if params.start_date          is not None: need_data["start_date"]           = params.start_date
     if params.duration_weeks      is not None: need_data["duration_weeks"]       = params.duration_weeks
     if params.schedule_preference is not None: need_data["schedule_preference"]  = params.schedule_preference
+    if params.grade_schedule      is not None: need_data["grade_schedule"]       = params.grade_schedule
+    if params.skipped_grades      is not None: need_data["skipped_grades"]       = params.skipped_grades
     if params.special_requirements is not None: need_data["special_requirements"] = params.special_requirements
     if params.coordinator_osid    is not None: need_data["coordinator_osid"]     = params.coordinator_osid
     if params.entity_id           is not None: need_data["entity_id"]            = params.entity_id

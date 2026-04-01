@@ -72,72 +72,45 @@ _STAGE_PROMPTS: Dict[str, str] = {
     ),
     "drafting_need": (
         "STAGE: Capturing the Need\n"
-        "Collect the specific educational need. Fields needed:\n"
-        "- Subjects (mathematics, science, english, etc.)\n"
-        "- Grade levels (1-12)\n"
-        "- Number of students\n"
-        "- Which days of the week for classes\n"
-        "- What time of day (e.g. 10:00–11:00 AM, morning, afternoon)\n"
-        "NOTE: 'time of day' means the daily class timing (e.g. 10 AM–11 AM). "
-        "This is NOT the program start date. The start date is already fixed — NEVER ask for it.\n\n"
-        "FIRST MESSAGE ONLY — if this is the opening of the need capture (no fields captured yet), "
-        "start by warmly greeting the coordinator by name and confirming their school name naturally "
-        "before moving to the need. Example: 'Namaste [Name] ji! Aapka school [School] — sab theek hai. "
-        "Ab need ke baare mein baat karte hain...'. Keep it to one or two lines, then move on.\n\n"
-        "MULTI-FIELD EXTRACTION — CRITICAL:\n"
-        "Coordinators often give multiple details in one message (e.g. 'Class 5 ke 30 bacche hain, Monday Wednesday ko padhna hai').\n"
-        "Extract ALL fields present in the message. Only ask about fields that are genuinely still missing.\n"
-        "NEVER re-ask for something the coordinator already told you.\n\n"
-        "FLEXIBLE INTERPRETATION:\n"
-        "- 'poori class' or 'whole class' → treat as approximately 40 students\n"
-        "- 'lagbhag 30', 'around 30', 'about 30' → 30 students\n"
-        "- Per-grade counts like 'Grade 6 - 30, Grade 7 - 40' or '30 aur 40 bacche hain' → add them up (total = 70)\n"
-        "- Relative dates: 'April se', 'next month', 'after Holi', 'April mein' → extract the month, use 2026\n"
-        "- Days: 'Monday Wednesday Friday', 'teen din', 'twice a week', 'weekdays' → all valid\n\n"
+        "This year Project Serve only accepts English support for Grades 6, 7, and 8.\n\n"
+        "Collect the following for EACH grade (6, 7, 8):\n"
+        "- Which days of the week (e.g. Monday & Tuesday)\n"
+        "- What time slot (e.g. 13:00–14:00)\n"
+        "Also collect:\n"
+        "- Total number of students across all grades\n\n"
+        "CONVERSATION APPROACH:\n"
+        "Ask grade by grade — confirm Grade 6 days+time, then Grade 7, then Grade 8.\n"
+        "If the coordinator gives all grades at once, accept it and confirm.\n"
+        "Ask only ONE question at a time.\n"
+        "The start date is already fixed — NEVER ask for it.\n\n"
+        "FIRST MESSAGE ONLY — if no fields captured yet, greet the coordinator by name, "
+        "confirm their school, then start asking about Grade 6.\n\n"
         "RENEWAL SHORTCUT — IMPORTANT:\n"
-        "If previous needs exist (shown in PREVIOUS NEEDS section), proactively offer renewal at the START of this stage.\n"
-        "Show the previous need's details — subjects, grades, student count, days, time slots — and ask:\n"
-        "'Kya is saal bhi same support chahiye, ya kuch changes hain?' (or in English: 'Same as last year, or any changes?')\n"
-        "If the coordinator says yes/same/haan, treat ALL fields from the previous need as confirmed for the new need.\n"
-        "Only ask follow-up questions if they indicate changes.\n\n"
-        "STRICT RULE — NEVER SAY SUBMITTED:\n"
-        "You are ONLY collecting information. You cannot submit, send, or register anything.\n"
-        "NEVER say 'bhej diya', 'submitted', 'registered', 'sent to team', or anything implying submission.\n"
-        "When all fields are collected, simply confirm what you have and wait — the system handles submission.\n\n"
-        "STRICT RULE — NEVER DECLARE COMPLETION:\n"
-        "NEVER say 'sab ho gaya', 'need capture complete', 'all done', 'need ready', or any phrase that implies\n"
-        "the process is finished. You do NOT control when the process ends — the system does.\n"
-        "If the NEXT QUESTION section below lists a missing field, you MUST ask for it. No exceptions.\n"
-        "Even if the conversation history looks complete, trust NEXT QUESTION over the chat history.\n\n"
-        "SUBJECT RESTRICTION — IMPORTANT:\n"
-        "This year, Project Serve is only accepting needs for English subject.\n"
-        "If the coordinator asks for any other subject (mathematics, science, hindi, etc.):\n"
-        "- Acknowledge their request warmly\n"
-        "- Politely explain that this year we are focusing only on English\n"
-        "- Mention that other subjects will open up soon\n"
-        "- Ask if they would like to proceed with English\n"
-        "- Do NOT capture any subject other than 'english' in the draft\n"
-        "Example (Hinglish): 'Aapki zaroorat note kar li hai — is saal hum sirf English ke liye volunteers arrange kar rahe hain. "
-        "Jald hi doosre subjects bhi shuru honge. Kya aap English ke liye proceed karna chahenge?'\n"
-        "Example (English): 'I've noted your request — this year we are focusing only on English. "
-        "Other subjects will open up soon. Would you like to proceed with English?'\n\n"
+        "If previous needs exist (shown in PREVIOUS NEEDS section), show the previous schedule "
+        "for each grade and ask: 'Kya is saal bhi same support chahiye, ya kuch changes hain?'\n"
+        "If they say yes/same/haan, treat ALL fields from the previous need as confirmed.\n\n"
+        "SUBJECT RESTRICTION:\n"
+        "Only English is accepted this year. If coordinator asks for another subject, "
+        "politely explain and ask if they want to proceed with English.\n\n"
+        "STRICT RULE — NEVER SAY SUBMITTED or DECLARE COMPLETION.\n"
+        "You are only collecting information. The system handles submission.\n\n"
         "Acknowledge what the coordinator has already shared before asking the next question."
     ),
     "pending_approval": (
         "STAGE: Review & Confirmation\n"
-        "You MUST format your response EXACTLY as shown below — no paragraphs, no prose, no extra sentences.\n"
-        "Use this exact structure:\n\n"
+        "Format your response EXACTLY as shown — no paragraphs, no extra sentences.\n\n"
         "Here's what I've noted:\n"
         "• School: {school}\n"
-        "• Subject(s): {subjects}\n"
-        "• Grade(s): {grades}\n"
+        "• Subject: English\n"
         "• Students: {count}\n"
-        "• Days: {schedule}\n"
-        "• Time: {time_slots}\n"
+        "• Schedule:\n"
+        "  Grade 6: {grade6_days} — {grade6_time}\n"
+        "  Grade 7: {grade7_days} — {grade7_time}\n"
+        "  Grade 8: {grade8_days} — {grade8_time}\n"
         "• Starting: {start_date}\n\n"
-        "Kya sab theek hai? Confirm karein toh hum aage badhte hain.\n\n"
-        "Fill in the actual values from CAPTURED SO FAR. "
-        "Do NOT write a paragraph. Do NOT add any explanation before or after the bullets. "
+        "Fill in actual values from CAPTURED SO FAR. "
+        "If two grades share the same days+time, note: '(will be raised as one need)'.\n"
+        "End with: 'Kya sab theek hai? Confirm karein toh hum aage badhte hain.'\n"
         "The bullet list + one confirmation line is the ENTIRE response."
     ),
     "submitted": (
@@ -749,27 +722,63 @@ Conversational rules:
         system = """You are a data extraction assistant for Project Serve, an education NGO in India.
 Extract need fields from the conversation between a school coordinator and the agent.
 
+APPLICABLE GRADES: Only grades 6, 7, and 8 are accepted this year. Ignore any other grades.
+
 FIELDS TO EXTRACT:
-- subjects: list of subjects (e.g. ["english", "mathematics", "science", "hindi"])
-- grade_levels: list of grade numbers as strings (e.g. ["6", "7"])
-- student_count: integer total (if per-grade given like "grade 6 - 30, grade 7 - 20", add them up = 50)
-- schedule_preference: days of week as string (e.g. "Monday, Wednesday" or "Monday, Tuesday")
-- time_slots: list of time slot strings (e.g. ["10:00-11:00"] or ["10:00-11:00 AM"])
+- subjects: list of subjects — only ["english"] is accepted this year
+- grade_levels: list of applicable grades mentioned, as strings — only from ["6", "7", "8"]
+- student_count: integer total across all grades (if per-grade given like "grade 6 - 30, grade 7 - 20", add them up = 50)
+- grade_schedule: object mapping each grade → {days, time_slot}
+  - days: list of day names for that grade (e.g. ["Monday", "Tuesday"])
+  - time_slot: time range string for that grade (e.g. "13:00-14:00")
+  Example:
+  {
+    "6": {"days": ["Monday", "Tuesday"], "time_slot": "13:00-14:00"},
+    "7": {"days": ["Wednesday", "Thursday"], "time_slot": "13:00-14:00"},
+    "8": {"days": ["Friday", "Saturday"], "time_slot": "13:00-14:00"}
+  }
+  If all grades share the same days and time, still populate grade_schedule for each grade separately.
+  If a grade's days or time_slot is not yet known, omit that grade from grade_schedule.
+- skipped_grades: list of grades the coordinator explicitly said they do NOT need this year
+  e.g. if they say "Grade 8 nahi chahiye" or "no for grade 8" or "only 6 and 7" → skipped_grades: ["8"]
+  Only add a grade here if the coordinator clearly declined it.
 
 RENEWAL RULE:
-If previous year needs are shown and the coordinator says anything meaning "same" (yes, haan, same, theek hai, wahi chahiye, copy karo, bilkul, correct, ok, etc.) — copy ALL fields from previous needs.
+If previous year needs are shown and the coordinator says anything meaning "same"
+(yes, haan, same, theek hai, wahi chahiye, bilkul, correct, ok, etc.) — copy ALL fields from previous needs.
 If they say "same but change X" — copy all fields and apply the change.
+When copying from previous needs, populate grade_schedule for each grade from the previous need's days/time data.
 
 IMPORTANT:
 - Return ONLY fields you are confident about. Omit fields you don't know.
-- Do NOT invent data. Only extract what the coordinator explicitly said or confirmed from previous needs.
+- Do NOT invent data. Only extract what the coordinator explicitly said or confirmed.
 - Return valid JSON only. No explanation, no markdown.
-- For subjects, use lowercase canonical names: english, mathematics, science, hindi, social_studies, computer_basics
 - grade_levels must be strings: ["6", "7"] not [6, 7]
 - student_count must be an integer
 
 Example output:
-{"subjects": ["english"], "grade_levels": ["6", "7"], "student_count": 50, "schedule_preference": "Monday, Wednesday", "time_slots": ["10:00-11:00"]}
+{
+  "subjects": ["english"],
+  "grade_levels": ["6", "7", "8"],
+  "student_count": 146,
+  "grade_schedule": {
+    "6": {"days": ["Monday", "Tuesday"], "time_slot": "13:00-14:00"},
+    "7": {"days": ["Wednesday", "Thursday"], "time_slot": "13:00-14:00"},
+    "8": {"days": ["Friday", "Saturday"], "time_slot": "13:00-14:00"}
+  }
+}
+
+Example output when coordinator declines Grade 8:
+{
+  "subjects": ["english"],
+  "grade_levels": ["6", "7"],
+  "student_count": 85,
+  "grade_schedule": {
+    "6": {"days": ["Monday", "Tuesday"], "time_slot": "13:00-14:00"},
+    "7": {"days": ["Wednesday", "Thursday"], "time_slot": "13:00-14:00"}
+  },
+  "skipped_grades": ["8"]
+}
 
 If nothing can be extracted, return: {}"""
 
@@ -803,6 +812,7 @@ If nothing can be extracted, return: {}"""
         missing_fields: Optional[List[str]] = None,
         previous_needs: Optional[List[Dict]] = None,
         grade_nudge: Optional[str] = None,
+        duplicate_groups: Optional[List[List[str]]] = None,
     ) -> str:
         """
         Generate a plain conversational response for non-resolution stages.
@@ -820,6 +830,7 @@ If nothing can be extracted, return: {}"""
             missing_fields=missing_fields,
             previous_needs=previous_needs,
             grade_nudge=grade_nudge,
+            duplicate_groups=duplicate_groups,
         )
 
         # Build conversation context (last 6 messages)
@@ -853,6 +864,7 @@ If nothing can be extracted, return: {}"""
         missing_fields: Optional[List[str]],
         previous_needs: Optional[List[Dict]],
         grade_nudge: Optional[str] = None,
+        duplicate_groups: Optional[List[List[str]]] = None,
     ) -> str:
         stage_instr = _STAGE_PROMPTS.get(stage, _STAGE_PROMPTS["initiated"])
         prompt = f"{_EVID_CONTEXT}\n\n{stage_instr}"
@@ -916,17 +928,26 @@ If nothing can be extracted, return: {}"""
 
         if need_draft:
             captured = []
-            for key, label in [
-                ("subjects", "Subjects"),
-                ("grade_levels", "Grades"),
-                ("student_count", "Students"),
-                ("schedule_preference", "Days/schedule"),
-                ("time_slots", "Time"),
-            ]:
-                val = need_draft.get(key)
-                if val:
-                    display = ", ".join(str(v) for v in val) if isinstance(val, list) else str(val)
-                    captured.append(f"{label}: {display}")
+            # Student count
+            if need_draft.get("student_count"):
+                captured.append(f"Students: {need_draft['student_count']}")
+            # Per-grade schedule
+            grade_sched = need_draft.get("grade_schedule") or {}
+            if grade_sched and isinstance(grade_sched, dict):
+                for g in ["6", "7", "8"]:
+                    entry = grade_sched.get(g)
+                    if entry and isinstance(entry, dict):
+                        days_str = ", ".join(entry.get("days") or [])
+                        time_str = entry.get("time_slot", "")
+                        if days_str or time_str:
+                            captured.append(f"Grade {g}: {days_str} — {time_str}")
+            elif need_draft.get("schedule_preference"):
+                # Legacy fallback
+                captured.append(f"Days/schedule: {need_draft['schedule_preference']}")
+                if need_draft.get("time_slots"):
+                    slots = need_draft["time_slots"]
+                    display = ", ".join(str(s) for s in slots) if isinstance(slots, list) else str(slots)
+                    captured.append(f"Time: {display}")
             if captured:
                 prompt += "\n\nCAPTURED SO FAR:\n" + "\n".join(captured)
                 if stage != "pending_approval":
@@ -950,6 +971,22 @@ If nothing can be extracted, return: {}"""
 
         if grade_nudge:
             prompt += f"\n\n{grade_nudge}"
+
+        if duplicate_groups:
+            for group in duplicate_groups:
+                grades_str = " and ".join(f"Grade {g}" for g in group)
+                entry = (need_draft or {}).get("grade_schedule", {}).get(group[0], {})
+                days_str = ", ".join(entry.get("days") or [])
+                time_str = entry.get("time_slot", "")
+                prompt += (
+                    f"\n\nDUPLICATE SCHEDULE DETECTED: {grades_str} have the same schedule "
+                    f"({days_str}, {time_str}). "
+                    f"Ask the coordinator: 'Maine dekha ki {grades_str} ka schedule same hai "
+                    f"({days_str}, {time_str}). Kya aap inhe alag rakhna chahte hain, "
+                    f"ya ek saath combine kar dein?' "
+                    f"If they say combine/ek saath/same — note it as combined. "
+                    f"If they want separate — ask what to change for one of the grades."
+                )
 
         return prompt
 

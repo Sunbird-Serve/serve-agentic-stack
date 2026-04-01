@@ -1000,9 +1000,21 @@ class NeedAgentService:
         if not existing_draft.get("start_date"):
             extracted["start_date"] = NEED_START_DATE
 
-        # Subject restriction — only English is supported this year
+        # Grade guardrail — only 6, 7, 8 accepted
+        if extracted.get("grade_levels"):
+            extracted["grade_levels"] = [g for g in extracted["grade_levels"] if g in APPLICABLE_GRADES]
+
+        # Merge skipped_grades — accumulate across turns
+        if extracted.get("skipped_grades"):
+            existing_skipped = set(existing_draft.get("skipped_grades") or [])
+            new_skipped = set(g for g in extracted["skipped_grades"] if g in APPLICABLE_GRADES)
+            extracted["skipped_grades"] = sorted(existing_skipped | new_skipped)
+
+        # Subject restriction — only English
         if extracted.get("subjects"):
             extracted["subjects"] = [s for s in extracted["subjects"] if s == "english"]
+        # Always ensure english is set
+        extracted.setdefault("subjects", ["english"])
 
         logger.info(f"[drafting] extracted keys before merge: {list(extracted.keys())}")
         # Strip None/empty from existing_draft before merging so we don't overwrite
@@ -1072,7 +1084,37 @@ class NeedAgentService:
         )
 
         if not missing:
-            # All mandatory fields captured — show summary for approval
+            # All mandatory fields captured — check for duplicate schedules before approval
+            grade_sched = existing_draft.get("grade_schedule") or {}
+            duplicate_groups = self._find_duplicate_schedules(grade_sched)
+
+            if duplicate_groups and not sub.get("duplicate_check_done"):
+                # Flag duplicates to coordinator before moving to approval
+                sub["duplicate_check_done"] = True
+                await _mcp_client.call_capability("advance-state", {
+                    "session_id": session_id,
+                    "new_state": NeedWorkflowState.DRAFTING_NEED.value,
+                    "sub_state": _dump_sub_state(sub),
+                })
+                msg = await llm_adapter.generate_response(
+                    stage="drafting_need",
+                    messages=request.conversation_history,
+                    user_message=request.user_message,
+                    coordinator_context=coord_ctx,
+                    school_context=school_ctx,
+                    need_draft=existing_draft,
+                    duplicate_groups=duplicate_groups,
+                )
+                return self._build_response(
+                    message=msg,
+                    next_state=NeedWorkflowState.DRAFTING_NEED.value,
+                    sub=sub,
+                    session_state=request.session_state,
+                    confirmed_fields=existing_draft,
+                    completion_pct=completion_pct,
+                )
+
+            # Show summary for approval
             msg = await llm_adapter.generate_response(
                 stage="pending_approval",
                 messages=request.conversation_history,
@@ -1149,7 +1191,7 @@ class NeedAgentService:
             "haan", "ha", "theek hai", "sahi hai", "bilkul", "kar do", "bhejo", "send karo",
         }
         if any(s in lower for s in confirm_signals):
-            # Submit to Serve Need Service — one need per subject+grade combination
+            # Submit to Serve Need Service — grouped by identical schedule
             submit_result: Dict = {}
             serve_need_id: Optional[str] = None
             needs_count: int = 0
@@ -1216,10 +1258,12 @@ class NeedAgentService:
                 need_data={
                     "coordinator_osid": coord_ctx.get("coordinator_id"),
                     "entity_id": school_ctx.get("school_id"),
-                    "subjects": [],
+                    "subjects": ["english"],
                     "grade_levels": [],
                     "student_count": None,
                     "schedule_preference": None,
+                    "grade_schedule": None,
+                    "skipped_grades": [],
                     "time_slots": [],
                     "start_date": NEED_START_DATE,
                 },
@@ -1461,20 +1505,61 @@ class NeedAgentService:
         except Exception:
             return None
 
+    def _find_duplicate_schedules(self, grade_sched: Dict) -> List[List[str]]:
+        """Return groups of grades that share identical days+time_slot."""
+        # Build a signature → [grades] map
+        sig_map: Dict[str, List[str]] = {}
+        for grade, entry in grade_sched.items():
+            if not isinstance(entry, dict):
+                continue
+            days_key = ",".join(sorted(d.lower() for d in (entry.get("days") or [])))
+            time_key = (entry.get("time_slot") or "").strip()
+            sig = f"{days_key}|{time_key}"
+            sig_map.setdefault(sig, []).append(grade)
+        # Return only groups with more than one grade
+        return [sorted(grades) for grades in sig_map.values() if len(grades) > 1]
+
     def _get_missing_fields(self, draft: Dict) -> List[str]:
-        return [
-            f for f in MANDATORY_NEED_FIELDS
-            if draft.get(f) is None or draft.get(f) == "" or (isinstance(draft.get(f), list) and len(draft[f]) == 0)
-        ]
+        missing = []
+        skipped = set(draft.get("skipped_grades") or [])
+        active_grades = [g for g in APPLICABLE_GRADES if g not in skipped]
+
+        # Need at least one active grade
+        if not active_grades:
+            missing.append("grade_levels")
+            return missing
+
+        if not draft.get("student_count"):
+            missing.append("student_count")
+
+        grade_sched = draft.get("grade_schedule") or {}
+        for g in active_grades:
+            entry = grade_sched.get(g) if isinstance(grade_sched, dict) else None
+            if not entry or not isinstance(entry, dict):
+                missing.append(f"schedule_grade_{g}")
+                continue
+            if not entry.get("days"):
+                missing.append(f"days_grade_{g}")
+            if not entry.get("time_slot"):
+                missing.append(f"time_slot_grade_{g}")
+        return missing
 
     def _calculate_completion(self, draft: Dict) -> int:
-        if not draft:
+        skipped = set(draft.get("skipped_grades") or [])
+        active_grades = [g for g in APPLICABLE_GRADES if g not in skipped]
+        if not active_grades:
             return 0
-        filled = sum(
-            1 for f in MANDATORY_NEED_FIELDS
-            if draft.get(f) is not None and draft.get(f) != "" and not (isinstance(draft.get(f), list) and len(draft[f]) == 0)
-        )
-        return round((filled / len(MANDATORY_NEED_FIELDS)) * 100)
+        # student_count + one slot per active grade
+        total = 1 + len(active_grades)
+        filled = 0
+        if draft.get("student_count"):
+            filled += 1
+        grade_sched = draft.get("grade_schedule") or {}
+        for g in active_grades:
+            entry = grade_sched.get(g) if isinstance(grade_sched, dict) else None
+            if entry and isinstance(entry, dict) and entry.get("days") and entry.get("time_slot"):
+                filled += 1
+        return round((filled / total) * 100)
 
 
 # ── Domain client wrappers (thin pass-through) ────────────────────────────────

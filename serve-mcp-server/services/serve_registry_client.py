@@ -11,6 +11,7 @@ can point at their own deployment without code changes.
 """
 import asyncio
 import logging
+import re
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -599,29 +600,56 @@ class NeedServiceClient:
         grade_levels = need_draft.get("grade_levels") or []
         skill_detail = f"{', '.join(s.title() for s in subjects)}, Teaching"
 
-        resolved_name = need_name or f"Teaching Need — {', '.join(subjects)}"
+        resolved_name = need_name or f"English {', '.join(f'Grade {g}' for g in grade_levels)} Teaching Support"
 
-        # Build days string: "Monday,Wednesday" (no spaces)
-        schedule = need_draft.get("schedule_preference") or ""
-        days_str = ",".join(d.strip().title() for d in schedule.split(",") if d.strip())
+        # Days come from the pre-grouped draft (set by submit_for_approval)
+        day_names = [d.strip().title() for d in (need_draft.get("days") or []) if d.strip()]
+        days_str = ",".join(day_names)
 
-        # Build timeSlots with full ISO datetime strings as required by the API
-        # Use start_date as the anchor date for slot datetimes
-        anchor = start_date or end_date or "2026-04-01"
-        try:
-            anchor_date = date.fromisoformat(anchor)
-        except Exception:
-            anchor_date = date(2026, 4, 1)
-
-        day_names = [d.strip().title() for d in schedule.split(",") if d.strip()]
+        # Build timeSlots: one entry per day, all sharing the same time_slot string
+        time_slot_str = (need_draft.get("time_slot") or "").strip()
         time_slots = []
-        for day_name in day_names:
-            slot_date = anchor_date.isoformat()
-            time_slots.append({
-                "day":       day_name,
-                "startTime": f"{slot_date}T10:00:00Z",
-                "endTime":   f"{slot_date}T11:00:00Z",
-            })
+
+        def _parse_time(t: str) -> str:
+            """Parse HH:MM or HH:MM AM/PM → HH:MM:SS"""
+            t = t.strip()
+            am_pm = re.search(r'(am|pm)$', t, re.IGNORECASE)
+            t_clean = re.sub(r'\s*(am|pm)$', '', t, flags=re.IGNORECASE).strip()
+            parts = t_clean.replace('.', ':').split(':')
+            hour = int(parts[0]) if parts else 10
+            minute = int(parts[1]) if len(parts) > 1 else 0
+            if am_pm:
+                suffix = am_pm.group(1).lower()
+                if suffix == 'pm' and hour != 12:
+                    hour += 12
+                elif suffix == 'am' and hour == 12:
+                    hour = 0
+            return f"{hour:02d}:{minute:02d}:00"
+
+        slot_date = start_date or "2026-04-06"
+        if time_slot_str:
+            m = re.match(
+                r'(\d{1,2}(?::\d{2})?(?:\s*[ap]m)?)\s*[-–to]+\s*(\d{1,2}(?::\d{2})?(?:\s*[ap]m)?)',
+                time_slot_str, re.IGNORECASE
+            )
+            if m:
+                start_t = _parse_time(m.group(1))
+                end_t = _parse_time(m.group(2))
+                for day_name in (day_names or ["Monday"]):
+                    time_slots.append({
+                        "day": day_name,
+                        "startTime": f"{slot_date}T{start_t}Z",
+                        "endTime": f"{slot_date}T{end_t}Z",
+                    })
+
+        # Fallback
+        if not time_slots:
+            for day_name in (day_names or ["Monday"]):
+                time_slots.append({
+                    "day": day_name,
+                    "startTime": f"{slot_date}T10:00:00Z",
+                    "endTime": f"{slot_date}T11:00:00Z",
+                })
 
         payload = {
             "needRequest": {

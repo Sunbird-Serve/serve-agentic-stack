@@ -219,6 +219,8 @@ class DomainClient:
             "start_date": "start_date",
             "duration_weeks": "duration_weeks",
             "schedule_preference": "schedule_preference",
+            "grade_schedule": "grade_schedule",
+            "skipped_grades": "skipped_grades",
             "special_requirements": "special_requirements",
             "coordinator_osid": "coordinator_osid",
             "entity_id": "entity_id",

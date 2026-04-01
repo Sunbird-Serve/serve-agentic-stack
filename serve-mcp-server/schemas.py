@@ -399,6 +399,17 @@ class CreateOrUpdateNeedDraftInput(BaseModel):
     )
     duration_weeks: Optional[int] = Field(default=None, ge=1, le=52)
     schedule_preference: Optional[str] = Field(default=None)
+    grade_schedule: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Per-grade schedule mapping: "
+            "{\"6\": {\"days\": [\"Monday\",\"Tuesday\"], \"time_slot\": \"13:00-14:00\"}, ...}"
+        )
+    )
+    skipped_grades: Optional[List[str]] = Field(
+        default=None,
+        description="Grades coordinator opted out of, e.g. [\"8\"]"
+    )
     special_requirements: Optional[str] = Field(default=None)
     coordinator_osid: Optional[str] = Field(default=None)
     entity_id: Optional[str] = Field(default=None)

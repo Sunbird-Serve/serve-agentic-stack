@@ -110,8 +110,8 @@ class NeedService:
                     allowed = {
                         "subjects", "grade_levels", "student_count",
                         "time_slots", "start_date", "end_date", "duration_weeks",
-                        "schedule_preference", "special_requirements",
-                        "coordinator_osid", "entity_id", "status",
+                        "schedule_preference", "grade_schedule", "skipped_grades",
+                        "special_requirements", "coordinator_osid", "entity_id", "status",
                     }
                     for k, v in need_data.items():
                         if k in allowed and v is not None:
@@ -212,35 +212,58 @@ class NeedService:
                 "error_message": "coordinator_osid and entity_id must be set before submission",
             }
 
-        subjects     = draft.get("subjects") or []
-        grade_levels = draft.get("grade_levels") or []
+        subjects     = draft.get("subjects") or ["english"]
+        grade_schedule = draft.get("grade_schedule") or {}
 
-        # Ensure we have at least one subject and one grade to iterate over
-        if not subjects:
-            subjects = ["Teaching"]
-        if not grade_levels:
-            grade_levels = [""]
+        # Group grades by identical {days, time_slot} — combined grades → one need
+        # sig → {days, time_slot, grades[]}
+        schedule_groups: Dict[str, Dict] = {}
+        for grade, entry in grade_schedule.items():
+            if not isinstance(entry, dict):
+                continue
+            days_key = ",".join(sorted(d.lower() for d in (entry.get("days") or [])))
+            time_key = (entry.get("time_slot") or "").strip()
+            sig = f"{days_key}|{time_key}"
+            if sig not in schedule_groups:
+                schedule_groups[sig] = {
+                    "days": entry.get("days") or [],
+                    "time_slot": entry.get("time_slot") or "",
+                    "grades": [],
+                }
+            schedule_groups[sig]["grades"].append(grade)
+
+        # Fallback: if no grade_schedule, raise one need per grade (legacy)
+        if not schedule_groups:
+            grade_levels = draft.get("grade_levels") or [""]
+            for grade in grade_levels:
+                schedule_groups[grade] = {"days": [], "time_slot": "", "grades": [grade]}
 
         submitted_ids: List[str] = []
         errors: List[str] = []
 
-        for subject in subjects:
-            for grade in grade_levels:
-                # Build a per-need draft copy
-                need_name = f"{subject.title()} Grade {grade}" if grade else subject.title()
-                single_draft = {**draft, "subjects": [subject], "grade_levels": [grade] if grade else []}
+        for sig, group in schedule_groups.items():
+            grades = sorted(group["grades"])
+            grade_label = ", ".join(f"Grade {g}" for g in grades)
+            need_name = f"English {grade_label} Teaching Support"
+            single_draft = {
+                **draft,
+                "subjects": subjects,
+                "grade_levels": grades,
+                "days": group["days"],
+                "time_slot": group["time_slot"],
+            }
 
-                result = await need_service_client.raise_need(
-                    coordinator_osid=coordinator_osid,
-                    entity_id=entity_id,
-                    need_draft=single_draft,
-                    need_name=need_name,
-                )
+            result = await need_service_client.raise_need(
+                coordinator_osid=coordinator_osid,
+                entity_id=entity_id,
+                need_draft=single_draft,
+                need_name=need_name,
+            )
 
-                if result and result.get("id"):
-                    submitted_ids.append(str(result["id"]))
-                else:
-                    errors.append(f"Failed to raise need for {need_name}")
+            if result and result.get("id"):
+                submitted_ids.append(str(result["id"]))
+            else:
+                errors.append(f"Failed to raise need for {need_name}")
 
         if not submitted_ids:
             return {"status": "error", "error_message": "; ".join(errors) or "Submission failed"}
@@ -446,6 +469,8 @@ class NeedService:
             "end_date":             row.end_date,
             "duration_weeks":       row.duration_weeks,
             "schedule_preference":  row.schedule_preference,
+            "grade_schedule":       row.grade_schedule or {},
+            "skipped_grades":       list(row.skipped_grades) if row.skipped_grades else [],
             "special_requirements": row.special_requirements,
             "status":               row.status,
             "admin_comments":       row.admin_comments,

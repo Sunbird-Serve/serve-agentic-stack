@@ -107,6 +107,12 @@ class NeedDraft(BaseModel):
     student_count: Optional[int] = None
     time_slots: List[str] = Field(default_factory=list)
     schedule_preference: Optional[str] = None
+    # Per-grade schedule: maps grade → {days, time_slot}
+    # e.g. {"6": {"days": ["Monday","Tuesday"], "time_slot": "13:00-14:00"}}
+    # This is the single source of truth for schedule — schedule_preference is legacy fallback.
+    grade_schedule: Optional[Dict[str, Any]] = None
+    # Grades explicitly declined by coordinator (e.g. ["8"] if they said no to Grade 8)
+    skipped_grades: Optional[List[str]] = None
     start_date: Optional[date] = None
     duration_weeks: Optional[int] = None
     
