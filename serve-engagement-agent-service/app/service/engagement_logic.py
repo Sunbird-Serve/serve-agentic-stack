@@ -7,6 +7,7 @@ The LLM owns all branching logic. The state machine only enforces terminal condi
 Focused on: active volunteers who fulfilled needs and are re-engaging (user-initiated).
 """
 import logging
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 from app.schemas.engagement_schemas import (
@@ -60,6 +61,20 @@ class EngagementAgentService:
         # ── Load sub_state ────────────────────────────────────────────────────
         sub_state = _load_sub_state(request.session_state.sub_state)
 
+        # ── Pre-load engagement context if not already cached ─────────────────
+        if not sub_state.get("engagement_context") and request.session_state.volunteer_phone:
+            try:
+                ctx = await domain_client.get_engagement_context(request.session_state.volunteer_phone)
+                if ctx.get("status") == "success":
+                    sub_state["engagement_context"] = ctx
+                    # Back-fill volunteer_id and name from registry if session lacks them
+                    if not request.session_state.volunteer_id and ctx.get("volunteer_id"):
+                        request.session_state.volunteer_id = ctx["volunteer_id"]
+                    if not request.session_state.volunteer_name and ctx.get("volunteer_name"):
+                        request.session_state.volunteer_name = ctx["volunteer_name"]
+            except Exception as e:
+                logger.warning(f"Session {session_id}: pre-load engagement context failed: {e}")
+
         # ── Build conversation history (bounded to last 20 messages) ──────────
         messages = list(request.conversation_history[-20:])
         if request.user_message:
@@ -70,8 +85,9 @@ class EngagementAgentService:
         system_prompt = llm_adapter.build_system_prompt(session_context)
 
         # ── Build tool executor ───────────────────────────────────────────────
+        volunteer_phone = request.session_state.volunteer_phone
         async def tool_executor(tool_name: str, tool_input: Dict[str, Any]) -> Any:
-            return await self._execute_tool(tool_name, tool_input, sub_state, session_id)
+            return await self._execute_tool(tool_name, tool_input, sub_state, session_id, volunteer_phone)
 
         # ── Run L3.5 loop ─────────────────────────────────────────────────────
         text, collected_tool_results = await llm_adapter.run_engagement_loop(
@@ -124,6 +140,7 @@ class EngagementAgentService:
         tool_input: Dict[str, Any],
         sub_state: Dict[str, Any],
         session_id: str,
+        volunteer_phone: Optional[str] = None,
     ) -> Any:
         """Route LLM tool calls to domain_client. Handle signal_outcome locally."""
 
@@ -141,11 +158,16 @@ class EngagementAgentService:
             return tool_input
 
         elif tool_name == "get_engagement_context":
-            volunteer_id = tool_input.get("volunteer_id")
-            if not volunteer_id:
-                return {"status": "error", "error": "volunteer_id required"}
-            result = await domain_client.get_engagement_context(volunteer_id)
-            # Cache in sub_state so we don't re-fetch on subsequent turns
+            # Always use the session phone — never trust what the LLM passes in tool_input
+            # to prevent hallucinated phone numbers hitting the API on subsequent turns.
+            phone = volunteer_phone
+            if not phone:
+                return {"status": "error", "error": "phone required"}
+            # Return cached result if already loaded — avoid redundant API calls
+            if sub_state.get("engagement_context"):
+                logger.info(f"Session {session_id}: returning cached engagement_context")
+                return sub_state["engagement_context"]
+            result = await domain_client.get_engagement_context(phone)
             if result.get("status") == "success":
                 sub_state["engagement_context"] = result
             return result
@@ -168,21 +190,22 @@ class EngagementAgentService:
         if outcome == "ready":
             return await self._handle_ready(signal, text, sub_state, request, session_id)
 
-        elif outcome == "already_active":
-            reason = signal.get("reason", "volunteer_already_nominated")
-            await domain_client.log_event(session_id, "engagement_already_active", {"reason": reason})
-            await domain_client.advance_state(
-                session_id, EngagementWorkflowState.HUMAN_REVIEW.value, _dump_sub_state(sub_state)
-            )
-            message = text or (
-                "It looks like you already have an active placement in progress. "
-                "A team member will be in touch with you shortly."
-            )
-            return self._build_response(
-                message=message,
-                state=EngagementWorkflowState.HUMAN_REVIEW.value,
-                sub_state=_dump_sub_state(sub_state),
-            )
+        # TEMPORARILY DISABLED: already_active check (nomination data not cycle-filtered yet)
+        # elif outcome == "already_active":
+        #     reason = signal.get("reason", "volunteer_already_nominated")
+        #     await domain_client.log_event(session_id, "engagement_already_active", {"reason": reason})
+        #     await domain_client.advance_state(
+        #         session_id, EngagementWorkflowState.HUMAN_REVIEW.value, _dump_sub_state(sub_state)
+        #     )
+        #     message = text or (
+        #         "It looks like you already have an active placement in progress. "
+        #         "A team member will be in touch with you shortly."
+        #     )
+        #     return self._build_response(
+        #         message=message,
+        #         state=EngagementWorkflowState.HUMAN_REVIEW.value,
+        #         sub_state=_dump_sub_state(sub_state),
+        #     )
 
         elif outcome == "deferred":
             await domain_client.engagement_update_volunteer_status(
@@ -208,6 +231,12 @@ class EngagementAgentService:
 
         elif outcome == "declined":
             sub_state["human_review_reason"] = "volunteer_declined"
+            await domain_client.log_event(session_id, "volunteer_consent", {
+                "consent": "no",
+                "year": datetime.utcnow().year,
+                "volunteer_id": request.session_state.volunteer_id,
+                "volunteer_phone": request.session_state.volunteer_phone,
+            })
             await domain_client.engagement_update_volunteer_status(
                 session_id,
                 volunteer_status="opt_out",
@@ -251,6 +280,13 @@ class EngagementAgentService:
         session_id: str,
     ) -> EngagementAgentTurnResponse:
         """Volunteer confirmed — build handoff payload and emit to fulfillment."""
+        # Record consent to continue for this cycle
+        await domain_client.log_event(session_id, "volunteer_consent", {
+            "consent": "yes",
+            "year": datetime.utcnow().year,
+            "volunteer_id": request.session_state.volunteer_id,
+            "volunteer_phone": request.session_state.volunteer_phone,
+        })
 
         # Try MCP-side handoff preparation first
         handoff_result = await domain_client.engagement_prepare_fulfillment_handoff(
@@ -333,11 +369,17 @@ class EngagementAgentService:
         sub_state: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
         """Build FulfillmentHandoffPayload locally when MCP doesn't return one."""
-        volunteer_id = request.session_state.volunteer_id
+        context = sub_state.get("engagement_context") or {}
+
+        # Prefer volunteer_id from cached context (resolved via phone lookup)
+        # over session_state which may not have been persisted back to DB
+        volunteer_id = (
+            context.get("volunteer_id")
+            or request.session_state.volunteer_id
+        )
         if not volunteer_id:
             return None
 
-        context = sub_state.get("engagement_context") or {}
         history = context.get("fulfillment_history") or []
         latest = history[0] if history else {}
 
@@ -347,7 +389,8 @@ class EngagementAgentService:
             preferred_need_id = latest.get("need_id")
 
         name = (
-            request.session_state.volunteer_name
+            context.get("volunteer_name")
+            or request.session_state.volunteer_name
             or (context.get("volunteer_profile") or {}).get("full_name")
             or "Volunteer"
         )
@@ -357,7 +400,7 @@ class EngagementAgentService:
             volunteer_name=name,
             continuity=continuity,
             preferred_need_id=preferred_need_id if continuity == "same" else None,
-            preferred_school_id=latest.get("school_id") if continuity == "same" else None,
+            preferred_school_id=latest.get("entity_id") if continuity == "same" else None,
             preference_notes=sub_state.get("preference_notes"),
             fulfillment_history=history,
         )
@@ -370,14 +413,18 @@ class EngagementAgentService:
     ) -> Dict[str, Any]:
         """Assemble context dict for the system prompt."""
         ctx: Dict[str, Any] = {
-            "volunteer_id": request.session_state.volunteer_id,
-            "volunteer_name": request.session_state.volunteer_name,
-            "last_active_at": request.session_state.last_active_at,
+            "volunteer_id":    request.session_state.volunteer_id,
+            "volunteer_name":  request.session_state.volunteer_name,
+            "volunteer_phone": request.session_state.volunteer_phone,
+            "last_active_at":  request.session_state.last_active_at,
         }
         # Surface cached fulfillment history if already loaded
         engagement_context = sub_state.get("engagement_context") or {}
         if engagement_context.get("fulfillment_history"):
             ctx["fulfillment_history"] = engagement_context["fulfillment_history"]
+        # Also surface name from registry if session name is missing
+        if not ctx["volunteer_name"] and engagement_context.get("volunteer_name"):
+            ctx["volunteer_name"] = engagement_context["volunteer_name"]
         return ctx
 
     def _build_response(

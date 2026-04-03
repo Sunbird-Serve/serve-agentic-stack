@@ -30,7 +30,7 @@ const MessageBubble = ({ message, isUser }) => (
 );
 
 export const ReturningVolunteerView = ({ onBack }) => {
-  const [volunteerId, setVolunteerId] = useState('');
+  const [volunteerPhone, setVolunteerPhone] = useState('');
   const [volunteerName, setVolunteerName] = useState('');
   const [started, setStarted] = useState(false);
   const [messages, setMessages] = useState([]);
@@ -50,12 +50,12 @@ export const ReturningVolunteerView = ({ onBack }) => {
   }, [started]);
 
   const handleStart = async () => {
-    if (!volunteerId.trim()) return;
+    if (!volunteerPhone.trim()) return;
     setStarted(true);
     setIsLoading(true);
     try {
       const channelMetadata = {
-        volunteer_id: volunteerId.trim(),
+        volunteer_phone: volunteerPhone.trim(),
         volunteer_name: volunteerName.trim() || undefined,
       };
       const response = await orchestratorApi.interact(
@@ -134,16 +134,16 @@ export const ReturningVolunteerView = ({ onBack }) => {
           <div className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">
-                Volunteer ID <span className="text-red-500">*</span>
+                Mobile Number <span className="text-red-500">*</span>
               </label>
               <Input
-                value={volunteerId}
-                onChange={(e) => setVolunteerId(e.target.value)}
-                placeholder="Serve Registry volunteer osid"
+                value={volunteerPhone}
+                onChange={(e) => setVolunteerPhone(e.target.value)}
+                placeholder="e.g. 9876543210"
                 onKeyPress={(e) => e.key === 'Enter' && handleStart()}
               />
               <p className="text-xs text-slate-400 mt-1">
-                Used to load fulfillment history from Serve Registry.
+                Used to load your volunteering history.
               </p>
             </div>
             <div>
@@ -159,7 +159,7 @@ export const ReturningVolunteerView = ({ onBack }) => {
             </div>
             <Button
               onClick={handleStart}
-              disabled={!volunteerId.trim()}
+              disabled={!volunteerPhone.trim()}
               className="w-full bg-violet-600 hover:bg-violet-700 text-white"
             >
               Start Re-engagement Session
@@ -188,7 +188,7 @@ export const ReturningVolunteerView = ({ onBack }) => {
             <div>
               <h2 className="text-lg font-semibold text-slate-900">Returning Volunteer</h2>
               <p className="text-sm text-slate-500">
-                ID: {volunteerId}
+                Phone: {volunteerPhone}
                 {sessionState && <span className="ml-2 text-violet-500">· {sessionState}</span>}
               </p>
             </div>

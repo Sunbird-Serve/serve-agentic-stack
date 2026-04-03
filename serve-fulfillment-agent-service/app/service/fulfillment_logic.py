@@ -81,9 +81,12 @@ class FulfillmentAgentService:
         # ── Build conversation history (bounded to last 20 messages) ──────────
         messages = list(request.conversation_history[-20:])
 
-        # Append current user message if non-empty
-        if request.user_message:
+        # Append current user message — skip synthetic handoff trigger
+        # but inject a minimal prompt so the LLM has a message to respond to
+        if request.user_message and request.user_message != "__handoff__":
             messages.append({"role": "user", "content": request.user_message})
+        elif request.user_message == "__handoff__" and not messages:
+            messages.append({"role": "user", "content": "Please find me a teaching opportunity based on my preferences."})
 
         # ── Build system prompt ───────────────────────────────────────────────
         system_prompt = llm_adapter.build_system_prompt(handoff)
@@ -97,7 +100,7 @@ class FulfillmentAgentService:
             system_prompt=system_prompt,
             messages=messages,
             tool_executor=tool_executor,
-            max_tool_iterations=10,
+            max_tool_iterations=20,
         )
 
         # ── Check for signal_outcome ──────────────────────────────────────────
@@ -193,6 +196,9 @@ class FulfillmentAgentService:
                 need_id=tool_input["need_id"],
                 status=tool_input.get("status"),
             )
+
+        elif tool_name == "get_all_entities":
+            return await domain_client.get_all_entities()
 
         else:
             logger.warning(f"Unknown tool: {tool_name}")

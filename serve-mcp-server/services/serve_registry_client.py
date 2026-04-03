@@ -222,11 +222,13 @@ class VolunteeringClient:
 
     async def get_user_profile(self, user_id: str) -> Optional[Dict]:
         """
-        GET /user/user-profile?userId={user_id}
+        GET /user/user-profile/userId/1-{user_id}
         Returns the full user profile (skills, preferences, onboarding details).
+        userId is prefixed with "1-" as required by the API.
         """
-        url = f"{VOLUNTEERING_SERVICE_URL}/user/user-profile"
-        data = await _request("GET", url, params={"userId": user_id})
+        prefixed_id = user_id if user_id.startswith("1-") else f"1-{user_id}"
+        url = f"{VOLUNTEERING_SERVICE_URL}/user/user-profile/userId/{prefixed_id}"
+        data = await _request("GET", url)
         if data:
             return self._normalise_profile(data)
         return None
@@ -557,6 +559,7 @@ class NeedServiceClient:
         return {
             "id": need.get("id"),
             "name": name,
+            "entity_id": need.get("entityId", ""),
             "subjects": subjects,
             "grade_levels": grades,
             "days": days,
@@ -735,7 +738,8 @@ class FulfillmentClient:
         GET /fulfillment/volunteer-read/{assignedUserId}?page=&size=
         Returns all fulfillment records for a volunteer (paginated).
         """
-        url = f"{FULFILL_SERVICE_URL}/fulfillment/volunteer-read/{volunteer_id}"
+        prefixed_id = volunteer_id if volunteer_id.startswith("1-") else f"1-{volunteer_id}"
+        url = f"{FULFILL_SERVICE_URL}/fulfillment/volunteer-read/{prefixed_id}"
         data = await _request("GET", url, params={"page": page, "size": size})
         if isinstance(data, list):
             return data

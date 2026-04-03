@@ -208,6 +208,7 @@ class SessionState(BaseModel):
     channel_metadata: Optional[Dict[str, Any]] = None
     volunteer_id: Optional[UUID] = None
     volunteer_name: Optional[str] = None
+    volunteer_phone: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 

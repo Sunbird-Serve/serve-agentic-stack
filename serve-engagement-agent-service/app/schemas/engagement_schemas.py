@@ -57,6 +57,7 @@ class EngagementSessionState(BaseModel):
 
     volunteer_id: Optional[str] = None
     volunteer_name: Optional[str] = None
+    volunteer_phone: Optional[str] = None
     last_active_at: Optional[str] = None
 
     @field_validator("volunteer_id", mode="before")

@@ -24,15 +24,15 @@ ENGAGEMENT_TOOLS = [
     {
         "name": "get_engagement_context",
         "description": (
-            "Load the volunteer's fulfillment history, active nominations, and profile. "
+            "Load the volunteer's fulfillment history and profile by their phone number. "
             "Call this FIRST and SILENTLY — do not tell the volunteer you are doing a lookup."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "volunteer_id": {"type": "string", "description": "Serve Registry volunteer osid"},
+                "phone": {"type": "string", "description": "Volunteer's WhatsApp/mobile number"},
             },
-            "required": ["volunteer_id"],
+            "required": ["phone"],
         },
     },
     {
@@ -80,9 +80,14 @@ ENGAGEMENT_TOOLS = [
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 
-_SYSTEM_PROMPT_TEMPLATE = """You are the Project Serve Volunteer Engagement Assistant.
-Project Serve connects volunteer teachers with rural schools across India.
-You are talking to a returning volunteer who has previously taught through Project Serve.
+_SYSTEM_PROMPT_TEMPLATE = """You are the eVidyaloka Volunteer Engagement Assistant.
+eVidyaloka connects volunteer teachers with rural schools across India.
+You are talking to a returning volunteer who has previously taught with eVidyaloka.
+
+IMPORTANT — BRANDING:
+- Always refer to the organisation as "eVidyaloka" when talking to volunteers.
+- NEVER say "Project Serve" to volunteers — that is an internal program name used by coordinators only.
+- Say "teaching with eVidyaloka" or "volunteering with eVidyaloka", not "Project Serve".
 
 LANGUAGE: Detect Hindi/Hinglish/English from the volunteer's messages and respond in the SAME language.
 If they write in Hindi or Hinglish, reply in warm Hinglish. If English, reply in English.
@@ -95,16 +100,22 @@ YOUR GOAL: Re-engage this volunteer for the current teaching cycle.
 WORKFLOW — follow this exactly:
 
 STEP 1 — LOAD CONTEXT (silent, no user interaction):
-- Call get_engagement_context(volunteer_id) immediately.
-- If has_active_nomination=True: call signal_outcome(outcome="already_active", reason="volunteer already has an active nomination").
+- If "Last fulfillment:" is already present in WHAT YOU KNOW above, skip this step — context is already loaded.
+- Otherwise call get_engagement_context(phone=<volunteer_phone>) once and silently.
 - Do NOT tell the volunteer you are doing a lookup.
+# TEMPORARILY DISABLED: active nomination check
+# - If has_active_nomination=True: call signal_outcome(outcome="already_active", reason="volunteer already has an active nomination").
 
 STEP 2 — WELCOME BACK:
-- Greet them warmly by name.
-- Reference their ACTUAL history from the tool result (school name, subject, grade levels).
+- Greet them warmly by name (use volunteer_name from the tool result).
+- Reference their ACTUAL history from the tool result:
+  - school_name (extracted from needPurpose — e.g. "Government Vocational Junior College Nampally")
+  - need_purpose or need_name for subject/grade context
+  - days and time_slots for schedule context
+- If fulfillment_history is empty, say: "Welcome back! Would you like to continue volunteering this year?"
 - Ask ONE question: would they like to continue teaching this year?
-- Example (English): "Welcome back, Priya! Last year you taught English at Govt School Lucknow for Grade 6 — would you like to continue this year?"
-- Example (Hinglish): "Wapas aaye, Priya ji! Pichle saal aapne Govt School Lucknow mein Grade 6 ko English padhaya tha — kya is saal bhi continue karna chahenge?"
+- Example (English): "Welcome back, Priya! Last year you taught at Government Vocational Junior College Nampally on Tuesdays and Wednesdays — would you like to continue teaching with eVidyaloka this year?"
+- Example (Hinglish): "Wapas aaye, Priya ji! Pichle saal aapne Government Vocational Junior College Nampally mein eVidyaloka ke saath padhaya tha — kya is saal bhi continue karna chahenge?"
 
 STEP 3 — CAPTURE PREFERENCES (if they say yes):
 - Ask about school preference: same school as before, or open to a different one?
@@ -131,7 +142,7 @@ STEP 5 — HANDLE DECLINE / DEFER:
 
 GROUNDING RULES — NON-NEGOTIABLE:
 - NEVER invent history. Only use data from get_engagement_context tool result.
-- If get_engagement_context returns no history, say: "Welcome back! Would you like to continue volunteering this year?"
+- If get_engagement_context returns no history or status=not_found, say: "Welcome back! Would you like to continue volunteering this year?"
 - NEVER mention "nomination", "system", "agent", "workflow", "MCP", "database".
 - Ask only ONE question at a time.
 - Keep messages short — volunteers are on mobile, often on WhatsApp.
@@ -167,6 +178,8 @@ class EngagementLLMAdapter:
             lines.append(f"Volunteer Name: {session_context['volunteer_name']}")
         if session_context.get("volunteer_id"):
             lines.append(f"Volunteer ID: {session_context['volunteer_id']}")
+        if session_context.get("volunteer_phone"):
+            lines.append(f"Volunteer Phone: {session_context['volunteer_phone']}")
         if session_context.get("last_active_at"):
             lines.append(f"Last active: {session_context['last_active_at']}")
 
@@ -177,12 +190,21 @@ class EngagementLLMAdapter:
             parts = []
             if latest.get("school_name"):
                 parts.append(f"school={latest['school_name']}")
+            elif latest.get("need_purpose"):
+                parts.append(f"need={latest['need_purpose']}")
             if latest.get("subjects"):
                 parts.append(f"subjects={', '.join(latest['subjects'])}")
             if latest.get("grade_levels"):
                 parts.append(f"grades={', '.join(str(g) for g in latest['grade_levels'])}")
-            if latest.get("schedule"):
-                parts.append(f"schedule={latest['schedule']}")
+            if latest.get("days"):
+                parts.append(f"days={latest['days']}")
+            if latest.get("time_slots"):
+                slots = latest["time_slots"]
+                if slots:
+                    s = slots[0]
+                    parts.append(f"time={s.get('startTime','')}-{s.get('endTime','')}")
+            if latest.get("need_id"):
+                parts.append(f"need_id={latest['need_id']}")
             if parts:
                 lines.append(f"Last fulfillment: {'; '.join(parts)}")
 
@@ -231,8 +253,12 @@ class EngagementLLMAdapter:
 
                 # No tool calls — Claude produced a message for the volunteer
                 if not tool_use_blocks:
-                    # On first iteration with no prior results, nudge Claude to load context first
-                    if iteration == 0 and not collected:
+                    # Only nudge on the very first turn (no prior conversation) AND
+                    # only if context isn't already injected in the system prompt.
+                    # On subsequent turns the context is cached — no nudge needed.
+                    context_already_loaded = "Last fulfillment:" in system_prompt
+                    is_first_turn = len(messages) <= 1  # only the opening "Hi"
+                    if iteration == 0 and not collected and not context_already_loaded and is_first_turn:
                         logger.warning("Claude skipped get_engagement_context on first iteration — nudging")
                         current_messages.append({
                             "role": "assistant",

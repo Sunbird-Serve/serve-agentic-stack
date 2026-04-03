@@ -18,6 +18,7 @@ Public interface:
 from typing import Optional, Tuple, Dict
 from uuid import UUID, uuid4
 from datetime import datetime, timedelta
+import json
 import logging
 
 from app.schemas import (
@@ -282,6 +283,7 @@ class OrchestrationService:
             context_summary=session_context.context_summary,
             volunteer_id=UUID(session_context.volunteer_id) if session_context.volunteer_id else None,
             volunteer_name=session_context.volunteer_name,
+            volunteer_phone=session_context.volunteer_phone,
             # Forward live channel metadata (e.g. phone_number from Web UI pre-screen)
             channel_metadata=event.raw_metadata if event.raw_metadata else None,
             created_at=session_context.created_at.isoformat() if session_context.created_at else None,
@@ -401,12 +403,23 @@ class OrchestrationService:
                     f"{handoff_result.get('error')}"
                 )
 
-            # Critical: persist the new active_agent so the *next* turn routes to
-            # the correct agent instead of looping back to the one that just handed off.
+            # Critical: persist the new active_agent AND the fulfillment sub_state
+            # so the handoff payload survives any failure in the auto-invoke path.
+            # Build fulfillment sub_state from the handoff payload right now.
+            fulfillment_sub_state_str = None
+            handoff_payload = agent_response.handoff_event.payload if agent_response.handoff_event else {}
+            if handoff_payload:
+                fulfillment_sub_state_str = json.dumps({
+                    "handoff": handoff_payload,
+                    "nominated_need_id": None,
+                    "human_review_reason": None,
+                })
+
             handoff_advance = await domain_client.advance_state(
                 session_id=session_context.session_id,
-                new_state=agent_response.state,   # keep state unchanged; only agent changes
+                new_state=agent_response.state,
                 active_agent=to_agent_value,
+                sub_state=fulfillment_sub_state_str,
             )
             if handoff_advance.get("status") == "error":
                 logger.warning(
@@ -415,7 +428,8 @@ class OrchestrationService:
                 )
             else:
                 logger.info(
-                    f"[{session_context.session_id}] active_agent updated → {to_agent_value!r}"
+                    f"[{session_context.session_id}] active_agent updated → {to_agent_value!r}, "
+                    f"fulfillment sub_state persisted"
                 )
 
             self._log_event(
@@ -428,6 +442,59 @@ class OrchestrationService:
                     'reason': agent_response.handoff_event.reason,
                 }
             )
+
+            # ── Auto-invoke the target agent immediately so the volunteer
+            #    doesn't have to send another message to trigger it.
+            #    We update session_context to reflect the new active_agent,
+            #    then invoke the fulfillment agent with a synthetic trigger.
+            try:
+                session_context.active_agent = to_agent_value
+                session_context.current_stage = agent_response.state
+
+                auto_session_state = SessionState(
+                    id=session_context.session_id,
+                    channel=session_context.channel,
+                    persona=session_context.persona,
+                    workflow=session_context.workflow,
+                    active_agent=to_agent_value,
+                    status=session_context.status,
+                    stage=agent_response.state,
+                    sub_state=fulfillment_sub_state_str,  # fulfillment sub_state with handoff
+                    volunteer_id=UUID(session_context.volunteer_id) if session_context.volunteer_id else None,
+                    volunteer_name=session_context.volunteer_name,
+                    volunteer_phone=session_context.volunteer_phone,
+                    channel_metadata=event.raw_metadata if event.raw_metadata else None,
+                )
+
+                auto_routing = agent_router.make_routing_decision(
+                    session_context=auto_session_state,
+                    user_message="__handoff__",
+                    intent=intent_result,
+                )
+
+                auto_request = AgentTurnRequest(
+                    session_id=session_context.session_id,
+                    session_state=auto_session_state,
+                    user_message="__handoff__",
+                    conversation_history=[],  # start fresh — engagement history confuses fulfillment
+                    intent_hint="continue_workflow",
+                    channel_metadata=event.raw_metadata if event.raw_metadata else None,
+                )
+
+                auto_response = await agent_router.invoke_agent(auto_routing, auto_request)
+
+                if auto_response.assistant_message:
+                    # Replace engagement closing with fulfillment's opening message
+                    agent_response = auto_response
+                    logger.info(
+                        f"[{session_context.session_id}] Auto-invoked {to_agent_value!r} "
+                        f"after handoff — response length={len(auto_response.assistant_message)}"
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"[{session_context.session_id}] Auto-invoke of {to_agent_value!r} failed: {e} "
+                    f"— returning engagement closing message"
+                )
 
         # Step 8: Calculate progress and build response
         # For need coordination, prefer the agent's field-level completion percentage
@@ -547,15 +614,15 @@ class OrchestrationService:
             **event.raw_metadata,
         }
 
-        # Extract volunteer_id / volunteer_name if passed via channel_metadata (e.g. returning volunteer UI)
-        volunteer_id = event.raw_metadata.get("volunteer_id")
+        # Extract volunteer_phone / volunteer_name if passed via channel_metadata (e.g. returning volunteer UI)
+        volunteer_phone = event.raw_metadata.get("volunteer_phone")
         volunteer_name = event.raw_metadata.get("volunteer_name")
 
         start_result = await domain_client.start_session(
             channel=event.channel.value,
             persona=persona.value,
             channel_metadata=channel_metadata,
-            volunteer_id=volunteer_id,
+            volunteer_phone=volunteer_phone,
         )
 
         if start_result.get("status") != "success":
@@ -576,8 +643,9 @@ class OrchestrationService:
             active_agent=initial_agent.value,
             status=SessionStatus.ACTIVE.value,
             current_stage=start_result["data"].get("stage", OnboardingState.INIT.value),
-            volunteer_id=volunteer_id,
+            volunteer_id=None,
             volunteer_name=volunteer_name,
+            volunteer_phone=volunteer_phone,
             created_at=now,
             updated_at=now
         )

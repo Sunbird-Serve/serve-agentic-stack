@@ -565,9 +565,9 @@ class CheckActiveNominationsInput(BaseModel):
 
 
 class GetEngagementContextInput(BaseModel):
-    volunteer_id: str = Field(
-        min_length=1,
-        description="Serve Registry volunteer osid — returns fulfillment history + active nominations + profile in one call"
+    phone: str = Field(
+        min_length=7,
+        description="Volunteer's WhatsApp/mobile number — used to look up the volunteer and return fulfillment history + profile in one call"
     )
 
 

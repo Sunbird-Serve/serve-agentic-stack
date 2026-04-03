@@ -1242,21 +1242,21 @@ async def check_active_nominations(params: CheckActiveNominationsInput) -> dict:
 @mcp.tool()
 async def get_engagement_context(params: GetEngagementContextInput) -> dict:
     """
-    Convenience tool — fetches fulfillment history + active nominations + volunteer
-    profile in a single call. Engagement agent calls this once at session start.
+    Convenience tool — looks up volunteer by phone, then fetches fulfillment history
+    + volunteer profile in a single call. Engagement agent calls this once at session start.
 
     Used by: Engagement Agent
 
     Args:
-        volunteer_id: Serve Registry volunteer osid
+        phone: Volunteer's WhatsApp/mobile number
 
     Returns:
-        fulfillment_history:    list of enriched past engagements
-        has_active_nomination:  bool
-        active_nominations:     list
-        volunteer_profile:      profile dict from Serve Registry (may be null)
+        volunteer_id:       resolved Serve Registry osid
+        volunteer_name:     full name from registry
+        fulfillment_history: list of enriched past engagements (school, subject, grade, slots)
+        volunteer_profile:  profile dict from Serve Registry (may be null)
     """
-    return await engagement_service.get_engagement_context(params.volunteer_id)
+    return await engagement_service.get_engagement_context(params.phone)
 
 
 @mcp.tool()
@@ -1282,6 +1282,23 @@ async def get_needs_for_entity(params: GetNeedsForEntityInput) -> dict:
         size=params.size,
     )
     return {"status": "success", "needs": needs, "total": len(needs)}
+
+
+@mcp.tool()
+async def get_all_entities() -> dict:
+    """
+    Get all schools/entities from Serve Need Service.
+
+    Used by: Fulfillment Agent (fallback when preferred school has no time-matching needs)
+
+    Returns:
+        entities: list of schools with entity_id, name, district, state
+    """
+    from services.serve_registry_client import need_service_client
+    raw = await need_service_client.search_entities()
+    # Ensure entity_id is explicitly set alongside id
+    entities = [{**e, "entity_id": e.get("id")} for e in raw]
+    return {"status": "success", "entities": entities, "total": len(entities)}
 
 
 @mcp.tool()

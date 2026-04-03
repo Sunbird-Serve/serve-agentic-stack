@@ -9,6 +9,7 @@ and handoff payload preparation.
 import asyncio
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from services.session_service import SessionService
@@ -40,29 +41,34 @@ class EngagementService:
     def __init__(self) -> None:
         self._session_service = SessionService()
 
-    async def get_engagement_context(self, volunteer_id: Optional[str]) -> Dict[str, Any]:
-        """Fetch fulfillment history, active nominations, and volunteer profile."""
+    async def get_engagement_context(self, phone: Optional[str]) -> Dict[str, Any]:
+        """Fetch fulfillment history and volunteer profile by phone number."""
+        if not phone:
+            return {"status": "error", "error": "phone is required"}
+
+        # Step 1: resolve volunteer by phone
+        user = await volunteering_client.lookup_by_mobile(phone)
+        if not user:
+            return {"status": "not_found", "error": f"No volunteer found for phone {phone}"}
+
+        volunteer_id = user.get("osid")
         if not volunteer_id:
-            return {
-                "status": "error",
-                "error": "volunteer_id is required",
-            }
+            return {"status": "error", "error": "Volunteer record has no osid"}
 
-        completed_statuses = {"Completed", "Closed"}
-        active_nom_statuses = {"Nominated", "Approved", "Proposed"}
+        # Strip the "1-" prefix for fulfillment API calls if present
+        bare_id = volunteer_id.lstrip("1-") if volunteer_id.startswith("1-") else volunteer_id
 
-        raw_fulfillments, all_nominations, profile = await asyncio.gather(
-            fulfillment_client.get_fulfillments_for_volunteer(volunteer_id),
-            nomination_client.get_nominations_for_volunteer(volunteer_id),
-            volunteering_client.get_user_profile(volunteer_id),
+        # Step 2: fetch fulfillment history + profile in parallel
+        raw_fulfillments, profile = await asyncio.gather(
+            fulfillment_client.get_fulfillments_for_volunteer(bare_id),
+            volunteering_client.get_user_profile(bare_id),
             return_exceptions=True,
         )
 
+        # Step 3: enrich each fulfillment with need details
         enriched: List[Dict[str, Any]] = []
         if isinstance(raw_fulfillments, list):
             for f in raw_fulfillments:
-                if f.get("fulfillmentStatus") not in completed_statuses:
-                    continue
                 need_id = f.get("needId", "")
                 need_detail = {}
                 if need_id:
@@ -70,29 +76,51 @@ class EngagementService:
                         need_detail = await need_service_client.get_need_details(need_id) or {}
                     except Exception:
                         pass
+
+                # Extract school name from needPurpose/description (most reliable field)
+                school_name = self._extract_school_name(
+                    need_detail.get("needPurpose", "") or need_detail.get("name", "")
+                )
+
                 enriched.append({
-                    "fulfillment_id": f.get("id"),
-                    "need_id": need_id,
-                    "school_name": need_detail.get("name", ""),
-                    "subjects": need_detail.get("subjects", []),
-                    "grade_levels": need_detail.get("grade_levels", []),
-                    "schedule": need_detail.get("days", ""),
-                    "start_date": need_detail.get("start_date", ""),
-                    "end_date": need_detail.get("end_date", ""),
+                    "fulfillment_id":     f.get("id"),
+                    "need_id":            need_id,
+                    "entity_id":          need_detail.get("entity_id", ""),
+                    "school_name":        school_name,
+                    "need_name":          need_detail.get("name", ""),
+                    "need_purpose":       need_detail.get("needPurpose", ""),
+                    "subjects":           need_detail.get("subjects", []),
+                    "grade_levels":       need_detail.get("grade_levels", []),
+                    "days":               need_detail.get("days", ""),
+                    "time_slots":         need_detail.get("time_slots", []),
+                    "start_date":         need_detail.get("start_date", ""),
+                    "end_date":           need_detail.get("end_date", ""),
                     "fulfillment_status": f.get("fulfillmentStatus"),
                 })
 
-        active_noms: List[Dict[str, Any]] = []
-        if isinstance(all_nominations, list):
-            active_noms = [n for n in all_nominations if n.get("nominationStatus") in active_nom_statuses]
+        volunteer_name = user.get("full_name") or user.get("first_name") or "Volunteer"
 
         return {
-            "status": "success",
+            "status":             "success",
+            "volunteer_id":       volunteer_id,
+            "volunteer_name":     volunteer_name,
             "fulfillment_history": enriched,
-            "has_active_nomination": len(active_noms) > 0,
-            "active_nominations": active_noms,
-            "volunteer_profile": profile if isinstance(profile, dict) else None,
+            "volunteer_profile":  profile if isinstance(profile, dict) else None,
         }
+
+    def _extract_school_name(self, text: str) -> str:
+        """
+        Extract school/college name from a need purpose string.
+        e.g. "technology foundation - Grade 11(CS) Government Vocational Junior College Nampally"
+             → "Government Vocational Junior College Nampally"
+        """
+        if not text:
+            return ""
+        pattern = r"((?:Government|Govt|Municipal|Private|Public|Kendriya|Navodaya|Zilla|District|State|Central|National|International|Primary|Secondary|Senior|Junior|Higher|High|Middle|Elementary|Model|Convent|Mission|DAV|DPS|KV|JNV|CBSE|ICSE|SSC|HSC|Vidyalaya|Vidyapeeth|Mandir|Niketan|Ashram|Mahavidyalaya|College|School|Academy|Institute|Parishad|Patasala|Gurukul)\b.*)"
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        return ""
 
     async def save_confirmed_signals(
         self,
@@ -185,10 +213,8 @@ class EngagementService:
             return {"status": "error", "error": "Session has no volunteer_id"}
 
         engagement_context = sub_state.get("engagement_context") or {}
-        if not engagement_context:
-            engagement_context = await self.get_engagement_context(volunteer_id)
-            if engagement_context.get("status") == "success":
-                sub_state["engagement_context"] = engagement_context
+        # Note: if context is missing here, we cannot re-fetch (no phone available in this path).
+        # The engagement agent pre-loads and caches context in sub_state, so this should be populated.
 
         history = engagement_context.get("fulfillment_history") or []
         latest = history[0] if history else {}
@@ -206,7 +232,7 @@ class EngagementService:
             "volunteer_name": volunteer_name,
             "continuity": continuity,
             "preferred_need_id": latest.get("need_id") if continuity == "same" else None,
-            "preferred_school_id": None,
+            "preferred_school_id": latest.get("entity_id") if continuity == "same" else None,
             "preference_notes": sub_state.get("preference_notes"),
             "fulfillment_history": history,
         }

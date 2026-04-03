@@ -28,17 +28,17 @@ class SchoolService:
             entities = await need_service_client.get_entities_for_user(coordinator_id)
             if entities:
                 if len(entities) == 1:
+                    e = entities[0]
                     return {
                         "status":         "existing",
-                        "school":         entities[0],
+                        "school":         {**e, "entity_id": e.get("id")},
                         "previous_needs": [],
                         "needs_creation": False,
                         "source":         "serve_need_service",
                     }
-                # Multiple schools — return list for disambiguation
                 return {
                     "status":         "multiple",
-                    "schools":        entities,
+                    "schools":        [{**e, "entity_id": e.get("id")} for e in entities],
                     "school":         None,
                     "previous_needs": [],
                     "needs_creation": False,
@@ -54,9 +54,10 @@ class SchoolService:
                 if hint_lower in e.get("name", "").lower()
             ]
             if len(matches) == 1:
+                e = matches[0]
                 return {
                     "status":         "existing",
-                    "school":         matches[0],
+                    "school":         {**e, "entity_id": e.get("id")},
                     "previous_needs": [],
                     "needs_creation": False,
                     "source":         "serve_need_service",
@@ -64,7 +65,7 @@ class SchoolService:
             if len(matches) > 1:
                 return {
                     "status":         "ambiguous",
-                    "schools":        matches,
+                    "schools":        [{**e, "entity_id": e.get("id")} for e in matches],
                     "school":         None,
                     "previous_needs": [],
                     "needs_creation": True,

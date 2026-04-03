@@ -15,20 +15,16 @@ logger = logging.getLogger(__name__)
 
 FULFILLMENT_TOOLS = [
     {
-        "name": "get_engagement_context",
-        "description": "Load volunteer's fulfillment history, profile, and active nominations. Call this first.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"volunteer_id": {"type": "string"}},
-            "required": ["volunteer_id"],
-        },
-    },
-    {
         "name": "get_needs_for_entity",
-        "description": "Get all open needs for a school. Use preferred_school_id for same-school continuity.",
+        "description": (
+            "Get all open needs for a school/entity. "
+            "entity_id MUST be school.entity_id from resolve_school_context result, "
+            "or preferred_school_id from handoff. "
+            "NEVER use volunteer_id or any 1- prefixed ID as entity_id."
+        ),
         "input_schema": {
             "type": "object",
-            "properties": {"entity_id": {"type": "string"}},
+            "properties": {"entity_id": {"type": "string", "description": "School UUID from school.entity_id — NOT volunteer_id"}},
             "required": ["entity_id"],
         },
     },
@@ -43,7 +39,10 @@ FULFILLMENT_TOOLS = [
     },
     {
         "name": "resolve_school_context",
-        "description": "Find schools/needs by hint (name, location, preference notes). Use for different-school continuity.",
+        "description": (
+            "Find a school by name hint. Returns school.entity_id — use that value "
+            "as entity_id when calling get_needs_for_entity. Never use school.id or volunteer_id."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -65,6 +64,18 @@ FULFILLMENT_TOOLS = [
                 },
             },
             "required": ["need_id"],
+        },
+    },
+    {
+        "name": "get_all_entities",
+        "description": (
+            "Get all schools/entities. Use this as a fallback when the preferred school "
+            "has no needs matching the volunteer's time preference. "
+            "Returns a list of schools with entity_id fields."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
         },
     },
     {
@@ -104,36 +115,52 @@ FULFILLMENT_TOOLS = [
 
 # ── System prompt template ────────────────────────────────────────────────────
 
-_SYSTEM_PROMPT_TEMPLATE = """You are the Project Serve Volunteer Fulfillment Assistant.
-Project Serve connects volunteer teachers with rural schools across India.
+_SYSTEM_PROMPT_TEMPLATE = """You are the eVidyaloka Volunteer Fulfillment Assistant.
+eVidyaloka connects volunteer teachers with rural schools across India.
 You are talking to a returning volunteer who has confirmed they want to continue teaching.
+
+IMPORTANT — BRANDING: Always say "eVidyaloka". NEVER say "Project Serve" to volunteers.
 
 LANGUAGE: Detect Hindi/Hinglish/English from conversation history and respond in the SAME language.
 
 YOUR GOAL: Find the right open teaching need for this volunteer and nominate them.
 
-WHAT YOU KNOW (from handoff):
+WHAT YOU KNOW (from handoff — use this directly, no need to re-fetch):
 {handoff_context}
 
 WORKFLOW — follow this exactly:
 
-STEP 1 — FIND THE NEED (no user interaction):
-- Call get_engagement_context(volunteer_id) to load their history.
-- If continuity=same and preferred_school_id is present: call get_needs_for_entity(preferred_school_id).
-- If continuity=same but preferred_school_id is missing: call resolve_school_context(school_hint=preference_notes).
+STEP 1 — FIND THE NEED (silent, no user interaction):
+- Use the handoff data above — do NOT call any context-fetch tool.
+- If continuity=same and preferred_need_id is present: call get_need_details(preferred_need_id) to confirm it is still open.
+- If continuity=same and preferred_school_id is present but no preferred_need_id: call get_needs_for_entity(entity_id=preferred_school_id).
+- If continuity=same but neither school nor need ID: call resolve_school_context(school_hint=preference_notes or school name from Last teaching).
 - If continuity=different: call resolve_school_context(school_hint=preference_notes).
-- For each candidate need, call get_need_details(need_id).
-- Call get_nominations_for_need(need_id, status="Approved") — skip needs with Approved nominations.
+- After resolve_school_context: use school.entity_id (NOT school.id, NOT volunteer_id) as entity_id for get_needs_for_entity.
+- CRITICAL: entity_id for get_needs_for_entity must be a plain UUID like "b53e465c-...". If it starts with "1-", it is WRONG — do not use it.
+- For each candidate need, call get_need_details(need_id) if not already done.
+- Call get_nominations_for_need(need_id, status="Approved") — skip needs that already have Approved nominations.
+
+STEP 1b — FALLBACK TO OTHER SCHOOLS (if preferred school has no time match):
+- If the preferred school has needs but NONE match the volunteer's preferred time slot from preference_notes:
+  - Call get_all_entities() to get all schools.
+  - Pick the 2 most promising schools (different from preferred school).
+  - For each, call get_needs_for_entity(entity_id=school.entity_id).
+  - Find needs whose time_slots match the volunteer's preferred time.
+  - Present the best match — mention it's a different school.
+  - If still no match after 2 schools: call signal_outcome(outcome="human_review", reason="no_time_match").
 - Do all of this WITHOUT asking the volunteer anything.
 
 STEP 2 — CONFIRM WITH VOLUNTEER:
-- If one clear match: present it warmly. "Humne [School] mein [Subject] Grade [X] ki jagah dhundhi — [Days] [Time]. Theek hai?"
+- If one clear match: present it warmly.
+  English: "We found a great match — [Subject] at [School], [Days] [Time]. Would you like to take this up?"
+  Hinglish: "Humne [School] mein [Subject] ki jagah dhundhi — [Days] [Time]. Theek hai?"
 - If multiple matches: list them briefly and ask the volunteer to pick one.
 - If no match: call signal_outcome(outcome="human_review", reason="no_open_needs") and tell the volunteer the team will follow up.
 
 STEP 3 — NOMINATE:
-- If volunteer says yes: call nominate_volunteer_for_need(need_id, volunteer_id).
-- Then call signal_outcome(outcome="nominated", need_id=need_id).
+- If volunteer says yes: call nominate_volunteer_for_need(need_id=<need_id>, volunteer_id=<volunteer_id from handoff>).
+- Then call signal_outcome(outcome="nominated", need_id=<need_id>).
 - Thank the volunteer warmly. Tell them the coordinator will review and be in touch.
 - If volunteer says no: call signal_outcome(outcome="human_review", reason="volunteer_declined").
 - If volunteer wants to pause: call signal_outcome(outcome="paused").
@@ -142,7 +169,7 @@ GROUNDING RULES — NON-NEGOTIABLE:
 - NEVER invent or guess need details. Only use data from tool results.
 - NEVER call nominate_volunteer_for_need before the volunteer has said yes.
 - NEVER mention "nomination", "system", "agent", "workflow", "MCP", "osid", "database".
-- If any tool returns an error: call signal_outcome(outcome="human_review", reason="system_unavailable").
+- If any tool returns an error: continue without mentioning the error; try the next approach.
 - Keep messages short — volunteers are on mobile, often on WhatsApp."""
 
 
@@ -182,14 +209,30 @@ class FulfillmentLLMAdapter:
             f"Volunteer ID: {volunteer_id}",
             f"Continuity preference: {continuity}",
         ]
-        if preferred_school_id:
-            lines.append(f"Preferred school ID: {preferred_school_id}")
         if preferred_need_id:
             lines.append(f"Preferred need ID: {preferred_need_id}")
+        if preferred_school_id:
+            lines.append(f"Preferred school ID: {preferred_school_id}")
         if preference_notes:
             lines.append(f"Preference notes: {preference_notes}")
+
+        # Surface last fulfillment details so LLM can reference them
         if fulfillment_history:
-            lines.append(f"Previous fulfillments: {len(fulfillment_history)} session(s)")
+            latest = fulfillment_history[0]
+            parts = []
+            if latest.get("school_name"):
+                parts.append(f"school={latest['school_name']}")
+            if latest.get("need_purpose") or latest.get("need_name"):
+                parts.append(f"need={latest.get('need_purpose') or latest.get('need_name')}")
+            if latest.get("days"):
+                parts.append(f"days={latest['days']}")
+            if latest.get("time_slots"):
+                s = latest["time_slots"][0]
+                parts.append(f"time={s.get('startTime','')}-{s.get('endTime','')}")
+            if latest.get("need_id"):
+                parts.append(f"need_id={latest['need_id']}")
+            if parts:
+                lines.append(f"Last teaching: {'; '.join(parts)}")
 
         handoff_context = "\n".join(lines)
         return _SYSTEM_PROMPT_TEMPLATE.format(handoff_context=handoff_context)
@@ -214,7 +257,12 @@ class FulfillmentLLMAdapter:
             return self._fallback(), {}
 
         collected_tool_results: Dict[str, Any] = {}
-        current_messages = list(messages)  # copy to avoid mutating caller's list
+        # Strip any extra fields — Anthropic only accepts role + content
+        current_messages = [
+            {"role": m["role"], "content": m["content"]}
+            for m in messages
+            if m.get("role") and m.get("content") is not None
+        ]
 
         try:
             for iteration in range(max_tool_iterations):

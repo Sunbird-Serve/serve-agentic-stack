@@ -71,10 +71,6 @@ class DomainClient:
 
     # ── Data methods ──────────────────────────────────────────────────────────
 
-    async def get_engagement_context(self, volunteer_id: str) -> Dict:
-        """Load volunteer's fulfillment history, profile, and active nominations."""
-        return await _call_mcp_tool("get_engagement_context", {"volunteer_id": volunteer_id})
-
     async def get_needs_for_entity(self, entity_id: str) -> Dict:
         """Get all open needs for a school/entity."""
         return await _call_mcp_tool("get_needs_for_entity", {"entity_id": entity_id})
@@ -109,6 +105,10 @@ class DomainClient:
         if status:
             args["status"] = status
         return await _call_mcp_tool("get_nominations_for_need", args)
+
+    async def get_all_entities(self) -> Dict:
+        """Get all schools/entities for fallback school search."""
+        return await _call_mcp_tool("get_all_entities", {})
 
     # ── Session methods ───────────────────────────────────────────────────────
 
