@@ -114,6 +114,18 @@ class AgentRegistry:
             'stages': ['active', 'complete', 'human_review', 'paused'],
         }
 
+        # ── Selection agent — silent volunteer evaluation ────────────────────
+        self._agents['selection'] = {
+            'url': os.environ.get('SELECTION_AGENT_URL', 'http://serve-selection-agent-service:8009'),
+            'health_path': '/api/health',
+            'endpoint': '/api/evaluate',
+            'timeout': 30.0,
+            'healthy': False,  # Conservative — undeployed; first probe may flip to True
+            'last_check': None,
+            'workflows': ['new_volunteer_onboarding'],
+            'stages': ['onboarding_complete'],
+        }
+
     # ── Health probing ───────────────────────────────────────────────────────
 
     async def _probe_health(self, agent_id: str, config: Dict) -> None:

@@ -112,6 +112,7 @@ services:
       - WHATSAPP_APP_SECRET=${WHATSAPP_APP_SECRET}
       - WHATSAPP_VERIFY_TOKEN=${WHATSAPP_VERIFY_TOKEN:-serve_verify_token}
       - FULFILLMENT_AGENT_URL=http://serve-fulfillment-agent-service:8007
+      - SELECTION_AGENT_URL=http://serve-selection-agent-service:8009
     ports:
       - "8001:8001"
     depends_on:
@@ -170,6 +171,30 @@ services:
       - serve-mcp-server
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8007/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - serve-network
+
+  # Selection Agent Service - Port 8009
+  serve-selection-agent-service:
+    build:
+      context: ./serve-selection-agent-service
+      dockerfile: Dockerfile
+    container_name: serve-selection-agent-service
+    environment:
+      - PORT=8009
+      - CORS_ORIGINS=*
+      - MCP_SERVER_URL=http://serve-mcp-server:8004
+      - LLM_MODEL=claude-sonnet-4-5-20250929
+      - EMERGENT_LLM_KEY=${EMERGENT_LLM_KEY}
+    ports:
+      - "8009:8009"
+    depends_on:
+      - serve-mcp-server
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8009/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
