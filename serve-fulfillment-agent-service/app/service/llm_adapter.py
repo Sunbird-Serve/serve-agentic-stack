@@ -1,9 +1,14 @@
 """
-SERVE Fulfillment Agent Service - LLM Adapter (L4)
+SERVE Fulfillment Agent Service - LLM Adapter (simplified)
 
-Extended tool-calling loop. Runs Claude with the full FULFILLMENT_TOOLS set,
-accumulating conversation history across turns. Stops when Claude produces
-a text response OR calls signal_outcome.
+The LLM's only job here is to:
+  1. Present the pre-found match to the volunteer warmly
+  2. Handle yes/no confirmation
+  3. Call nominate_volunteer_for_need on yes
+  4. Call signal_outcome to close the conversation
+
+Match finding is done in Python (matching_service.py) — NOT by the LLM.
+This reduces LLM calls from 8-12 per session to 1-2.
 """
 import logging
 import os
@@ -11,81 +16,35 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# ── Tool definitions ──────────────────────────────────────────────────────────
+# ── Tool definitions — L3 set ────────────────────────────────────────────────
 
 FULFILLMENT_TOOLS = [
     {
-        "name": "get_needs_for_entity",
+        "name": "get_more_needs",
         "description": (
-            "Get all open needs for a school/entity. "
-            "entity_id MUST be school.entity_id from resolve_school_context result, "
-            "or preferred_school_id from handoff. "
-            "NEVER use volunteer_id or any 1- prefixed ID as entity_id."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {"entity_id": {"type": "string", "description": "School UUID from school.entity_id — NOT volunteer_id"}},
-            "required": ["entity_id"],
-        },
-    },
-    {
-        "name": "get_need_details",
-        "description": "Enrich a need with subject, grade, schedule, and time slots.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"need_id": {"type": "string"}},
-            "required": ["need_id"],
-        },
-    },
-    {
-        "name": "resolve_school_context",
-        "description": (
-            "Find a school by name hint. Returns school.entity_id — use that value "
-            "as entity_id when calling get_needs_for_entity. Never use school.id or volunteer_id."
+            "Fetch alternative teaching needs when the volunteer asks for more options, "
+            "wants a different school, different subject, or different time. "
+            "Pass a hint describing what they want. Returns up to 5 candidates."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "coordinator_id": {"type": "string"},
-                "school_hint": {"type": "string"},
-            },
-        },
-    },
-    {
-        "name": "get_nominations_for_need",
-        "description": "Check existing nominations for a need. Skip needs with Approved nominations.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "need_id": {"type": "string"},
-                "status": {
+                "hint": {
                     "type": "string",
-                    "enum": ["Nominated", "Approved", "Proposed", "Backfill", "Rejected"],
+                    "description": "What the volunteer is looking for, e.g. 'different school', 'morning slot', 'maths'",
                 },
             },
-            "required": ["need_id"],
-        },
-    },
-    {
-        "name": "get_all_entities",
-        "description": (
-            "Get all schools/entities. Use this as a fallback when the preferred school "
-            "has no needs matching the volunteer's time preference. "
-            "Returns a list of schools with entity_id fields."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
+            "required": ["hint"],
         },
     },
     {
         "name": "nominate_volunteer_for_need",
-        "description": "Nominate the volunteer for a need. Call ONLY after the volunteer has confirmed yes.",
+        "description": "Nominate the volunteer for a need. Call ONLY after the volunteer has explicitly said yes.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "need_id": {"type": "string"},
-                "volunteer_id": {"type": "string"},
+                "need_id":      {"type": "string", "description": "Need UUID from the match context"},
+                "volunteer_id": {"type": "string", "description": "Volunteer ID from the handoff context"},
             },
             "required": ["need_id", "volunteer_id"],
         },
@@ -95,7 +54,7 @@ FULFILLMENT_TOOLS = [
         "description": (
             "Call this when the conversation is complete. "
             "outcome='nominated': volunteer confirmed and nomination submitted. "
-            "outcome='human_review': no match found or volunteer declined. "
+            "outcome='human_review': no match, volunteer declined, or needs human follow-up. "
             "outcome='paused': volunteer wants to continue later."
         ),
         "input_schema": {
@@ -106,75 +65,55 @@ FULFILLMENT_TOOLS = [
                     "enum": ["nominated", "human_review", "paused"],
                 },
                 "need_id": {"type": "string"},
-                "reason": {"type": "string"},
+                "reason":  {"type": "string"},
             },
             "required": ["outcome"],
         },
     },
 ]
 
-# ── System prompt template ────────────────────────────────────────────────────
+# ── System prompt ─────────────────────────────────────────────────────────────
 
 _SYSTEM_PROMPT_TEMPLATE = """You are the eVidyaloka Volunteer Fulfillment Assistant.
 eVidyaloka connects volunteer teachers with rural schools across India.
-You are talking to a returning volunteer who has confirmed they want to continue teaching.
 
-IMPORTANT — BRANDING: Always say "eVidyaloka". NEVER say "Project Serve" to volunteers.
+IMPORTANT — BRANDING: Always say "eVidyaloka". NEVER say "Project Serve".
 
-LANGUAGE: Detect Hindi/Hinglish/English from conversation history and respond in the SAME language.
+LANGUAGE: Match the volunteer's language — Hindi, Hinglish, or English.
 
-YOUR GOAL: Find the right open teaching need for this volunteer and nominate them.
-
-WHAT YOU KNOW (from handoff — use this directly, no need to re-fetch):
+VOLUNTEER:
 {handoff_context}
 
-WORKFLOW — follow this exactly:
+MATCH RESULT:
+{match_context}
 
-STEP 1 — FIND THE NEED (silent, no user interaction):
-- Use the handoff data above — do NOT call any context-fetch tool.
-- If continuity=same and preferred_need_id is present: call get_need_details(preferred_need_id) to confirm it is still open.
-- If continuity=same and preferred_school_id is present but no preferred_need_id: call get_needs_for_entity(entity_id=preferred_school_id).
-- If continuity=same but neither school nor need ID: call resolve_school_context(school_hint=preference_notes or school name from Last teaching).
-- If continuity=different: call resolve_school_context(school_hint=preference_notes).
-- After resolve_school_context: use school.entity_id (NOT school.id, NOT volunteer_id) as entity_id for get_needs_for_entity.
-- CRITICAL: entity_id for get_needs_for_entity must be a plain UUID like "b53e465c-...". If it starts with "1-", it is WRONG — do not use it.
-- For each candidate need, call get_need_details(need_id) if not already done.
-- Call get_nominations_for_need(need_id, status="Approved") — skip needs that already have Approved nominations.
+YOUR TASK:
 
-STEP 1b — FALLBACK TO OTHER SCHOOLS (if preferred school has no time match):
-- If the preferred school has needs but NONE match the volunteer's preferred time slot from preference_notes:
-  - Call get_all_entities() to get all schools.
-  - Pick the 2 most promising schools (different from preferred school).
-  - For each, call get_needs_for_entity(entity_id=school.entity_id).
-  - Find needs whose time_slots match the volunteer's preferred time.
-  - Present the best match — mention it's a different school.
-  - If still no match after 2 schools: call signal_outcome(outcome="human_review", reason="no_time_match").
-- Do all of this WITHOUT asking the volunteer anything.
+PRESENTING THE MATCH:
+- If MATCH STATUS = found or multiple: present the match(es) warmly in one short message.
+  English: "Great news! We found [Subject] at [School] — [Days], [Time]. Would you like to take this up?"
+  Hinglish: "Khushkhabri! [School] mein [Subject] ki jagah mili — [Days], [Time]. Lena chahenge?"
+- If multiple matches: list them as a numbered list and ask the volunteer to pick one.
+- If MATCH STATUS = not_found: call signal_outcome(outcome="human_review", reason="no_open_needs") and tell the volunteer the team will follow up.
 
-STEP 2 — CONFIRM WITH VOLUNTEER:
-- If one clear match: present it warmly.
-  English: "We found a great match — [Subject] at [School], [Days] [Time]. Would you like to take this up?"
-  Hinglish: "Humne [School] mein [Subject] ki jagah dhundhi — [Days] [Time]. Theek hai?"
-- If multiple matches: list them briefly and ask the volunteer to pick one.
-- If no match: call signal_outcome(outcome="human_review", reason="no_open_needs") and tell the volunteer the team will follow up.
+HANDLING QUESTIONS:
+- If the volunteer asks anything about the match (subject, school, timing, location, grade) — answer it directly from the MATCH RESULT above. Do NOT call any tool.
+- If the volunteer asks for more options, different school, different time, or different subject: call get_more_needs(hint="<what they want>"). Present the new results the same way.
 
-STEP 3 — NOMINATE:
-- If volunteer says yes: call nominate_volunteer_for_need(need_id=<need_id>, volunteer_id=<volunteer_id from handoff>).
-- Then call signal_outcome(outcome="nominated", need_id=<need_id>).
-- Thank the volunteer warmly. Tell them the coordinator will review and be in touch.
-- If volunteer says no: call signal_outcome(outcome="human_review", reason="volunteer_declined").
+CONFIRMING:
+- If volunteer says YES to a match: call nominate_volunteer_for_need(need_id=<need_id>, volunteer_id=<volunteer_id from VOLUNTEER above>), then call signal_outcome(outcome="nominated", need_id=<need_id>). Thank them warmly.
+- If volunteer says NO or not interested: call signal_outcome(outcome="human_review", reason="volunteer_declined"). Say the team will follow up.
 - If volunteer wants to pause: call signal_outcome(outcome="paused").
 
-GROUNDING RULES — NON-NEGOTIABLE:
-- NEVER invent or guess need details. Only use data from tool results.
-- NEVER call nominate_volunteer_for_need before the volunteer has said yes.
-- NEVER mention "nomination", "system", "agent", "workflow", "MCP", "osid", "database".
-- If any tool returns an error: continue without mentioning the error; try the next approach.
-- Keep messages short — volunteers are on mobile, often on WhatsApp."""
+RULES:
+- NEVER call nominate_volunteer_for_need before the volunteer says yes.
+- NEVER invent need details — only use what's in MATCH RESULT or get_more_needs results.
+- NEVER mention "nomination", "system", "agent", "MCP", "database", "osid".
+- Keep messages short — volunteers are on mobile."""
 
 
 class FulfillmentLLMAdapter:
-    """L4 extended tool-calling loop for the fulfillment agent."""
+    """Minimal LLM adapter — present match, confirm, nominate."""
 
     def __init__(self) -> None:
         self._api_key: Optional[str] = (
@@ -194,70 +133,84 @@ class FulfillmentLLMAdapter:
                 logger.warning("anthropic package not installed")
         return self._client
 
-    def build_system_prompt(self, handoff: Dict[str, Any]) -> str:
-        """Build the system prompt with injected handoff context."""
+    def build_support_prompt(self, handoff: Dict[str, Any]) -> str:
+        """System prompt for human_review stage — support mode, no nomination."""
         volunteer_name = handoff.get("volunteer_name", "Volunteer")
-        volunteer_id = handoff.get("volunteer_id", "")
-        continuity = handoff.get("continuity", "same")
-        preferred_school_id = handoff.get("preferred_school_id")
-        preferred_need_id = handoff.get("preferred_need_id")
-        preference_notes = handoff.get("preference_notes")
-        fulfillment_history = handoff.get("fulfillment_history", [])
+        return f"""You are the eVidyaloka Volunteer Support Assistant.
+You are talking to {volunteer_name}, a returning volunteer.
 
-        lines = [
-            f"Volunteer Name: {volunteer_name}",
+IMPORTANT — BRANDING: Always say "eVidyaloka". NEVER say "Project Serve".
+LANGUAGE: Match the volunteer's language — Hindi, Hinglish, or English.
+
+SITUATION: Our team has been notified and will follow up with {volunteer_name} about a teaching placement.
+
+YOUR ROLE:
+- Answer any questions the volunteer has warmly and helpfully.
+- If they ask when someone will contact them: "Our team will reach out within 1-2 working days."
+- If they ask about changing preferences: note it down and say the team will consider it.
+- If they want to pause: call signal_outcome(outcome="paused").
+- Do NOT attempt to find or nominate needs — that's being handled by the team.
+- Keep messages short and reassuring."""
+
+    def build_system_prompt(
+        self,
+        handoff: Dict[str, Any],
+        match_context: str,
+    ) -> str:
+        """Build system prompt with volunteer handoff + pre-found match injected."""
+        volunteer_name = handoff.get("volunteer_name", "Volunteer")
+        volunteer_id   = handoff.get("volunteer_id", "")
+        preference_notes = handoff.get("preference_notes", "")
+
+        handoff_lines = [
+            f"Name: {volunteer_name}",
             f"Volunteer ID: {volunteer_id}",
-            f"Continuity preference: {continuity}",
         ]
-        if preferred_need_id:
-            lines.append(f"Preferred need ID: {preferred_need_id}")
-        if preferred_school_id:
-            lines.append(f"Preferred school ID: {preferred_school_id}")
         if preference_notes:
-            lines.append(f"Preference notes: {preference_notes}")
+            handoff_lines.append(f"Preferences: {preference_notes}")
 
-        # Surface last fulfillment details so LLM can reference them
-        if fulfillment_history:
-            latest = fulfillment_history[0]
-            parts = []
-            if latest.get("school_name"):
-                parts.append(f"school={latest['school_name']}")
-            if latest.get("need_purpose") or latest.get("need_name"):
-                parts.append(f"need={latest.get('need_purpose') or latest.get('need_name')}")
-            if latest.get("days"):
-                parts.append(f"days={latest['days']}")
-            if latest.get("time_slots"):
-                s = latest["time_slots"][0]
-                parts.append(f"time={s.get('startTime','')}-{s.get('endTime','')}")
-            if latest.get("need_id"):
-                parts.append(f"need_id={latest['need_id']}")
-            if parts:
-                lines.append(f"Last teaching: {'; '.join(parts)}")
+        return _SYSTEM_PROMPT_TEMPLATE.format(
+            handoff_context="\n".join(handoff_lines),
+            match_context=match_context,
+        )
 
-        handoff_context = "\n".join(lines)
-        return _SYSTEM_PROMPT_TEMPLATE.format(handoff_context=handoff_context)
+    def format_match_context(self, match_result) -> str:
+        """Serialize MatchResult into a readable block for the system prompt."""
+        from app.service.matching_service import MatchResult
+        if match_result.status == "not_found":
+            return f"MATCH STATUS: not_found\nReason: {match_result.reason or 'no open needs'}"
 
-    async def run_l4_loop(
+        lines = [f"MATCH STATUS: {match_result.status}"]
+        for i, need in enumerate(match_result.candidates, 1):
+            prefix = f"Option {i}" if len(match_result.candidates) > 1 else "Match"
+            lines.append(f"\n{prefix}:")
+            lines.append(f"  need_id: {need.get('id', '')}")
+            lines.append(f"  school: {need.get('school_name', need.get('needPurpose', ''))}")
+            lines.append(f"  subject: {need.get('name', '')}")
+            lines.append(f"  days: {need.get('days', '')}")
+            slots = need.get("time_slots", [])
+            if slots:
+                s = slots[0]
+                lines.append(f"  time: {s.get('startTime','')}-{s.get('endTime','')}")
+            lines.append(f"  status: {need.get('status', '')}")
+        return "\n".join(lines)
+
+    async def run_conversation_loop(
         self,
         system_prompt: str,
         messages: List[Dict],
-        tool_executor: Callable[[str, Dict], Any],
-        max_tool_iterations: int = 10,
+        tool_executor: Callable[[str, Dict[str, Any]], Any],
+        max_iterations: int = 4,
     ) -> Tuple[str, Dict[str, Any]]:
         """
-        Run the L4 extended tool-calling loop.
-
-        Runs Claude with the full conversation history, executing tools until
-        Claude produces a text response OR calls signal_outcome.
-
-        Returns: (text_response_for_volunteer, collected_tool_results)
+        Minimal tool-calling loop — present match, handle yes/no, nominate.
+        Max 4 iterations: present → confirm → nominate → signal.
         """
         client = self._get_client()
         if client is None:
             return self._fallback(), {}
 
-        collected_tool_results: Dict[str, Any] = {}
-        # Strip any extra fields — Anthropic only accepts role + content
+        collected: Dict[str, Any] = {}
         current_messages = [
             {"role": m["role"], "content": m["content"]}
             for m in messages
@@ -265,62 +218,50 @@ class FulfillmentLLMAdapter:
         ]
 
         try:
-            for iteration in range(max_tool_iterations):
+            for iteration in range(max_iterations):
                 response = await client.messages.create(
                     model=self._model,
-                    max_tokens=1024,
+                    max_tokens=512,
                     system=system_prompt,
                     tools=FULFILLMENT_TOOLS,
                     messages=current_messages,
                 )
 
-                # Check if Claude produced a text response (message for volunteer)
-                text_blocks = [b for b in response.content if hasattr(b, "text") and b.text]
+                text_blocks    = [b for b in response.content if hasattr(b, "text") and b.text]
                 tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
 
-                # If no tool calls, Claude is done — return the text
                 if not tool_use_blocks:
-                    text = next((b.text for b in text_blocks), self._fallback())
-                    return text, collected_tool_results
+                    return next((b.text for b in text_blocks), self._fallback()), collected
 
-                # Execute all tool calls in this response
                 tool_results = []
                 for tool_block in tool_use_blocks:
-                    tool_name = tool_block.name
+                    tool_name  = tool_block.name
                     tool_input = tool_block.input or {}
-
-                    logger.info(f"L4 loop: executing tool '{tool_name}' (iteration {iteration + 1})")
+                    logger.info(f"Fulfillment loop: tool '{tool_name}' (iter {iteration + 1})")
                     result = await tool_executor(tool_name, tool_input)
-                    collected_tool_results[tool_name] = result
-
+                    collected[tool_name] = result
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tool_block.id,
                         "content": str(result),
                     })
-
-                    # signal_outcome terminates the loop immediately
                     if tool_name == "signal_outcome":
-                        # Return any text produced alongside signal_outcome, or empty string
                         text = next((b.text for b in text_blocks), "")
-                        return text, collected_tool_results
+                        return text, collected
 
-                # Append assistant message and tool results to conversation
                 current_messages.append({"role": "assistant", "content": response.content})
                 current_messages.append({"role": "user", "content": tool_results})
 
-            # Loop exhausted — return empty to trigger human_review
-            logger.warning("L4 loop exhausted max iterations without signal_outcome")
-            return "", collected_tool_results
+            logger.warning("Fulfillment loop exhausted iterations")
+            return "", collected
 
         except Exception as exc:
-            logger.error(f"L4 loop error: {exc}")
-            return self._fallback(), collected_tool_results
+            logger.error(f"Fulfillment loop error: {exc}")
+            return self._fallback(), collected
 
     def _fallback(self) -> str:
         return (
-            "Abhi koi jagah nahi mili. Hamari team jald hi aapse contact karegi. "
-            "Aapke saath kaam karne ka mauka milega!"
+            "Hamari team aapke liye sahi jagah dhundh rahi hai. Jald hi contact karenge."
         )
 
 

@@ -346,7 +346,7 @@ class EngagementAgentService:
         )
 
         message = text or (
-            "Perfect. I've noted your preference and will now find the best teaching match for you."
+            "Perfect! Give me a moment while I find the best teaching opportunity for you... 🔍"
         )
 
         return self._build_response(

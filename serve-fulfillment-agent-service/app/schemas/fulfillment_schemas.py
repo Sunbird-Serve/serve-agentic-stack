@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_SUB_STATE = {"handoff": {}, "nominated_need_id": None, "human_review_reason": None}
+_DEFAULT_SUB_STATE = {"handoff": {}, "nominated_need_id": None, "human_review_reason": None, "match_result": None}
 
 
 class FulfillmentWorkflowState(str, Enum):
@@ -81,6 +81,7 @@ def _load_sub_state(raw: Optional[str]) -> Dict[str, Any]:
             "handoff": data.get("handoff", {}),
             "nominated_need_id": data.get("nominated_need_id"),
             "human_review_reason": data.get("human_review_reason"),
+            "match_result": data.get("match_result"),
         }
     except (json.JSONDecodeError, ValueError):
         logger.warning("Malformed sub_state JSON — using defaults")
@@ -93,4 +94,5 @@ def _dump_sub_state(sub_state: Dict[str, Any]) -> str:
         "handoff": sub_state.get("handoff", {}),
         "nominated_need_id": sub_state.get("nominated_need_id"),
         "human_review_reason": sub_state.get("human_review_reason"),
+        "match_result": sub_state.get("match_result"),
     })

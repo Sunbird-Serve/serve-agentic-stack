@@ -79,26 +79,6 @@ class DomainClient:
         """Enrich a need with subject, grade, schedule, and time slots."""
         return await _call_mcp_tool("get_need_details", {"need_id": need_id})
 
-    async def resolve_school_context(
-        self,
-        coordinator_id: Optional[str] = None,
-        school_hint: Optional[str] = None,
-    ) -> Dict:
-        """Find schools/needs by hint (name, location, preference notes)."""
-        args: Dict[str, Any] = {}
-        if coordinator_id:
-            args["coordinator_id"] = coordinator_id
-        if school_hint:
-            args["school_hint"] = school_hint
-        return await _call_mcp_tool("resolve_school_context", args)
-
-    async def nominate_volunteer_for_need(self, need_id: str, volunteer_id: str) -> Dict:
-        """Nominate the volunteer for a need."""
-        return await _call_mcp_tool("nominate_volunteer_for_need", {
-            "need_id": need_id,
-            "volunteer_id": volunteer_id,
-        })
-
     async def get_nominations_for_need(self, need_id: str, status: Optional[str] = None) -> Dict:
         """Check existing nominations for a need."""
         args: Dict[str, Any] = {"need_id": need_id}
@@ -109,6 +89,13 @@ class DomainClient:
     async def get_all_entities(self) -> Dict:
         """Get all schools/entities for fallback school search."""
         return await _call_mcp_tool("get_all_entities", {})
+
+    async def nominate_volunteer_for_need(self, need_id: str, volunteer_id: str) -> Dict:
+        """Nominate the volunteer for a need."""
+        return await _call_mcp_tool("nominate_volunteer_for_need", {
+            "need_id": need_id,
+            "volunteer_id": volunteer_id,
+        })
 
     # ── Session methods ───────────────────────────────────────────────────────
 
