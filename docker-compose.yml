@@ -34,6 +34,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://serve:servepassword@postgres:5432/serve_db
       - PORT=8004
       - DASHBOARD_API_KEY=${DASHBOARD_API_KEY:-serve-dashboard-secret-2026}
+      - FULFILL_API_PATH=${FULFILL_API_PATH:-/api/v1/serve-fulfill}
     ports:
       - "8004:8004"
     depends_on:
@@ -110,11 +111,13 @@ services:
       - WHATSAPP_PHONE_NUMBER_ID=${WHATSAPP_PHONE_NUMBER_ID}
       - WHATSAPP_APP_SECRET=${WHATSAPP_APP_SECRET}
       - WHATSAPP_VERIFY_TOKEN=${WHATSAPP_VERIFY_TOKEN:-serve_verify_token}
+      - FULFILLMENT_AGENT_URL=http://serve-fulfillment-agent-service:8007
     ports:
       - "8001:8001"
     depends_on:
       - serve-mcp-server
       - serve-onboarding-agent-service
+      - serve-fulfillment-agent-service
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/api/health"]
       interval: 30s
@@ -142,6 +145,31 @@ services:
       - serve-mcp-server
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8006/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - serve-network
+
+  # Fulfillment Agent Service - Port 8007
+  serve-fulfillment-agent-service:
+    build:
+      context: ./serve-fulfillment-agent-service
+      dockerfile: Dockerfile
+    container_name: serve-fulfillment-agent-service
+    environment:
+      - PORT=8007
+      - CORS_ORIGINS=*
+      - MCP_SERVER_URL=http://serve-mcp-server:8004
+      - LLM_PROVIDER=claude
+      - LLM_MODEL=claude-sonnet-4-5-20250929
+      - EMERGENT_LLM_KEY=${EMERGENT_LLM_KEY}
+    ports:
+      - "8007:8007"
+    depends_on:
+      - serve-mcp-server
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8007/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3

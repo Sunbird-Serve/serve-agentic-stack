@@ -14,6 +14,7 @@ MCP DB (this server owns):
 """
 import logging
 import os
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
@@ -31,6 +32,7 @@ from config import MCP_PORT, MCP_HOST
 from services.session_service     import SessionService
 from services.profile_service     import ProfileService
 from services.memory_service      import MemoryService
+from services.engagement_service  import engagement_service
 from services.coordinator_service import coordinator_service
 from services.school_service      import school_service
 from services.need_service        import need_service
@@ -45,6 +47,8 @@ from schemas import (
     GetMissingFieldsInput, SaveVolunteerFieldsInput, EvaluateReadinessInput,
     SaveMessageInput, GetConversationInput,
     SaveMemorySummaryInput, GetMemorySummaryInput,
+    EngagementSaveConfirmedSignalsInput,
+    EngagementUpdateVolunteerStatusInput, EngagementPrepareFulfillmentHandoffInput,
     LogEventInput, EmitHandoffEventInput,
     ResolveCoordinatorInput, CreateCoordinatorInput, MapCoordinatorToSchoolInput,
     ResolveSchoolContextInput, CreateSchoolContextInput, FetchPreviousNeedContextInput,
@@ -52,8 +56,12 @@ from schemas import (
     PrepareHandoffInput, PauseNeedSessionInput,
     SaveNeedMessageInput, LogNeedEventInput, EmitNeedHandoffInput,
     GetSessionAnalyticsInput,
+    # Engagement + Fulfillment agent tools
+    GetVolunteerFulfillmentHistoryInput, CheckActiveNominationsInput,
+    GetEngagementContextInput, NominateVolunteerInput, ConfirmNominationInput,
+    GetNominationsForNeedInput, GetRecommendedVolunteersInput,
+    GetNeedsForEntityInput, GetNeedDetailsInput,
 )
-
 session_service = SessionService()
 profile_service = ProfileService()
 memory_service  = MemoryService()
@@ -413,6 +421,45 @@ async def get_memory_summary(params: GetMemorySummaryInput) -> dict:
               or null if no summary exists
     """
     return await memory_service.get_summary(params.session_id)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ENGAGEMENT HYBRID TOOLS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+async def engagement_save_confirmed_signals(params: EngagementSaveConfirmedSignalsInput) -> dict:
+    """
+    Persist confirmed engagement signals into the session sub_state.
+    """
+    return await engagement_service.save_confirmed_signals(
+        session_id=params.session_id,
+        signals=params.signals,
+    )
+
+
+@mcp.tool()
+async def engagement_update_volunteer_status(params: EngagementUpdateVolunteerStatusInput) -> dict:
+    """
+    Persist the current engagement status and reason into the session state.
+    """
+    return await engagement_service.update_volunteer_status(
+        session_id=params.session_id,
+        volunteer_status=params.volunteer_status,
+        reason=params.reason,
+        signals=params.signals,
+    )
+
+
+@mcp.tool()
+async def engagement_prepare_fulfillment_handoff(params: EngagementPrepareFulfillmentHandoffInput) -> dict:
+    """
+    Build and persist the fulfillment handoff payload for the current engagement session.
+    """
+    return await engagement_service.prepare_fulfillment_handoff(
+        session_id=params.session_id,
+        signals=params.signals,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1106,6 +1153,277 @@ Always call `resume_session` or `get_memory_summary` first to load their profile
 # ─────────────────────────────────────────────────────────────────────────────
 # ENTRY POINT
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ENGAGEMENT & FULFILLMENT AGENT TOOLS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+async def get_volunteer_fulfillment_history(params: GetVolunteerFulfillmentHistoryInput) -> dict:
+    """
+    Fetch a volunteer's completed/closed fulfillment history, enriched with
+    need details (school, subject, grade, schedule).
+
+    Used by: Engagement Agent (to build personalised greeting context)
+
+    Args:
+        volunteer_id: Serve Registry volunteer osid
+        page:         Page number (default 0)
+        size:         Page size (default 50)
+
+    Returns:
+        fulfillments: list of {fulfillment_id, need_id, school_name, subject,
+                               grade_levels, schedule, start_date, end_date,
+                               fulfillment_status}
+        total: count of completed/closed fulfillments
+    """
+    from services.serve_registry_client import fulfillment_client, need_service_client
+
+    COMPLETED_STATUSES = {"Completed", "Closed"}
+
+    raw = await fulfillment_client.get_fulfillments_for_volunteer(
+        params.volunteer_id, page=params.page, size=params.size
+    )
+
+    enriched = []
+    for f in raw:
+        status = f.get("fulfillmentStatus", "")
+        if status not in COMPLETED_STATUSES:
+            continue
+        need_id = f.get("needId", "")
+        need_detail = {}
+        if need_id:
+            try:
+                need_detail = await need_service_client.get_need_details(need_id) or {}
+            except Exception:
+                pass
+        enriched.append({
+            "fulfillment_id":    f.get("id"),
+            "need_id":           need_id,
+            "school_name":       need_detail.get("name", ""),
+            "subjects":          need_detail.get("subjects", []),
+            "grade_levels":      need_detail.get("grade_levels", []),
+            "schedule":          need_detail.get("days", ""),
+            "start_date":        need_detail.get("start_date", ""),
+            "end_date":          need_detail.get("end_date", ""),
+            "fulfillment_status": status,
+        })
+
+    return {"status": "success", "fulfillments": enriched, "total": len(enriched)}
+
+
+@mcp.tool()
+async def check_active_nominations(params: CheckActiveNominationsInput) -> dict:
+    """
+    Check whether a volunteer already has an active nomination in the pipeline.
+
+    Used by: Engagement Agent (to skip re-engagement if already nominated)
+
+    Args:
+        volunteer_id: Serve Registry volunteer osid
+
+    Returns:
+        has_active_nomination: bool
+        nominations: list of active nomination objects
+    """
+    from services.serve_registry_client import nomination_client
+
+    ACTIVE_STATUSES = {"Nominated", "Approved", "Proposed"}
+
+    all_nominations = await nomination_client.get_nominations_for_volunteer(params.volunteer_id)
+    active = [n for n in all_nominations if n.get("nominationStatus") in ACTIVE_STATUSES]
+
+    return {
+        "status":                "success",
+        "has_active_nomination": len(active) > 0,
+        "nominations":           active,
+    }
+
+
+@mcp.tool()
+async def get_engagement_context(params: GetEngagementContextInput) -> dict:
+    """
+    Convenience tool — looks up volunteer by phone, then fetches fulfillment history
+    + volunteer profile in a single call. Engagement agent calls this once at session start.
+
+    Used by: Engagement Agent
+
+    Args:
+        phone: Volunteer's WhatsApp/mobile number
+
+    Returns:
+        volunteer_id:       resolved Serve Registry osid
+        volunteer_name:     full name from registry
+        fulfillment_history: list of enriched past engagements (school, subject, grade, slots)
+        volunteer_profile:  profile dict from Serve Registry (may be null)
+    """
+    return await engagement_service.get_engagement_context(params.phone)
+
+
+@mcp.tool()
+async def get_needs_for_entity(params: GetNeedsForEntityInput) -> dict:
+    """
+    Get open needs for a school/entity.
+
+    Used by: Fulfillment Agent
+
+    Args:
+        entity_id: Serve Need Service entity UUID
+        page: page number
+        size: page size
+
+    Returns:
+        needs: list of needs for the entity
+    """
+    from services.serve_registry_client import need_service_client
+
+    needs = await need_service_client.get_needs_for_entity(
+        params.entity_id,
+        page=params.page,
+        size=params.size,
+    )
+    return {"status": "success", "needs": needs, "total": len(needs)}
+
+
+@mcp.tool()
+async def get_all_entities() -> dict:
+    """
+    Get all schools/entities from Serve Need Service.
+
+    Used by: Fulfillment Agent (fallback when preferred school has no time-matching needs)
+
+    Returns:
+        entities: list of schools with entity_id, name, district, state
+    """
+    from services.serve_registry_client import need_service_client
+    raw = await need_service_client.search_entities()
+    # Ensure entity_id is explicitly set alongside id
+    entities = [{**e, "entity_id": e.get("id")} for e in raw]
+    return {"status": "success", "entities": entities, "total": len(entities)}
+
+
+@mcp.tool()
+async def get_need_details(params: GetNeedDetailsInput) -> dict:
+    """
+    Get enriched details for a need.
+
+    Used by: Fulfillment Agent
+
+    Args:
+        need_id: Serve Need Service need UUID
+
+    Returns:
+        need_details: flattened need detail object
+    """
+    from services.serve_registry_client import need_service_client
+
+    details = await need_service_client.get_need_details(params.need_id)
+    if not details:
+        return {"status": "error", "error": f"Need {params.need_id} not found"}
+    return {"status": "success", "need_details": details}
+
+
+@mcp.tool()
+async def nominate_volunteer_for_need(params: NominateVolunteerInput) -> dict:
+    """
+    Nominate a volunteer for a need.
+
+    Used by: Fulfillment Agent (after matching volunteer to a need)
+
+    Args:
+        need_id:      Serve Need Service need UUID
+        volunteer_id: Serve Registry volunteer osid
+
+    Returns:
+        nomination object with nominationStatus='Nominated'
+    """
+    from services.serve_registry_client import nomination_client
+
+    result = await nomination_client.nominate_volunteer(
+        need_id=params.need_id,
+        volunteer_id=params.volunteer_id,
+    )
+    if result:
+        return {"status": "success", "nomination": result}
+    return {"status": "error", "error": "Nomination failed — check need_id and volunteer_id"}
+
+
+@mcp.tool()
+async def confirm_nomination(params: ConfirmNominationInput) -> dict:
+    """
+    Confirm or reject a nomination (Approved / Rejected / Backfill etc.).
+
+    Used by: Fulfillment Agent
+
+    Args:
+        volunteer_id:   Serve Registry volunteer osid
+        nomination_id:  Nomination UUID
+        status:         Nominated | Approved | Proposed | Backfill | Rejected
+
+    Returns:
+        Updated nomination object
+    """
+    from services.serve_registry_client import nomination_client
+
+    result = await nomination_client.confirm_nomination(
+        volunteer_id=params.volunteer_id,
+        nomination_id=params.nomination_id,
+        status=params.status,
+    )
+    if result:
+        return {"status": "success", "nomination": result}
+    return {"status": "error", "error": "Confirmation failed"}
+
+
+@mcp.tool()
+async def get_nominations_for_need(params: GetNominationsForNeedInput) -> dict:
+    """
+    Get all nominations for a need, optionally filtered by status.
+
+    Used by: Fulfillment Agent (to see who's nominated for a need)
+
+    Args:
+        need_id: Serve Need Service need UUID
+        status:  Optional filter — Nominated | Approved | Proposed | Backfill | Rejected
+
+    Returns:
+        nominations: list of nomination objects
+    """
+    from services.serve_registry_client import nomination_client
+
+    if params.status:
+        nominations = await nomination_client.get_nominations_for_need_by_status(
+            params.need_id, params.status
+        )
+    else:
+        nominations = await nomination_client.get_nominations_for_need(params.need_id)
+
+    return {"status": "success", "nominations": nominations, "total": len(nominations)}
+
+
+@mcp.tool()
+async def get_recommended_volunteers(params: GetRecommendedVolunteersInput) -> dict:
+    """
+    Get recommended volunteers — either not yet nominated or already nominated.
+
+    Used by: Fulfillment Agent (to find candidates for open needs)
+
+    Args:
+        already_nominated: False → volunteers not yet nominated (default)
+                           True  → volunteers already nominated
+
+    Returns:
+        volunteers: list of UserResponse objects
+    """
+    from services.serve_registry_client import nomination_client
+
+    if params.already_nominated:
+        volunteers = await nomination_client.get_recommended_nominated()
+    else:
+        volunteers = await nomination_client.get_recommended_not_nominated()
+
+    return {"status": "success", "volunteers": volunteers, "total": len(volunteers)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

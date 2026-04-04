@@ -21,10 +21,14 @@ VOLUNTEERING_API_PATH = os.environ.get(
 NEED_API_PATH = os.environ.get(
     "NEED_API_PATH", "/api/v1/serve-need"
 )
+FULFILL_API_PATH = os.environ.get(
+    "FULFILL_API_PATH", "/api/v1/serve-fulfill"
+)
 
 # Fully resolved base URLs (used by registry clients)
 VOLUNTEERING_SERVICE_URL = f"{SERVE_BASE_URL}{VOLUNTEERING_API_PATH}"
 NEED_SERVICE_URL = f"{SERVE_BASE_URL}{NEED_API_PATH}"
+FULFILL_SERVICE_URL = f"{SERVE_BASE_URL}{FULFILL_API_PATH}"
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 # No auth required in current sandbox. Set SERVE_BEARER_TOKEN for auth-enabled

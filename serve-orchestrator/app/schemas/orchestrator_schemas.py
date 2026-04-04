@@ -207,6 +207,8 @@ class SessionState(BaseModel):
     context_summary: Optional[str] = None
     channel_metadata: Optional[Dict[str, Any]] = None
     volunteer_id: Optional[UUID] = None
+    volunteer_name: Optional[str] = None
+    volunteer_phone: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -226,6 +228,8 @@ class InteractionResponse(BaseModel):
     """Response from orchestrator to channel"""
     session_id: Optional[UUID] = None
     assistant_message: str
+    preliminary_message: Optional[str] = None   # separate bubble shown before assistant_message
+    auto_continue: bool = False         # UI should auto-fire a follow-up request
     active_agent: AgentType
     workflow: WorkflowType
     state: str
@@ -270,6 +274,8 @@ class TelemetryEvent(BaseModel):
 class AgentTurnResponse(BaseModel):
     """Response from agent to orchestrator"""
     assistant_message: str
+    preliminary_message: Optional[str] = None   # set by orchestrator when combining ack + real response
+    auto_continue: bool = False         # agent wants a follow-up turn
     active_agent: AgentType
     workflow: WorkflowType
     state: str

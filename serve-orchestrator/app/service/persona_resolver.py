@@ -25,6 +25,7 @@ Design constraints:
   - Resolution only runs for brand-new sessions (event.session_id is None);
     resumed sessions already carry their persona from persistent storage.
 """
+import re
 import logging
 from typing import Optional
 
@@ -90,6 +91,27 @@ class PersonaResolver:
                 confidence=1.0,
                 source="explicit",
                 metadata={"from": "channel_request"},
+            )
+
+        # ── 1b. Returning volunteer self-identification phrase ──────────────
+        # Detect common phrases a returning volunteer might use to identify
+        # themselves, and route directly to the engagement agent.
+        _RETURNING_RE = re.compile(
+            r"\b(returning volunteer|i (am|'m) a returning|i have (taught|volunteered) before|"
+            r"i (taught|volunteered) (last year|before|previously|earlier)|"
+            r"wapas aaya|wapas aayi|pehle padhaya|pehle volunteer|"
+            r"phir se volunteer|dobara volunteer)\b",
+            re.IGNORECASE,
+        )
+        if _RETURNING_RE.search(event.payload):
+            logger.info(
+                f"Returning volunteer self-identified via phrase for actor={event.actor_id!r}"
+            )
+            return PersonaResolutionResult(
+                persona=PersonaType.RETURNING_VOLUNTEER,
+                confidence=0.95,
+                source="explicit",
+                metadata={"from": "self_identification_phrase", "matched": event.payload[:80]},
             )
 
         # ── 2. System / scheduled trigger → SYSTEM persona ─────────────────

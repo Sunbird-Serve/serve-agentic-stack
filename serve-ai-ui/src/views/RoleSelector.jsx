@@ -15,6 +15,14 @@ const ROLES = [
     hoverColor: 'hover:border-blue-400',
   },
   {
+    id: 'returning_volunteer',
+    title: 'Returning Volunteer',
+    description: 'Test the re-engagement flow for volunteers who have previously fulfilled needs.',
+    icon: ArrowRight,
+    color: 'bg-violet-500',
+    hoverColor: 'hover:border-violet-400',
+  },
+  {
     id: 'need_coordinator',
     title: 'Need Coordinator',
     description: 'Register teaching needs for schools. Capture subject, grade, and schedule requirements.',

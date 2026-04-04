@@ -239,41 +239,65 @@ NEED_COORDINATION_WORKFLOW = WorkflowDefinition(
 RETURNING_VOLUNTEER_WORKFLOW = WorkflowDefinition(
     workflow_id='returning_volunteer',
     display_name='Returning Volunteer Re-engagement',
-    description='Re-engages returning volunteers, refreshes their profile, and prepares them for matching',
+    description='Re-engages returning volunteers, captures continuity preferences, and hands ready volunteers to fulfillment',
     initial_stage='re_engaging',
-    terminal_stages=['matching_ready'],
+    terminal_stages=['complete', 'human_review'],
     stages={
         're_engaging': WorkflowStageDefinition(
             stage_id='re_engaging',
             display_name='Welcome Back',
             responsible_agent='engagement',
-            valid_next_stages=['profile_refresh', 'paused'],
+            valid_next_stages=['profile_refresh', 'matching_ready', 'active', 'paused', 'human_review'],
             required_fields=[],
             can_pause=True,
         ),
         'profile_refresh': WorkflowStageDefinition(
             stage_id='profile_refresh',
-            display_name='Update Your Profile',
+            display_name='Confirm Continuation Preferences',
             responsible_agent='engagement',
-            valid_next_stages=['matching_ready', 'paused'],
-            required_fields=['availability'],
-            optional_fields=['skills', 'interests', 'preferred_causes'],
+            valid_next_stages=['matching_ready', 'active', 'paused', 'human_review'],
+            required_fields=[],
+            optional_fields=['same_school', 'same_slot', 'continuity'],
             can_pause=True,
         ),
         'matching_ready': WorkflowStageDefinition(
             stage_id='matching_ready',
-            display_name='Ready for Matching',
+            display_name='Ready For Fulfillment',
             responsible_agent='engagement',
-            valid_next_stages=[],  # Terminal — hand off to selection agent
-            required_fields=['availability'],
+            valid_next_stages=['active', 'paused', 'human_review'],
+            required_fields=[],
             can_pause=False,
             can_skip=False,
+        ),
+        'active': WorkflowStageDefinition(
+            stage_id='active',
+            display_name='Matching In Progress',
+            responsible_agent='fulfillment',
+            valid_next_stages=['complete', 'human_review', 'paused'],
+            required_fields=[],
+            can_pause=True,
+        ),
+        'complete': WorkflowStageDefinition(
+            stage_id='complete',
+            display_name='Matched',
+            responsible_agent='fulfillment',
+            valid_next_stages=[],
+            required_fields=[],
+            can_pause=False,
+        ),
+        'human_review': WorkflowStageDefinition(
+            stage_id='human_review',
+            display_name='Needs Human Follow-up',
+            responsible_agent='engagement',
+            valid_next_stages=[],
+            required_fields=[],
+            can_pause=False,
         ),
         'paused': WorkflowStageDefinition(
             stage_id='paused',
             display_name='Paused',
             responsible_agent='engagement',
-            valid_next_stages=['re_engaging', 'profile_refresh'],
+            valid_next_stages=['re_engaging', 'profile_refresh', 'active'],
             required_fields=[],
             can_pause=False,
         ),
@@ -459,13 +483,15 @@ class WorkflowValidator:
                 'fulfillment_handoff_ready'
             ],
             'returning_volunteer': [
-                're_engaging', 'profile_refresh', 'matching_ready'
+                're_engaging', 'profile_refresh', 'matching_ready', 'active', 'complete'
             ],
         }
         
         stage_order = stage_orders.get(workflow_id, [])
         
         if current_stage not in stage_order:
+            if workflow.is_terminal(current_stage):
+                return 100
             # Handle special states
             if current_stage in ['paused', 'human_review', 'refinement_required']:
                 return 50  # Midway indicator

@@ -277,6 +277,61 @@ class GetMemorySummaryInput(BaseModel):
         return v
 
 
+# ─── Engagement Hybrid Tools ─────────────────────────────────────────────────
+
+class EngagementSaveConfirmedSignalsInput(BaseModel):
+    session_id: str
+    signals: Dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("session_id")
+    @classmethod
+    def validate_uuid(cls, v: str) -> str:
+        import uuid
+        try:
+            uuid.UUID(v)
+        except ValueError:
+            raise ValueError(f"session_id must be a valid UUID, got: {v}")
+        return v
+
+
+class EngagementUpdateVolunteerStatusInput(BaseModel):
+    session_id: str
+    volunteer_status: Literal[
+        "continue_nurturing",
+        "opportunity_readiness",
+        "pause_outreach",
+        "opt_out",
+        "human_review",
+    ]
+    reason: Optional[str] = Field(default=None)
+    signals: Optional[Dict[str, Any]] = Field(default=None)
+
+    @field_validator("session_id")
+    @classmethod
+    def validate_uuid(cls, v: str) -> str:
+        import uuid
+        try:
+            uuid.UUID(v)
+        except ValueError:
+            raise ValueError(f"session_id must be a valid UUID, got: {v}")
+        return v
+
+
+class EngagementPrepareFulfillmentHandoffInput(BaseModel):
+    session_id: str
+    signals: Optional[Dict[str, Any]] = Field(default=None)
+
+    @field_validator("session_id")
+    @classmethod
+    def validate_uuid(cls, v: str) -> str:
+        import uuid
+        try:
+            uuid.UUID(v)
+        except ValueError:
+            raise ValueError(f"session_id must be a valid UUID, got: {v}")
+        return v
+
+
 # ─── Telemetry ────────────────────────────────────────────────────────────────
 
 class LogEventInput(BaseModel):
@@ -500,3 +555,66 @@ class GetSessionAnalyticsInput(BaseModel):
             except ValueError:
                 raise ValueError(f"Date must be ISO format YYYY-MM-DD, got: {v}")
         return v
+
+
+# ─── Engagement / Fulfillment — Volunteer History & Nominations ───────────────
+
+class GetVolunteerFulfillmentHistoryInput(BaseModel):
+    volunteer_id: str = Field(
+        min_length=1,
+        description="Serve Registry volunteer osid"
+    )
+    page: int = Field(default=0, ge=0)
+    size: int = Field(default=50, ge=1, le=200)
+
+
+class CheckActiveNominationsInput(BaseModel):
+    volunteer_id: str = Field(
+        min_length=1,
+        description="Serve Registry volunteer osid"
+    )
+
+
+class GetEngagementContextInput(BaseModel):
+    phone: str = Field(
+        min_length=7,
+        description="Volunteer's WhatsApp/mobile number — used to look up the volunteer and return fulfillment history + profile in one call"
+    )
+
+
+class GetNeedsForEntityInput(BaseModel):
+    entity_id: str = Field(min_length=1, description="Serve Need Service entity / school UUID")
+    page: int = Field(default=0, ge=0)
+    size: int = Field(default=20, ge=1, le=200)
+
+
+class GetNeedDetailsInput(BaseModel):
+    need_id: str = Field(min_length=1, description="Serve Need Service need UUID")
+
+
+class NominateVolunteerInput(BaseModel):
+    need_id: str = Field(min_length=1, description="Serve Need Service need UUID")
+    volunteer_id: str = Field(min_length=1, description="Serve Registry volunteer osid")
+
+
+class ConfirmNominationInput(BaseModel):
+    volunteer_id: str = Field(min_length=1, description="Serve Registry volunteer osid")
+    nomination_id: str = Field(min_length=1, description="Nomination UUID")
+    status: Literal["Nominated", "Approved", "Proposed", "Backfill", "Rejected"] = Field(
+        description="New nomination status"
+    )
+
+
+class GetNominationsForNeedInput(BaseModel):
+    need_id: str = Field(min_length=1, description="Serve Need Service need UUID")
+    status: Optional[Literal["Nominated", "Approved", "Proposed", "Backfill", "Rejected"]] = Field(
+        default=None,
+        description="Filter by status (omit for all nominations)"
+    )
+
+
+class GetRecommendedVolunteersInput(BaseModel):
+    already_nominated: bool = Field(
+        default=False,
+        description="False → recommendedNotNominated, True → recommendedNominated"
+    )
