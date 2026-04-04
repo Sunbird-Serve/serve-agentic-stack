@@ -62,7 +62,8 @@ class EngagementAgentService:
         sub_state = _load_sub_state(request.session_state.sub_state)
 
         # ── Pre-load engagement context if not already cached ─────────────────
-        if not sub_state.get("engagement_context") and request.session_state.volunteer_phone:
+        context_was_missing = not sub_state.get("engagement_context")
+        if context_was_missing and request.session_state.volunteer_phone:
             try:
                 ctx = await domain_client.get_engagement_context(request.session_state.volunteer_phone)
                 if ctx.get("status") == "success":
@@ -75,11 +76,26 @@ class EngagementAgentService:
             except Exception as e:
                 logger.warning(f"Session {session_id}: pre-load engagement context failed: {e}")
 
+        # ── First-turn fast-ack: return immediately, let UI auto-continue ─────
+        is_first_turn = len(request.conversation_history) == 0
+        if is_first_turn and context_was_missing:
+            ack_message = "One moment, let me pull up your details... 🔍"
+            updated_sub_state = _dump_sub_state(sub_state)
+            await domain_client.save_message(session_id, "assistant", ack_message)
+            await domain_client.advance_state(
+                session_id, EngagementWorkflowState.RE_ENGAGING.value, updated_sub_state
+            )
+            return self._build_response(
+                message=ack_message,
+                state=EngagementWorkflowState.RE_ENGAGING.value,
+                sub_state=updated_sub_state,
+                auto_continue=True,
+            )
+
         # ── Build conversation history (bounded to last 20 messages) ──────────
         messages = list(request.conversation_history[-20:])
-        if request.user_message:
+        if request.user_message and request.user_message != "__auto_continue__":
             messages.append({"role": "user", "content": request.user_message})
-
         # ── Build system prompt ───────────────────────────────────────────────
         session_context = self._build_session_context(request, sub_state)
         system_prompt = llm_adapter.build_system_prompt(session_context)
@@ -433,12 +449,14 @@ class EngagementAgentService:
         state: str,
         sub_state: Optional[str],
         handoff_event: Optional[Dict[str, Any]] = None,
+        auto_continue: bool = False,
     ) -> EngagementAgentTurnResponse:
         return EngagementAgentTurnResponse(
             assistant_message=message,
             state=state,
             sub_state=sub_state,
             handoff_event=handoff_event,
+            auto_continue=auto_continue,
         )
 
 

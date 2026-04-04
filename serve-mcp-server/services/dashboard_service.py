@@ -78,19 +78,25 @@ async def get_dashboard_stats() -> Dict[str, Any]:
             submitted_needs = needs_by_status.get("submitted", 0)
             draft_needs     = needs_by_status.get("draft", 0)
 
-            # ── Recent sessions (last 20) ─────────────────────────────────────
+            # ── Recent sessions (last 50) ─────────────────────────────────────
             recent_rows = (await db.execute(
                 select(
                     DBSession.id,
                     DBSession.actor_id,
                     DBSession.channel,
+                    DBSession.workflow,
+                    DBSession.active_agent,
+                    DBSession.persona,
                     DBSession.stage,
                     DBSession.status,
+                    DBSession.sub_state,
+                    DBSession.volunteer_id,
+                    DBSession.channel_metadata,
                     DBSession.created_at,
                     DBSession.last_message_at,
                 )
                 .order_by(desc(DBSession.updated_at))
-                .limit(20)
+                .limit(50)
             )).all()
 
             recent_sessions = [
@@ -98,8 +104,14 @@ async def get_dashboard_stats() -> Dict[str, Any]:
                     "id":              str(r.id),
                     "actor_id":        r.actor_id or "unknown",
                     "channel":         r.channel,
+                    "workflow":        r.workflow,
+                    "active_agent":    r.active_agent,
+                    "persona":         r.persona,
                     "stage":           r.stage,
                     "status":          r.status,
+                    "sub_state":       r.sub_state,
+                    "volunteer_id":    r.volunteer_id,
+                    "volunteer_name":  (r.channel_metadata or {}).get("volunteer_name"),
                     "created_at":      r.created_at.isoformat() if r.created_at else None,
                     "last_message_at": r.last_message_at.isoformat() if r.last_message_at else None,
                 }

@@ -65,6 +65,37 @@ class FulfillmentAgentService:
             sub_state["handoff"] = handoff
 
         # ── Phase 1: find match (Python, no LLM) — only on first turn ────────
+        # On handoff turn, return an ack immediately and let the UI auto-continue.
+        # Context fetch + matching will run on the follow-up request (match_result cached).
+        is_handoff_turn = (
+            request.user_message == "__handoff__"
+            and not sub_state.get("match_result")
+        )
+
+        if is_handoff_turn and handoff:
+            ack_message = "Give me a moment while I find the best teaching opportunity for you... 🔍"
+            # Run match finder now so it's cached for the auto-continue turn
+            logger.info(f"Session {session_id}: running MatchFinder")
+            match_result = await match_finder.find(handoff)
+            sub_state["match_result"] = {
+                "status": match_result.status,
+                "candidates": match_result.candidates,
+                "reason": match_result.reason,
+            }
+            logger.info(
+                f"Session {session_id}: match status={match_result.status}, "
+                f"candidates={len(match_result.candidates)}"
+            )
+            updated = _dump_sub_state(sub_state)
+            await domain_client.save_message(session_id, "assistant", ack_message)
+            await domain_client.advance_state(session_id, FulfillmentWorkflowState.ACTIVE.value, updated)
+            return self._build_response(
+                message=ack_message,
+                state=FulfillmentWorkflowState.ACTIVE.value,
+                sub_state=updated,
+                auto_continue=True,
+            )
+
         # Cache match result in sub_state so subsequent turns skip re-searching
         match_result = None
         if not sub_state.get("match_result") and handoff:
@@ -97,11 +128,11 @@ class FulfillmentAgentService:
         else:
             system_prompt = llm_adapter.build_system_prompt(handoff, match_context)
 
-        # Build messages — skip synthetic handoff trigger
+        # Build messages — skip synthetic triggers
         messages = list(request.conversation_history[-20:])
-        if request.user_message and request.user_message != "__handoff__":
+        if request.user_message and request.user_message not in ("__handoff__", "__auto_continue__"):
             messages.append({"role": "user", "content": request.user_message})
-        elif request.user_message == "__handoff__" and not messages:
+        elif request.user_message in ("__handoff__", "__auto_continue__") and not messages:
             messages.append({"role": "user", "content": "Please find me a teaching opportunity."})
 
         async def tool_executor(tool_name: str, tool_input: Dict[str, Any]) -> Any:
@@ -143,6 +174,11 @@ class FulfillmentAgentService:
         updated = _dump_sub_state(sub_state)
         await domain_client.save_message(session_id, "assistant", text)
         await domain_client.advance_state(session_id, FulfillmentWorkflowState.ACTIVE.value, updated)
+        return self._build_response(
+            message=text,
+            state=FulfillmentWorkflowState.ACTIVE.value,
+            sub_state=updated,
+        )
         return self._build_response(
             message=text,
             state=FulfillmentWorkflowState.ACTIVE.value,
@@ -243,9 +279,11 @@ class FulfillmentAgentService:
         message: str,
         state: str,
         sub_state: Optional[str],
+        auto_continue: bool = False,
     ) -> FulfillmentAgentTurnResponse:
         return FulfillmentAgentTurnResponse(
             assistant_message=message,
+            auto_continue=auto_continue,
             state=state,
             sub_state=sub_state,
         )

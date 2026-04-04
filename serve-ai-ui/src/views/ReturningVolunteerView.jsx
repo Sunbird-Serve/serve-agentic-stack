@@ -68,6 +68,21 @@ export const ReturningVolunteerView = ({ onBack }) => {
       setSessionId(response.session_id);
       setSessionState(response.state);
       setMessages([{ role: 'assistant', content: response.assistant_message }]);
+
+      // Auto-continue: agent returned an ack and wants us to fire a follow-up
+      if (response.auto_continue) {
+        const followUp = await orchestratorApi.interact(
+          response.session_id,
+          '__auto_continue__',
+          'web_ui',
+          'returning_volunteer',
+        );
+        setSessionState(followUp.state);
+        const newMsgs = [];
+        if (followUp.preliminary_message) newMsgs.push({ role: 'assistant', content: followUp.preliminary_message });
+        newMsgs.push({ role: 'assistant', content: followUp.assistant_message });
+        setMessages((prev) => [...prev, ...newMsgs]);
+      }
     } catch (err) {
       console.error('Failed to start engagement session:', err);
       setMessages([{ role: 'assistant', content: 'Could not connect. Please check the backend is running.' }]);
@@ -90,7 +105,32 @@ export const ReturningVolunteerView = ({ onBack }) => {
       );
       setSessionId(response.session_id);
       setSessionState(response.state);
-      setMessages((prev) => [...prev, { role: 'assistant', content: response.assistant_message }]);
+      // If response has a preliminary_message (e.g. fulfillment ack from handoff),
+      // show it as a separate bubble before the main message.
+      if (response.preliminary_message) {
+        setMessages((prev) => [
+          ...prev,
+          { role: 'assistant', content: response.preliminary_message },
+          { role: 'assistant', content: response.assistant_message },
+        ]);
+      } else {
+        setMessages((prev) => [...prev, { role: 'assistant', content: response.assistant_message }]);
+      }
+
+      // Auto-continue: agent returned an ack and wants us to fire a follow-up
+      if (response.auto_continue) {
+        const followUp = await orchestratorApi.interact(
+          response.session_id,
+          '__auto_continue__',
+          'web_ui',
+          'returning_volunteer',
+        );
+        setSessionState(followUp.state);
+        const newMsgs = [];
+        if (followUp.preliminary_message) newMsgs.push({ role: 'assistant', content: followUp.preliminary_message });
+        newMsgs.push({ role: 'assistant', content: followUp.assistant_message });
+        setMessages((prev) => [...prev, ...newMsgs]);
+      }
     } catch (err) {
       console.error('Failed to send message:', err);
       setMessages((prev) => [...prev, { role: 'assistant', content: 'Something went wrong. Please try again.' }]);

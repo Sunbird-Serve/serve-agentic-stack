@@ -78,6 +78,7 @@ class EngagementAgentTurnRequest(BaseModel):
 class EngagementAgentTurnResponse(BaseModel):
     """Response from the engagement agent."""
     assistant_message: str
+    auto_continue: bool = False         # UI should auto-fire a follow-up request
     active_agent: str = "engagement"
     workflow: str = "returning_volunteer"
     state: str

@@ -253,24 +253,6 @@ class EngagementLLMAdapter:
 
                 # No tool calls — Claude produced a message for the volunteer
                 if not tool_use_blocks:
-                    # Only nudge on the very first turn (no prior conversation) AND
-                    # only if context isn't already injected in the system prompt.
-                    # On subsequent turns the context is cached — no nudge needed.
-                    context_already_loaded = "Last fulfillment:" in system_prompt
-                    is_first_turn = len(messages) <= 1  # only the opening "Hi"
-                    if iteration == 0 and not collected and not context_already_loaded and is_first_turn:
-                        logger.warning("Claude skipped get_engagement_context on first iteration — nudging")
-                        current_messages.append({
-                            "role": "assistant",
-                            "content": [b for b in response.content if hasattr(b, "text")]
-                            or [{"type": "text", "text": "Let me check your history."}],
-                        })
-                        current_messages.append({
-                            "role": "user",
-                            "content": "Please call get_engagement_context first before responding.",
-                        })
-                        continue
-
                     text = next((b.text for b in text_blocks), self._fallback())
                     return text, collected
 

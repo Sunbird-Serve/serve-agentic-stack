@@ -8,7 +8,9 @@ import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { ScrollArea } from '../components/ui/scroll-area';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { mcpApi } from '../services/api';
+import AgentDashboard from './AgentDashboard';
 
 // Status badge component
 const StatusBadge = ({ status }) => {
@@ -161,132 +163,113 @@ export const OpsView = () => {
   const pausedSessions = sessions.filter(s => s.status === 'paused');
 
   return (
-    <div className="p-6 bg-slate-50 min-h-[calc(100vh-64px)]" data-testid="ops-view">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h2 className="text-2xl font-semibold text-slate-900">Volunteer Pipeline</h2>
-          <p className="text-slate-500">Monitor and manage volunteer onboarding</p>
+    <div className="bg-slate-50 min-h-[calc(100vh-64px)]" data-testid="ops-view">
+      <Tabs defaultValue="pipeline" className="w-full">
+        <div className="px-6 pt-6 pb-0 flex items-center justify-between">
+          <TabsList>
+            <TabsTrigger value="pipeline">Onboarding Pipeline</TabsTrigger>
+            <TabsTrigger value="agents">Agent Dashboard</TabsTrigger>
+          </TabsList>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={fetchSessions}
+            disabled={isLoading}
+            data-testid="refresh-sessions-btn"
+          >
+            <RefreshCw className={`w-4 h-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
         </div>
-        <Button
-          variant="outline"
-          onClick={fetchSessions}
-          disabled={isLoading}
-          data-testid="refresh-sessions-btn"
-        >
-          <RefreshCw className={`w-4 h-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
-          Refresh
-        </Button>
-      </div>
 
-      {/* Stats Row */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatsCard title="Total Volunteers" value={stats.total} icon={User} color="bg-blue-500" />
-        <StatsCard title="Active" value={stats.active} icon={Clock} color="bg-emerald-500" />
-        <StatsCard title="Completed" value={stats.completed} icon={CheckCircle} color="bg-cyan-500" />
-        <StatsCard title="Paused" value={stats.paused} icon={PauseCircle} color="bg-amber-500" />
-      </div>
+        {/* ── Onboarding Pipeline tab ── */}
+        <TabsContent value="pipeline" className="p-6 pt-4">
+          {/* Stats Row */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+            <StatsCard title="Total Volunteers" value={stats.total} icon={User} color="bg-blue-500" />
+            <StatsCard title="Active" value={stats.active} icon={Clock} color="bg-emerald-500" />
+            <StatsCard title="Completed" value={stats.completed} icon={CheckCircle} color="bg-cyan-500" />
+            <StatsCard title="Paused" value={stats.paused} icon={PauseCircle} color="bg-amber-500" />
+          </div>
 
-      {/* Pipeline Columns */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Active Column */}
-        <Card className="border-none shadow-sm">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-lg flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-emerald-500" />
-              In Progress
-              <Badge variant="secondary" className="ml-auto">
-                {activeSessions.length}
-              </Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ScrollArea className="h-[500px] pr-4">
-              <div className="space-y-3">
-                {activeSessions.length === 0 ? (
-                  <p className="text-sm text-slate-500 text-center py-8">
-                    No active sessions
-                  </p>
-                ) : (
-                  activeSessions.map((session) => (
-                    <PipelineCard
-                      key={session.id}
-                      session={session}
-                      onClick={handleSessionClick}
-                    />
-                  ))
-                )}
-              </div>
-            </ScrollArea>
-          </CardContent>
-        </Card>
+          {/* Pipeline Columns */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <Card className="border-none shadow-sm">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                  In Progress
+                  <Badge variant="secondary" className="ml-auto">{activeSessions.length}</Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ScrollArea className="h-[500px] pr-4">
+                  <div className="space-y-3">
+                    {activeSessions.length === 0 ? (
+                      <p className="text-sm text-slate-500 text-center py-8">No active sessions</p>
+                    ) : (
+                      activeSessions.map((session) => (
+                        <PipelineCard key={session.id} session={session} onClick={handleSessionClick} />
+                      ))
+                    )}
+                  </div>
+                </ScrollArea>
+              </CardContent>
+            </Card>
 
-        {/* Completed Column */}
-        <Card className="border-none shadow-sm">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-lg flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-cyan-500" />
-              Completed
-              <Badge variant="secondary" className="ml-auto">
-                {completedSessions.length}
-              </Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ScrollArea className="h-[500px] pr-4">
-              <div className="space-y-3">
-                {completedSessions.length === 0 ? (
-                  <p className="text-sm text-slate-500 text-center py-8">
-                    No completed sessions
-                  </p>
-                ) : (
-                  completedSessions.map((session) => (
-                    <PipelineCard
-                      key={session.id}
-                      session={session}
-                      onClick={handleSessionClick}
-                    />
-                  ))
-                )}
-              </div>
-            </ScrollArea>
-          </CardContent>
-        </Card>
+            <Card className="border-none shadow-sm">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-cyan-500" />
+                  Completed
+                  <Badge variant="secondary" className="ml-auto">{completedSessions.length}</Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ScrollArea className="h-[500px] pr-4">
+                  <div className="space-y-3">
+                    {completedSessions.length === 0 ? (
+                      <p className="text-sm text-slate-500 text-center py-8">No completed sessions</p>
+                    ) : (
+                      completedSessions.map((session) => (
+                        <PipelineCard key={session.id} session={session} onClick={handleSessionClick} />
+                      ))
+                    )}
+                  </div>
+                </ScrollArea>
+              </CardContent>
+            </Card>
 
-        {/* Paused/Review Column */}
-        <Card className="border-none shadow-sm">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-lg flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-amber-500" />
-              Needs Review
-              <Badge variant="secondary" className="ml-auto">
-                {pausedSessions.length}
-              </Badge>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ScrollArea className="h-[500px] pr-4">
-              <div className="space-y-3">
-                {pausedSessions.length === 0 ? (
-                  <p className="text-sm text-slate-500 text-center py-8">
-                    No sessions pending review
-                  </p>
-                ) : (
-                  pausedSessions.map((session) => (
-                    <PipelineCard
-                      key={session.id}
-                      session={session}
-                      onClick={handleSessionClick}
-                    />
-                  ))
-                )}
-              </div>
-            </ScrollArea>
-          </CardContent>
-        </Card>
-      </div>
+            <Card className="border-none shadow-sm">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-amber-500" />
+                  Needs Review
+                  <Badge variant="secondary" className="ml-auto">{pausedSessions.length}</Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ScrollArea className="h-[500px] pr-4">
+                  <div className="space-y-3">
+                    {pausedSessions.length === 0 ? (
+                      <p className="text-sm text-slate-500 text-center py-8">No sessions pending review</p>
+                    ) : (
+                      pausedSessions.map((session) => (
+                        <PipelineCard key={session.id} session={session} onClick={handleSessionClick} />
+                      ))
+                    )}
+                  </div>
+                </ScrollArea>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
 
-      {/* Session Detail Modal would go here */}
+        {/* ── Agent Dashboard tab ── */}
+        <TabsContent value="agents">
+          <AgentDashboard />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 };
