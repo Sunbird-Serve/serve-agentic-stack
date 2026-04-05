@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 
 # Statuses that mean a need is already taken
 _BLOCKED_STATUSES = {"Assigned", "Closed", "Completed", "Cancelled"}
-# Nomination statuses that block a need
-_BLOCKED_NOMINATION_STATUSES = {"Approved"}
+# Only show needs that have been approved for volunteer matching
+_ALLOWED_STATUSES = {"Approved"}
 
 
 class MatchResult:
@@ -111,6 +111,9 @@ class MatchFinder:
             # Skip obviously blocked statuses without fetching details
             if need.get("status") in _BLOCKED_STATUSES:
                 continue
+            # Only consider needs that are approved/open for matching
+            if need.get("status") not in _ALLOWED_STATUSES:
+                continue
             enriched = await self._fetch_and_validate_need(need_id)
             if enriched:
                 validated.append(enriched)
@@ -135,12 +138,7 @@ class MatchFinder:
             return None
         if details.get("status") in _BLOCKED_STATUSES:
             return None
-
-        # Check for blocking nominations
-        nom_result = await domain_client.get_nominations_for_need(need_id, status="Approved")
-        nominations = nom_result.get("nominations", []) if isinstance(nom_result, dict) else []
-        if nominations:
-            logger.info(f"MatchFinder: need {need_id} has Approved nomination — skipping")
+        if details.get("status") not in _ALLOWED_STATUSES:
             return None
 
         return details

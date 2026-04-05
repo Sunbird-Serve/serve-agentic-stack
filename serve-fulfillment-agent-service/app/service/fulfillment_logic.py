@@ -221,10 +221,27 @@ class FulfillmentAgentService:
             return llm_adapter.format_match_context(new_match)
 
         elif tool_name == "nominate_volunteer_for_need":
-            return await domain_client.nominate_volunteer_for_need(
+            # Guard: prevent duplicate nominations in the same session
+            if sub_state.get("nominated_need_id"):
+                existing = sub_state["nominated_need_id"]
+                logger.warning(
+                    f"Session {session_id}: blocked duplicate nomination — "
+                    f"already nominated for {existing}"
+                )
+                return {
+                    "status": "error",
+                    "reason": "already_nominated",
+                    "existing_need_id": existing,
+                    "message": "Volunteer already nominated for a need in this session.",
+                }
+            result = await domain_client.nominate_volunteer_for_need(
                 need_id=tool_input["need_id"],
                 volunteer_id=tool_input["volunteer_id"],
             )
+            # Track successful nomination
+            if isinstance(result, dict) and result.get("status") != "error":
+                sub_state["nominated_need_id"] = tool_input["need_id"]
+            return result
 
         else:
             logger.warning(f"Unknown tool: {tool_name}")

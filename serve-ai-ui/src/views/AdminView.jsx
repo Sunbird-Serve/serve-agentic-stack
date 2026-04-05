@@ -4,7 +4,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   RefreshCw, Activity, Users, MessageSquare, BookOpen,
-  CheckCircle, Wifi, WifiOff, Search, ChevronDown,
+  CheckCircle, Wifi, WifiOff, Search, ChevronDown, Handshake,
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -586,6 +586,190 @@ const NeedsTable = ({ needs, onJumpToSession }) => (
   </Card>
 );
 
+// ── EngagementTable (Tech) ─────────────────────────────────────────────────────
+
+const EngagementTable = ({ sessions, onSelect }) => {
+  // Filter to engagement/returning_volunteer sessions
+  const engSessions = sessions.filter(s =>
+    s.workflow === 'returning_volunteer' || s.active_agent === 'engagement'
+  );
+
+  // Parse sub_state for each session
+  const rows = engSessions.map(s => {
+    let outcome = null, continuity = null, volunteerName = s.volunteer_name;
+    let volunteerPhone = null, volunteerId = s.volunteer_id, preferenceNotes = null;
+    try {
+      const ss = s.sub_state ? JSON.parse(s.sub_state) : {};
+      continuity      = ss.continuity;
+      preferenceNotes = ss.preference_notes;
+      volunteerName   = ss.engagement_context?.volunteer_name || ss.handoff?.volunteer_name || volunteerName;
+      volunteerPhone  = ss.engagement_context?.volunteer_phone;
+      volunteerId     = ss.engagement_context?.volunteer_id || ss.handoff?.volunteer_id || volunteerId;
+      if (ss.deferred) outcome = 'deferred';
+      else if (ss.human_review_reason === 'volunteer_declined') outcome = 'declined';
+      else if (ss.handoff?.volunteer_id) outcome = 'ready';
+    } catch (_) {}
+    return { ...s, outcome, continuity, volunteerName, volunteerPhone, volunteerId, preferenceNotes };
+  });
+
+  const consentLabel = (o) => {
+    if (o === 'ready') return <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-900/40 text-green-400 font-medium">Yes</span>;
+    if (o === 'declined') return <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-900/40 text-red-400 font-medium">No</span>;
+    if (o === 'deferred') return <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-400 font-medium">Later</span>;
+    return <span className="text-[10px] text-slate-500">—</span>;
+  };
+
+  return (
+    <Card className="border-none shadow-sm bg-slate-800">
+      <CardHeader className="pb-2 pt-4 px-5">
+        <CardTitle className="text-sm text-slate-300 flex items-center gap-2">
+          <Users className="w-4 h-4" /> Engagement Sessions
+          <span className="text-slate-600 font-normal text-xs ml-1">({rows.length})</span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="px-0 pb-2">
+        {rows.length === 0 ? (
+          <p className="text-xs text-slate-500 px-5 py-4">No engagement sessions yet</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="border-b border-slate-700">
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Volunteer ID</th>
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Name</th>
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Phone</th>
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Consent</th>
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Preference</th>
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Stage</th>
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Last Active</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(s => (
+                  <tr
+                    key={s.id}
+                    className="border-b border-slate-700 hover:bg-slate-750 cursor-pointer"
+                    onClick={() => onSelect(s.id)}
+                  >
+                    <td className="px-4 py-2 text-xs text-slate-400 font-mono">{s.volunteerId?.slice(0, 12) || '—'}</td>
+                    <td className="px-4 py-2 text-xs text-slate-300">{s.volunteerName || '—'}</td>
+                    <td className="px-4 py-2 text-xs text-slate-400">{s.volunteerPhone || '—'}</td>
+                    <td className="px-4 py-2">{consentLabel(s.outcome)}</td>
+                    <td className="px-4 py-2 text-xs text-slate-400 max-w-[180px] truncate" title={s.preferenceNotes || ''}>
+                      {s.preferenceNotes || (s.continuity ? `Continuity: ${s.continuity}` : '—')}
+                    </td>
+                    <td className="px-4 py-2">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                        s.stage === 're_engaging' ? 'bg-blue-900/40 text-blue-400' :
+                        s.stage === 'human_review' ? 'bg-orange-900/40 text-orange-400' :
+                        s.stage === 'paused' ? 'bg-slate-700 text-slate-400' :
+                        s.stage === 'active' ? 'bg-green-900/40 text-green-400' :
+                        'bg-slate-700 text-slate-300'
+                      }`}>{s.stage}</span>
+                    </td>
+                    <td className="px-4 py-2 text-xs text-slate-500">{timeAgo(s.last_message_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
+// ── FulfillmentTable (Tech) ────────────────────────────────────────────────────
+
+const FulfillmentTable = ({ sessions, onSelect }) => {
+  const fulSessions = sessions.filter(s => s.active_agent === 'fulfillment');
+
+  const rows = fulSessions.map(s => {
+    let nominatedNeedId = null, volunteerName = s.volunteer_name;
+    let volunteerId = s.volunteer_id, volunteerPhone = null;
+    let preferenceNotes = null, candidateNames = [], matchStatus = null;
+    try {
+      const ss = s.sub_state ? JSON.parse(s.sub_state) : {};
+      nominatedNeedId = ss.nominated_need_id;
+      matchStatus     = ss.match_result?.status;
+      volunteerName   = ss.handoff?.volunteer_name || volunteerName;
+      volunteerId     = ss.handoff?.volunteer_id || volunteerId;
+      preferenceNotes = ss.handoff?.preference_notes;
+      volunteerPhone  = ss.engagement_context?.volunteer_phone;
+      const candidates = ss.match_result?.candidates || [];
+      candidateNames = candidates.map(c => c.name || c.school_name || c.id?.slice(0, 10) || '?');
+    } catch (_) {}
+    return { ...s, nominatedNeedId, matchStatus, volunteerName, volunteerId, volunteerPhone, preferenceNotes, candidateNames };
+  });
+
+  return (
+    <Card className="border-none shadow-sm bg-slate-800">
+      <CardHeader className="pb-2 pt-4 px-5">
+        <CardTitle className="text-sm text-slate-300 flex items-center gap-2">
+          <Handshake className="w-4 h-4" /> Fulfillment Sessions
+          <span className="text-slate-600 font-normal text-xs ml-1">({rows.length})</span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="px-0 pb-2">
+        {rows.length === 0 ? (
+          <p className="text-xs text-slate-500 px-5 py-4">No fulfillment sessions yet</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="border-b border-slate-700">
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Volunteer ID</th>
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Name</th>
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Phone</th>
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Preference</th>
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Needs Shown</th>
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Nominated Need</th>
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Stage</th>
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Last Active</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(s => (
+                  <tr
+                    key={s.id}
+                    className="border-b border-slate-700 hover:bg-slate-750 cursor-pointer"
+                    onClick={() => onSelect(s.id)}
+                  >
+                    <td className="px-4 py-2 text-xs text-slate-400 font-mono">{s.volunteerId?.slice(0, 12) || '—'}</td>
+                    <td className="px-4 py-2 text-xs text-slate-300">{s.volunteerName || '—'}</td>
+                    <td className="px-4 py-2 text-xs text-slate-400">{s.volunteerPhone || '—'}</td>
+                    <td className="px-4 py-2 text-xs text-slate-400 max-w-[150px] truncate" title={s.preferenceNotes || ''}>
+                      {s.preferenceNotes || '—'}
+                    </td>
+                    <td className="px-4 py-2 text-xs text-slate-400 max-w-[150px] truncate" title={s.candidateNames.join(', ')}>
+                      {s.candidateNames.length > 0 ? s.candidateNames.join(', ') : (s.matchStatus === 'not_found' ? 'No match' : '—')}
+                    </td>
+                    <td className="px-4 py-2">
+                      {s.nominatedNeedId
+                        ? <span className="text-xs font-mono text-green-400" title={s.nominatedNeedId}>{s.nominatedNeedId.slice(0, 12)}…</span>
+                        : <span className="text-xs text-slate-500">—</span>
+                      }
+                    </td>
+                    <td className="px-4 py-2">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                        s.stage === 'active' ? 'bg-blue-900/40 text-blue-400' :
+                        s.stage === 'complete' ? 'bg-green-900/40 text-green-400' :
+                        s.stage === 'human_review' ? 'bg-orange-900/40 text-orange-400' :
+                        'bg-slate-700 text-slate-400'
+                      }`}>{s.stage}</span>
+                    </td>
+                    <td className="px-4 py-2 text-xs text-slate-500">{timeAgo(s.last_message_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
 // ── AdminView (main) ──────────────────────────────────────────────────────────
 
 export const AdminView = () => {
@@ -732,6 +916,12 @@ export const AdminView = () => {
 
             {/* ── Needs table ── */}
             <NeedsTable needs={needs} onJumpToSession={handleJumpToSession} />
+
+            {/* ── Engagement table ── */}
+            <EngagementTable sessions={sessions} onSelect={handleJumpToSession} />
+
+            {/* ── Fulfillment table ── */}
+            <FulfillmentTable sessions={sessions} onSelect={handleJumpToSession} />
           </>
         )}
       </div>
