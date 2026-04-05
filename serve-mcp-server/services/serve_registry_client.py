@@ -494,6 +494,32 @@ class NeedServiceClient:
         url = f"{NEED_SERVICE_URL}/need/{need_id}"
         return await _request("GET", url)
 
+    async def get_approved_needs_bulk(self, max_entities: int = 50, max_needs_per_entity: int = 20) -> List[Dict]:
+        """
+        Fetch all approved needs across all entities in bulk.
+        Returns enriched need details (with time_slots, subjects, grades).
+        """
+        entities = await self.search_entities(page=0, size=max_entities)
+        all_needs = []
+        for entity in entities:
+            entity_id = entity.get("id")
+            if not entity_id:
+                continue
+            raw_needs = await self.get_needs_for_entity(entity_id, page=0, size=max_needs_per_entity)
+            for need in raw_needs:
+                need_status = need.get("status", "")
+                if need_status != "Approved":
+                    continue
+                need_id = need.get("id")
+                if not need_id:
+                    continue
+                details = await self.get_need_details(need_id)
+                if details and details.get("status") == "Approved":
+                    details["school_name"] = entity.get("name", "")
+                    details["entity_id"] = entity_id
+                    all_needs.append(details)
+        return all_needs
+
     async def get_need_details(self, need_id: str) -> Optional[Dict]:
         """
         GET /need/{needId}/details

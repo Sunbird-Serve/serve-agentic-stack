@@ -132,7 +132,15 @@ class FulfillmentAgentService:
         messages = list(request.conversation_history[-20:])
         if request.user_message and request.user_message not in ("__handoff__", "__auto_continue__"):
             messages.append({"role": "user", "content": request.user_message})
-        elif request.user_message in ("__handoff__", "__auto_continue__") and not messages:
+        elif request.user_message == "__auto_continue__":
+            # Auto-continue after ack — inject ack as prior turn so LLM continues from it
+            ack = "Give me a moment while I find the best teaching opportunity for you... 🔍"
+            if not messages:
+                messages = [
+                    {"role": "assistant", "content": ack},
+                    {"role": "user", "content": "Please show me what you found."},
+                ]
+        elif request.user_message == "__handoff__" and not messages:
             messages.append({"role": "user", "content": "Please find me a teaching opportunity."})
 
         async def tool_executor(tool_name: str, tool_input: Dict[str, Any]) -> Any:

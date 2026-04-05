@@ -140,6 +140,7 @@ services:
       - LLM_PROVIDER=claude
       - LLM_MODEL=claude-sonnet-4-5-20250929
       - EMERGENT_LLM_KEY=${EMERGENT_LLM_KEY}
+      - ENGAGEMENT_MAX_START_DELAY_DAYS=${ENGAGEMENT_MAX_START_DELAY_DAYS:-10}
     ports:
       - "8006:8006"
     depends_on:

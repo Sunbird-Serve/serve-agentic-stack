@@ -1304,6 +1304,19 @@ async def get_all_entities() -> dict:
 
 
 @mcp.tool()
+async def search_approved_needs() -> dict:
+    """
+    Bulk-fetch all approved needs across all schools with enriched details.
+
+    Used by: Fulfillment Agent MatchFinder for efficient matching at scale.
+    Returns pre-filtered, enriched needs with school_name, subjects, grades, time_slots.
+    """
+    from services.serve_registry_client import need_service_client
+    needs = await need_service_client.get_approved_needs_bulk()
+    return {"status": "success", "needs": needs, "total": len(needs)}
+
+
+@mcp.tool()
 async def get_need_details(params: GetNeedDetailsInput) -> dict:
     """
     Get enriched details for a need.

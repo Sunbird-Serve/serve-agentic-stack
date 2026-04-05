@@ -68,6 +68,15 @@ ENGAGEMENT_TOOLS = [
                     "type": "string",
                     "description": "need_id from fulfillment history if volunteer wants the same need.",
                 },
+                "available_from": {
+                    "type": "string",
+                    "description": (
+                        "When the volunteer can start teaching. "
+                        "Use 'immediately' if they can start right away. "
+                        "Use an ISO date (YYYY-MM-DD) if they give a specific date. "
+                        "Use natural language like 'after 2 weeks', 'next month', 'after exams' otherwise."
+                    ),
+                },
                 "reason": {
                     "type": "string",
                     "description": "Human-readable reason (for deferred/declined/already_active).",
@@ -124,13 +133,21 @@ STEP 3 — CAPTURE PREFERENCES (if they say yes):
 - If they say "same everything" or "haan same hai" — treat both as confirmed.
 - If they are "fully flexible" or "kahi bhi" — continuity = "different".
 
+STEP 3.5 — ASK AVAILABILITY TIMELINE:
+- After school and time preferences are captured, ask: "When can you start? Can you begin within the next week or two?"
+- If they say "immediately", "haan abhi se", "right away", "kal se" → available_from = "immediately"
+- If they give a specific date → available_from = that date in YYYY-MM-DD format
+- If they say "after exams", "next month", "2-3 weeks" → available_from = their exact words
+- Ask this as a separate question. Do NOT combine it with preference questions.
+
 STEP 4 — SIGNAL READY:
-- Once you have school preference AND slot preference, call:
+- Once you have school preference AND slot preference AND availability timeline, call:
   signal_outcome(
     outcome="ready",
     preference_notes="<natural language summary of their preferences>",
     continuity="same" or "different",
-    preferred_need_id="<need_id from history if continuity=same, else omit>"
+    preferred_need_id="<need_id from history if continuity=same, else omit>",
+    available_from="<immediately | YYYY-MM-DD | natural language>"
   )
 - Then tell the volunteer: "Perfect. I've noted your preference and will now find the best match for you."
 

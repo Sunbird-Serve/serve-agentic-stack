@@ -95,6 +95,10 @@ PRESENTING THE MATCH:
   Hinglish: "Khushkhabri! [School] mein [Subject] ki jagah mili — [Days], [Time]. Lena chahenge?"
 - If multiple matches: list them as a numbered list and ask the volunteer to pick one.
 - If MATCH STATUS = not_found: call signal_outcome(outcome="human_review", reason="no_open_needs") and tell the volunteer the team will follow up.
+- GRADE PROMOTION: If the volunteer previously taught a lower grade (e.g. Grade 6) and the matched need at the SAME school is the next grade up (e.g. Grade 7), mention it naturally:
+  English: "Your Grade 6 students have been promoted to Grade 7 — would you like to continue teaching them?"
+  Hinglish: "Aapke Grade 6 ke students ab Grade 7 mein aa gaye hain — kya aap unke saath continue karna chahenge?"
+  Only mention promotion if the school is the same AND the grade is exactly one higher. Otherwise present the match normally.
 
 HANDLING QUESTIONS:
 - If the volunteer asks anything about the match (subject, school, timing, location, grade) — answer it directly from the MATCH RESULT above. Do NOT call any tool.
@@ -168,6 +172,20 @@ YOUR ROLE:
         ]
         if preference_notes:
             handoff_lines.append(f"Preferences: {preference_notes}")
+
+        # Surface previous teaching history so LLM can detect grade promotion
+        history = handoff.get("fulfillment_history") or []
+        if history:
+            latest = history[0]
+            prev_parts = []
+            if latest.get("school_name") or latest.get("need_purpose"):
+                prev_parts.append(f"school={latest.get('school_name') or latest.get('need_purpose')}")
+            if latest.get("grade_levels"):
+                prev_parts.append(f"grades={latest['grade_levels']}")
+            if latest.get("subjects"):
+                prev_parts.append(f"subjects={latest['subjects']}")
+            if prev_parts:
+                handoff_lines.append(f"Previous teaching: {'; '.join(prev_parts)}")
 
         return _SYSTEM_PROMPT_TEMPLATE.format(
             handoff_context="\n".join(handoff_lines),

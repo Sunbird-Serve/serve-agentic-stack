@@ -90,6 +90,10 @@ class DomainClient:
         """Get all schools/entities for fallback school search."""
         return await _call_mcp_tool("get_all_entities", {})
 
+    async def search_approved_needs(self) -> Dict:
+        """Bulk-fetch all approved needs across all schools (enriched with details)."""
+        return await _call_mcp_tool("search_approved_needs", {})
+
     async def nominate_volunteer_for_need(self, need_id: str, volunteer_id: str) -> Dict:
         """Nominate the volunteer for a need."""
         return await _call_mcp_tool("nominate_volunteer_for_need", {

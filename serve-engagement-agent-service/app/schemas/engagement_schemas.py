@@ -21,6 +21,7 @@ _DEFAULT_SUB_STATE: Dict[str, Any] = {
     "preference_notes": None,   # LLM-captured natural language preference summary
     "continuity": None,         # "same" | "different"
     "preferred_need_id": None,  # need_id from history if continuity=same
+    "available_from": None,     # "immediately" | ISO date | natural language
     "handoff": {},              # FulfillmentHandoffPayload once ready
     "human_review_reason": None,
     "deferred": False,
@@ -102,6 +103,7 @@ def _load_sub_state(raw: Optional[str]) -> Dict[str, Any]:
             "preference_notes":   data.get("preference_notes"),
             "continuity":         data.get("continuity"),
             "preferred_need_id":  data.get("preferred_need_id"),
+            "available_from":     data.get("available_from"),
             "handoff":            data.get("handoff", {}),
             "human_review_reason": data.get("human_review_reason"),
             "deferred":           data.get("deferred", False),
@@ -118,6 +120,7 @@ def _dump_sub_state(sub_state: Dict[str, Any]) -> str:
         "preference_notes":    sub_state.get("preference_notes"),
         "continuity":          sub_state.get("continuity"),
         "preferred_need_id":   sub_state.get("preferred_need_id"),
+        "available_from":      sub_state.get("available_from"),
         "handoff":             sub_state.get("handoff", {}),
         "human_review_reason": sub_state.get("human_review_reason"),
         "deferred":            sub_state.get("deferred", False),

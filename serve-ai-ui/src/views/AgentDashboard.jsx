@@ -204,21 +204,25 @@ const EngagementAgentPanel = ({ sessions }) => {
     let volunteerPhone = null;
     let volunteerId = s.volunteer_id;
     let preferenceNotes = null;
+
+    // Safely extract channel_metadata (could be object or JSON string)
+    let chMeta = {};
+    try {
+      chMeta = typeof s.channel_metadata === 'string' ? JSON.parse(s.channel_metadata) : (s.channel_metadata || {});
+    } catch (_) {}
+
     try {
       const ss = s.sub_state ? JSON.parse(s.sub_state) : {};
       reviewReason     = ss.human_review_reason;
       continuity       = ss.continuity;
       preferenceNotes  = ss.preference_notes;
       volunteerName    = ss.engagement_context?.volunteer_name || ss.handoff?.volunteer_name || volunteerName;
-      volunteerPhone   = ss.engagement_context?.volunteer_phone || (s.channel_metadata && JSON.parse(s.channel_metadata || '{}').volunteer_phone) || null;
+      volunteerPhone   = ss.engagement_context?.volunteer_phone || chMeta.volunteer_phone || null;
       volunteerId      = ss.engagement_context?.volunteer_id || ss.handoff?.volunteer_id || volunteerId;
       if (ss.deferred) outcome = 'deferred';
       else if (reviewReason === 'volunteer_declined') outcome = 'declined';
       else if (ss.handoff?.volunteer_id) outcome = 'ready';
-    } catch (_) {
-      // channel_metadata might already be an object from the API
-      try { volunteerPhone = volunteerPhone || s.channel_metadata?.volunteer_phone; } catch (_2) {}
-    }
+    } catch (_) {}
     return { ...s, outcome, continuity, reviewReason, volunteerName, volunteerPhone, volunteerId, preferenceNotes };
   });
 
