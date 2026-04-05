@@ -61,6 +61,10 @@ class SessionService:
             workflow     = "need_coordination"
             active_agent = "need"
             stage        = "initiated"
+        elif persona == "returning_volunteer":
+            workflow     = "returning_volunteer"
+            active_agent = "engagement"
+            stage        = "re_engaging"
         else:
             workflow     = "new_volunteer_onboarding"
             active_agent = "onboarding"

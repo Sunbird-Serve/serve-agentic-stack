@@ -214,10 +214,10 @@ const EngagementAgentPanel = ({ sessions }) => {
     try {
       const ss = s.sub_state ? JSON.parse(s.sub_state) : {};
       reviewReason     = ss.human_review_reason;
-      continuity       = ss.continuity;
-      preferenceNotes  = ss.preference_notes;
+      continuity       = ss.continuity || ss.handoff?.continuity;
+      preferenceNotes  = ss.preference_notes || ss.handoff?.preference_notes;
       volunteerName    = ss.engagement_context?.volunteer_name || ss.handoff?.volunteer_name || volunteerName;
-      volunteerPhone   = ss.engagement_context?.volunteer_phone || chMeta.volunteer_phone || null;
+      volunteerPhone   = ss.engagement_context?.volunteer_phone || ss.handoff?.volunteer_phone || chMeta.volunteer_phone || null;
       volunteerId      = ss.engagement_context?.volunteer_id || ss.handoff?.volunteer_id || volunteerId;
       if (ss.deferred) outcome = 'deferred';
       else if (reviewReason === 'volunteer_declined') outcome = 'declined';
