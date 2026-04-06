@@ -223,7 +223,15 @@ const EngagementAgentPanel = ({ sessions }) => {
       else if (reviewReason === 'volunteer_declined') outcome = 'declined';
       else if (ss.handoff?.volunteer_id) outcome = 'ready';
     } catch (_) {}
-    return { ...s, outcome, continuity, reviewReason, volunteerName, volunteerPhone, volunteerId, preferenceNotes };
+    return { ...s, outcome, continuity, reviewReason, volunteerName, volunteerPhone, volunteerId, preferenceNotes, deferredReason: null };
+  });
+
+  // Extract deferred reason in a second pass (avoids complicating the try block)
+  withOutcome.forEach(s => {
+    try {
+      const ss = s.sub_state ? JSON.parse(s.sub_state) : {};
+      s.deferredReason = ss.deferred_reason || ss.human_review_reason?.replace(/_/g, ' ') || null;
+    } catch (_) {}
   });
 
   const readyCount    = withOutcome.filter(s => s.outcome === 'ready').length;
@@ -280,6 +288,7 @@ const EngagementAgentPanel = ({ sessions }) => {
                     <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Phone</th>
                     <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Consent</th>
                     <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Preference</th>
+                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Reason</th>
                     <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Last Active</th>
                   </tr>
                 </thead>
@@ -300,6 +309,9 @@ const EngagementAgentPanel = ({ sessions }) => {
                       </td>
                       <td className="px-4 py-2.5 text-slate-500 text-xs max-w-[200px] truncate" title={s.preferenceNotes || ''}>
                         {s.preferenceNotes || (s.continuity ? `Continuity: ${s.continuity}` : '—')}
+                      </td>
+                      <td className="px-4 py-2.5 text-slate-500 text-xs max-w-[160px] truncate" title={s.deferredReason || ''}>
+                        {s.deferredReason || '—'}
                       </td>
                       <td className="px-4 py-2.5 text-slate-400 text-xs">{timeAgo(s.last_message_at)}</td>
                     </tr>

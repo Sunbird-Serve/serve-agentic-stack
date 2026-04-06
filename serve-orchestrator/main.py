@@ -207,18 +207,65 @@ async def wa_receive(request: Request):
                 if not session_id:
                     asyncio.create_task(_wa_send(phone, "Ek second... 🙏"))
 
-                async def _process(phone=phone, text=text, session_id=session_id):
+                # Detect persona from first message (no session yet)
+                # Mimics the UI role selection — keyword-based
+                def _detect_persona(msg: str) -> Optional[PersonaType]:
+                    lower = msg.lower()
+                    volunteer_signals = [
+                        "returning volunteer", "volunteer", "pehle padhaya",
+                        "continue teaching", "wapas", "re-engage", "last year",
+                        "pichle saal", "continue karna", "teaching again",
+                    ]
+                    coordinator_signals = [
+                        "need", "school", "coordinator", "teacher chahiye",
+                        "register", "raise need", "padhane wale", "volunteer chahiye",
+                    ]
+                    if any(s in lower for s in volunteer_signals):
+                        return PersonaType.RETURNING_VOLUNTEER
+                    if any(s in lower for s in coordinator_signals):
+                        return PersonaType.NEED_COORDINATOR
+                    return None
+
+                # For new sessions, detect from message; for existing, let orchestrator handle
+                detected_persona = _detect_persona(text) if not session_id else None
+
+                async def _process(phone=phone, text=text, session_id=session_id, detected_persona=detected_persona):
                     try:
                         req = InteractionRequest(
                             session_id=session_id,
                             message=text,
                             channel=ChannelType.WHATSAPP,
-                            persona=PersonaType.NEED_COORDINATOR,
-                            channel_metadata={"phone_number": phone},
+                            persona=detected_persona,  # from message keywords or None (let resolver decide)
+                            channel_metadata={
+                                "phone_number": phone,
+                                "volunteer_phone": phone,
+                            },
                         )
                         resp = await orchestration_service.process_interaction(req)
                         _wa_sessions[phone] = str(resp.session_id)
+
+                        # Send preliminary message as a separate bubble if present
+                        if getattr(resp, 'preliminary_message', None):
+                            await _wa_send(phone, resp.preliminary_message)
+
                         await _wa_send(phone, resp.assistant_message)
+
+                        # Auto-continue: agent wants a follow-up turn (e.g. ack → real response)
+                        if getattr(resp, 'auto_continue', False):
+                            followup_req = InteractionRequest(
+                                session_id=resp.session_id,
+                                message="__auto_continue__",
+                                channel=ChannelType.WHATSAPP,
+                                channel_metadata={
+                                    "phone_number": phone,
+                                    "volunteer_phone": phone,
+                                },
+                            )
+                            followup_resp = await orchestration_service.process_interaction(followup_req)
+                            if getattr(followup_resp, 'preliminary_message', None):
+                                await _wa_send(phone, followup_resp.preliminary_message)
+                            if followup_resp.assistant_message:
+                                await _wa_send(phone, followup_resp.assistant_message)
                     except Exception as e:
                         logger.error(f"Error handling WhatsApp message from {phone[:6]}***: {e}")
                         await _wa_send(phone, "Something went wrong. Please try again in a moment.")

@@ -609,7 +609,13 @@ const EngagementTable = ({ sessions, onSelect }) => {
       else if (ss.human_review_reason === 'volunteer_declined') outcome = 'declined';
       else if (ss.handoff?.volunteer_id) outcome = 'ready';
     } catch (_) {}
-    return { ...s, outcome, continuity, volunteerName, volunteerPhone, volunteerId, preferenceNotes };
+    const deferredReason = (() => {
+      try {
+        const ss = s.sub_state ? JSON.parse(s.sub_state) : {};
+        return ss.deferred_reason || ss.human_review_reason?.replace(/_/g, ' ') || null;
+      } catch (_) { return null; }
+    })();
+    return { ...s, outcome, continuity, volunteerName, volunteerPhone, volunteerId, preferenceNotes, deferredReason };
   });
 
   const consentLabel = (o) => {
@@ -640,6 +646,7 @@ const EngagementTable = ({ sessions, onSelect }) => {
                   <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Phone</th>
                   <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Consent</th>
                   <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Preference</th>
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Reason</th>
                   <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Stage</th>
                   <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Last Active</th>
                 </tr>
@@ -657,6 +664,9 @@ const EngagementTable = ({ sessions, onSelect }) => {
                     <td className="px-4 py-2">{consentLabel(s.outcome)}</td>
                     <td className="px-4 py-2 text-xs text-slate-400 max-w-[180px] truncate" title={s.preferenceNotes || ''}>
                       {s.preferenceNotes || (s.continuity ? `Continuity: ${s.continuity}` : '—')}
+                    </td>
+                    <td className="px-4 py-2 text-xs text-slate-400 max-w-[140px] truncate" title={s.deferredReason || ''}>
+                      {s.deferredReason || '—'}
                     </td>
                     <td className="px-4 py-2">
                       <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${

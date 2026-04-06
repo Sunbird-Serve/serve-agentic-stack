@@ -25,6 +25,7 @@ _DEFAULT_SUB_STATE: Dict[str, Any] = {
     "handoff": {},              # FulfillmentHandoffPayload once ready
     "human_review_reason": None,
     "deferred": False,
+    "deferred_reason": None,    # why the volunteer deferred (from signal_outcome reason)
 }
 
 
@@ -107,6 +108,7 @@ def _load_sub_state(raw: Optional[str]) -> Dict[str, Any]:
             "handoff":            data.get("handoff", {}),
             "human_review_reason": data.get("human_review_reason"),
             "deferred":           data.get("deferred", False),
+            "deferred_reason":    data.get("deferred_reason"),
         }
     except (json.JSONDecodeError, ValueError):
         logger.warning("Malformed engagement sub_state JSON — using defaults")
@@ -124,4 +126,5 @@ def _dump_sub_state(sub_state: Dict[str, Any]) -> str:
         "handoff":             sub_state.get("handoff", {}),
         "human_review_reason": sub_state.get("human_review_reason"),
         "deferred":            sub_state.get("deferred", False),
+        "deferred_reason":     sub_state.get("deferred_reason"),
     })

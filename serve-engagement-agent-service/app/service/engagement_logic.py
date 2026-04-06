@@ -177,6 +177,7 @@ class EngagementAgentService:
                 sub_state["human_review_reason"] = outcome
             elif outcome == "deferred":
                 sub_state["deferred"] = True
+                sub_state["deferred_reason"] = tool_input.get("reason")
             return tool_input
 
         elif tool_name == "get_engagement_context":
