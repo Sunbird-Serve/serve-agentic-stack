@@ -209,7 +209,7 @@ async def wa_receive(request: Request):
 
                 # Detect persona from first message (no session yet)
                 # Mimics the UI role selection — keyword-based
-                def _detect_persona(msg: str) -> Optional[PersonaType]:
+                def _detect_persona(msg: str):
                     lower = msg.lower()
                     volunteer_signals = [
                         "returning volunteer", "volunteer", "pehle padhaya",
