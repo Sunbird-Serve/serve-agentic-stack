@@ -218,10 +218,12 @@ async def wa_receive(request: Request):
                     ]
                     if any(s in lower for s in volunteer_signals):
                         return PersonaType.RETURNING_VOLUNTEER
-                    # Default to coordinator for WhatsApp — only explicit volunteer
-                    # keywords trigger engagement. Coordinators resuming naturally
-                    # (no keywords) stay on the need flow.
-                    return PersonaType.NEED_COORDINATOR
+                    # No volunteer keywords — return None so the orchestrator's
+                    # persona_resolver checks the DB for the last session's workflow.
+                    # If prior session was need_coordination → coordinator.
+                    # If prior session was returning_volunteer → volunteer.
+                    # If no prior session → defaults to need_coordinator (WhatsApp primary use case).
+                    return None
 
                 # For new sessions, detect from message; for existing, let orchestrator handle
                 detected_persona = _detect_persona(text) if not session_id else None
