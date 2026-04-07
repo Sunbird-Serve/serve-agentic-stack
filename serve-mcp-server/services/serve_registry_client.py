@@ -116,17 +116,25 @@ class VolunteeringClient:
     async def lookup_by_mobile(self, phone: str) -> Optional[Dict]:
         """
         GET /user/mobile?mobile={phone}
-        Strips country code prefix (+91 / 91) before calling — API expects 10-digit mobile.
+        Tries both 10-digit and 91-prefixed formats since registry data is inconsistent.
         Returns the full user object on success, None if not found.
         """
         # Normalise to 10-digit Indian mobile
         digits = phone.strip().lstrip("+")
         if digits.startswith("91") and len(digits) == 12:
             digits = digits[2:]
+
+        # Try 10-digit first
         url = f"{VOLUNTEERING_SERVICE_URL}/user/mobile"
         data = await _request("GET", url, params={"mobile": digits})
         if data and data.get("osid"):
             return self._normalise_user(data)
+
+        # Fallback: try with 91 prefix (some records stored this way)
+        data = await _request("GET", url, params={"mobile": f"91{digits}"})
+        if data and data.get("osid"):
+            return self._normalise_user(data)
+
         return None
 
     async def lookup_by_status(self, status: str = "ACTIVE") -> List[Dict]:
