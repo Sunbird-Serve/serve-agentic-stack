@@ -58,7 +58,8 @@ from schemas import (
     GetSessionAnalyticsInput,
     # Engagement + Fulfillment agent tools
     GetVolunteerFulfillmentHistoryInput, CheckActiveNominationsInput,
-    GetEngagementContextInput, NominateVolunteerInput, ConfirmNominationInput,
+    GetEngagementContextInput, GetEngagementContextByEmailInput,
+    NominateVolunteerInput, ConfirmNominationInput,
     GetNominationsForNeedInput, GetRecommendedVolunteersInput,
     GetNeedsForEntityInput, GetNeedDetailsInput,
 )
@@ -1259,6 +1260,20 @@ async def get_engagement_context(params: GetEngagementContextInput) -> dict:
         volunteer_profile:  profile dict from Serve Registry (may be null)
     """
     return await engagement_service.get_engagement_context(params.phone)
+
+
+@mcp.tool()
+async def get_engagement_context_by_email(params: GetEngagementContextByEmailInput) -> dict:
+    """
+    Fallback — looks up volunteer by email when phone lookup fails.
+    Returns the same structure as get_engagement_context.
+
+    Used by: Engagement Agent (when volunteer's WhatsApp number doesn't match registry)
+
+    Args:
+        email: Volunteer's email address used during eVidyaloka registration
+    """
+    return await engagement_service.get_engagement_context_by_email(params.email)
 
 
 @mcp.tool()

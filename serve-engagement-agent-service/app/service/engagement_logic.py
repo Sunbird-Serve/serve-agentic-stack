@@ -195,6 +195,20 @@ class EngagementAgentService:
                 sub_state["engagement_context"] = result
             return result
 
+        elif tool_name == "get_engagement_context_by_email":
+            # Email fallback — volunteer provided their registration email
+            email = tool_input.get("email", "")
+            if not email:
+                return {"status": "error", "error": "email required"}
+            # Return cached result if already loaded
+            if sub_state.get("engagement_context") and sub_state["engagement_context"].get("status") == "success":
+                logger.info(f"Session {session_id}: returning cached engagement_context (email fallback)")
+                return sub_state["engagement_context"]
+            result = await domain_client.get_engagement_context_by_email(email)
+            if result.get("status") == "success":
+                sub_state["engagement_context"] = result
+            return result
+
         else:
             logger.warning(f"Unknown engagement tool: {tool_name}")
             return {"status": "error", "message": f"Unknown tool: {tool_name}"}

@@ -107,6 +107,10 @@ class DomainClient:
         """Load fulfillment history and profile for a volunteer by phone number."""
         return await _call_mcp_tool("get_engagement_context", {"phone": phone})
 
+    async def get_engagement_context_by_email(self, email: str) -> Dict:
+        """Fallback: load fulfillment history and profile by email."""
+        return await _call_mcp_tool("get_engagement_context_by_email", {"email": email})
+
     async def engagement_save_confirmed_signals(self, session_id: str, signals: Dict[str, Any]) -> Dict:
         """Persist confirmed engagement signals in MCP-managed session state."""
         return await _call_mcp_tool("engagement_save_confirmed_signals", {

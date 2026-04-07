@@ -108,6 +108,70 @@ class EngagementService:
             "volunteer_profile":  profile if isinstance(profile, dict) else None,
         }
 
+    async def get_engagement_context_by_email(self, email: Optional[str]) -> Dict[str, Any]:
+        """Fetch fulfillment history and volunteer profile by email — fallback when phone lookup fails."""
+        if not email:
+            return {"status": "error", "error": "email is required"}
+
+        user = await volunteering_client.lookup_by_email(email)
+        if not user:
+            return {"status": "not_found", "error": f"No volunteer found for email {email}"}
+
+        # Reuse the same enrichment logic — just resolve volunteer_id from email lookup
+        volunteer_id = user.get("osid")
+        if not volunteer_id:
+            return {"status": "error", "error": "Volunteer record has no osid"}
+
+        bare_id = volunteer_id.lstrip("1-") if volunteer_id.startswith("1-") else volunteer_id
+
+        raw_fulfillments, profile = await asyncio.gather(
+            fulfillment_client.get_fulfillments_for_volunteer(bare_id),
+            volunteering_client.get_user_profile(bare_id),
+            return_exceptions=True,
+        )
+
+        enriched: List[Dict[str, Any]] = []
+        if isinstance(raw_fulfillments, list):
+            for f in raw_fulfillments:
+                need_id = f.get("needId", "")
+                need_detail = {}
+                if need_id:
+                    try:
+                        need_detail = await need_service_client.get_need_details(need_id) or {}
+                    except Exception:
+                        pass
+                school_name = self._extract_school_name(
+                    need_detail.get("needPurpose", "") or need_detail.get("name", "")
+                )
+                enriched.append({
+                    "fulfillment_id":     f.get("id"),
+                    "need_id":            need_id,
+                    "entity_id":          need_detail.get("entity_id", ""),
+                    "school_name":        school_name,
+                    "need_name":          need_detail.get("name", ""),
+                    "need_purpose":       need_detail.get("needPurpose", ""),
+                    "subjects":           need_detail.get("subjects", []),
+                    "grade_levels":       need_detail.get("grade_levels", []),
+                    "days":               need_detail.get("days", ""),
+                    "time_slots":         need_detail.get("time_slots", []),
+                    "start_date":         need_detail.get("start_date", ""),
+                    "end_date":           need_detail.get("end_date", ""),
+                    "fulfillment_status": f.get("fulfillmentStatus"),
+                })
+
+        volunteer_name = user.get("full_name") or user.get("first_name") or "Volunteer"
+        # Also surface the phone from the user record so the engagement agent can cache it
+        volunteer_phone = user.get("phone") or user.get("mobile")
+
+        return {
+            "status":             "success",
+            "volunteer_id":       volunteer_id,
+            "volunteer_name":     volunteer_name,
+            "volunteer_phone":    volunteer_phone,
+            "fulfillment_history": enriched,
+            "volunteer_profile":  profile if isinstance(profile, dict) else None,
+        }
+
     def _extract_school_name(self, text: str) -> str:
         """
         Extract school/college name from a need purpose string.

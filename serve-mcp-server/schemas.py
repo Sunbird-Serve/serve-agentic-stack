@@ -582,6 +582,13 @@ class GetEngagementContextInput(BaseModel):
     )
 
 
+class GetEngagementContextByEmailInput(BaseModel):
+    email: str = Field(
+        min_length=3,
+        description="Volunteer's email address — fallback when phone lookup fails"
+    )
+
+
 class GetNeedsForEntityInput(BaseModel):
     entity_id: str = Field(min_length=1, description="Serve Need Service entity / school UUID")
     page: int = Field(default=0, ge=0)

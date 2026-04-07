@@ -36,6 +36,21 @@ ENGAGEMENT_TOOLS = [
         },
     },
     {
+        "name": "get_engagement_context_by_email",
+        "description": (
+            "Fallback: load the volunteer's fulfillment history by their email address. "
+            "Use this ONLY when get_engagement_context (phone lookup) returned status='not_found'. "
+            "Ask the volunteer for the email they used to register on eVidyaloka before calling this."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "description": "Volunteer's email used for eVidyaloka registration"},
+            },
+            "required": ["email"],
+        },
+    },
+    {
         "name": "signal_outcome",
         "description": (
             "Call this when the conversation reaches a terminal point. "
@@ -112,6 +127,10 @@ STEP 1 — LOAD CONTEXT (silent, no user interaction):
 - If "Last fulfillment:" is already present in WHAT YOU KNOW above, skip this step — context is already loaded.
 - Otherwise call get_engagement_context(phone=<volunteer_phone>) once and silently.
 - Do NOT tell the volunteer you are doing a lookup.
+- If get_engagement_context returns status='not_found': ask the volunteer warmly for the email they used to register on eVidyaloka.
+  Example: "I couldn't find your details with this number. Could you share the email you used when you registered on eVidyaloka?"
+  When they provide the email, call get_engagement_context_by_email(email=<their_email>) silently.
+- If both phone and email lookups fail, say: "Welcome back! I wasn't able to find your previous details, but no worries — would you like to continue volunteering this year?"
 # TEMPORARILY DISABLED: active nomination check
 # - If has_active_nomination=True: call signal_outcome(outcome="already_active", reason="volunteer already has an active nomination").
 
