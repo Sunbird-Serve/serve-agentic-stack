@@ -216,13 +216,14 @@ async def wa_receive(request: Request):
                         "continue teaching", "wapas", "re-engage", "last year",
                         "pichle saal", "continue karna", "teaching again",
                     ]
+                    coordinator_signals = [
+                        "need", "school", "coordinator", "teacher chahiye",
+                        "register", "raise need", "padhane wale", "volunteer chahiye",
+                    ]
                     if any(s in lower for s in volunteer_signals):
                         return PersonaType.RETURNING_VOLUNTEER
-                    # No volunteer keywords — return None so the orchestrator's
-                    # persona_resolver checks the DB for the last session's workflow.
-                    # If prior session was need_coordination → coordinator.
-                    # If prior session was returning_volunteer → volunteer.
-                    # If no prior session → defaults to need_coordinator (WhatsApp primary use case).
+                    if any(s in lower for s in coordinator_signals):
+                        return PersonaType.NEED_COORDINATOR
                     return None
 
                 # For new sessions, detect from message; for existing, let orchestrator handle
