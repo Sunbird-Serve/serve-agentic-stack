@@ -216,15 +216,12 @@ async def wa_receive(request: Request):
                         "continue teaching", "wapas", "re-engage", "last year",
                         "pichle saal", "continue karna", "teaching again",
                     ]
-                    coordinator_signals = [
-                        "need", "school", "coordinator", "teacher chahiye",
-                        "register", "raise need", "padhane wale", "volunteer chahiye",
-                    ]
                     if any(s in lower for s in volunteer_signals):
                         return PersonaType.RETURNING_VOLUNTEER
-                    if any(s in lower for s in coordinator_signals):
-                        return PersonaType.NEED_COORDINATOR
-                    return None
+                    # Default to coordinator for WhatsApp — only explicit volunteer
+                    # keywords trigger engagement. Coordinators resuming naturally
+                    # (no keywords) stay on the need flow.
+                    return PersonaType.NEED_COORDINATOR
 
                 # For new sessions, detect from message; for existing, let orchestrator handle
                 detected_persona = _detect_persona(text) if not session_id else None
