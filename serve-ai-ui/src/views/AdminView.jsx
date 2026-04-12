@@ -4,7 +4,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   RefreshCw, Activity, Users, MessageSquare, BookOpen,
-  CheckCircle, Wifi, WifiOff, Search, ChevronDown, Handshake,
+  CheckCircle, Wifi, WifiOff, Search, ChevronDown, Handshake, UserPlus,
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -780,6 +780,135 @@ const FulfillmentTable = ({ sessions, onSelect }) => {
   );
 };
 
+// ── RecommendedTable (Tech) ─────────────────────────────────────────────────
+
+const RECOMMENDED_STAGE_COLOR = {
+  verifying_identity:      'bg-indigo-900/40 text-indigo-400',
+  gathering_preferences:   'bg-yellow-900/40 text-yellow-400',
+  active:                  'bg-green-900/40 text-green-400',
+  not_registered:          'bg-red-900/40 text-red-400',
+  human_review:            'bg-orange-900/40 text-orange-400',
+  paused:                  'bg-slate-700 text-slate-400',
+};
+
+const RecommendedTable = ({ sessions, onSelect }) => {
+  const recSessions = sessions.filter(s => s.workflow === 'recommended_volunteer');
+
+  const rows = recSessions.map(s => {
+    let volunteerName = s.volunteer_name, volunteerId = s.volunteer_id;
+    let volunteerPhone = null, identityStatus = null, preferenceNotes = null;
+    try {
+      const ss = s.sub_state ? JSON.parse(s.sub_state) : {};
+      identityStatus  = ss.identity_verified === true ? 'verified'
+                       : ss.identity_verified === false ? 'not_registered'
+                       : 'pending';
+      preferenceNotes = ss.preference_notes;
+      volunteerName   = ss.engagement_context?.volunteer_name || volunteerName;
+      volunteerId     = ss.engagement_context?.volunteer_id || volunteerId;
+      volunteerPhone  = ss.engagement_context?.volunteer_phone;
+      if (!volunteerPhone) {
+        try {
+          const cm = typeof s.channel_metadata === 'string' ? JSON.parse(s.channel_metadata) : (s.channel_metadata || {});
+          volunteerPhone = cm.volunteer_phone;
+        } catch (_) {}
+      }
+    } catch (_) {}
+    return { ...s, volunteerName, volunteerId, volunteerPhone, identityStatus, preferenceNotes };
+  });
+
+  const identityBadge = (status) => {
+    if (status === 'verified') return <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-900/40 text-green-400 font-medium">Verified</span>;
+    if (status === 'not_registered') return <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-900/40 text-red-400 font-medium">Not Registered</span>;
+    return <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-400 font-medium">Pending</span>;
+  };
+
+  return (
+    <Card className="border-none shadow-sm bg-slate-800">
+      <CardHeader className="pb-2 pt-4 px-5">
+        <CardTitle className="text-sm text-slate-300 flex items-center gap-2">
+          <UserPlus className="w-4 h-4" /> Recommended Volunteers
+          <span className="text-slate-600 font-normal text-xs ml-1">({rows.length})</span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="px-0 pb-2">
+        {rows.length === 0 ? (
+          <p className="text-xs text-slate-500 px-5 py-4">No recommended volunteer sessions yet</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="border-b border-slate-700">
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Volunteer ID</th>
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Name</th>
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Phone</th>
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Identity Status</th>
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Preference</th>
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Stage</th>
+                  <th className="px-4 py-2 text-[10px] text-slate-500 font-medium uppercase">Last Active</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(s => (
+                  <tr
+                    key={s.id}
+                    className="border-b border-slate-700 hover:bg-slate-750 cursor-pointer"
+                    onClick={() => onSelect(s.id)}
+                  >
+                    <td className="px-4 py-2 text-xs text-slate-400 font-mono">{s.volunteerId?.slice(0, 12) || '—'}</td>
+                    <td className="px-4 py-2 text-xs text-slate-300">{s.volunteerName || '—'}</td>
+                    <td className="px-4 py-2 text-xs text-slate-400">{s.volunteerPhone || '—'}</td>
+                    <td className="px-4 py-2">{identityBadge(s.identityStatus)}</td>
+                    <td className="px-4 py-2 text-xs text-slate-400 max-w-[180px] truncate" title={s.preferenceNotes || ''}>
+                      {s.preferenceNotes || '—'}
+                    </td>
+                    <td className="px-4 py-2">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                        RECOMMENDED_STAGE_COLOR[s.stage] || 'bg-slate-700 text-slate-300'
+                      }`}>{s.stage || '—'}</span>
+                    </td>
+                    <td className="px-4 py-2 text-xs text-slate-500">{timeAgo(s.last_message_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
+// ── Pagination Controls ─────────────────────────────────────────────────────
+
+const PaginationControls = ({ page, totalPages, onPageChange }) => {
+  if (totalPages <= 1) return null;
+  return (
+    <div className="flex items-center justify-center gap-3 py-2">
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={page <= 1}
+        onClick={() => onPageChange(page - 1)}
+        className="bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700 text-xs h-7 px-3"
+      >
+        Previous
+      </Button>
+      <span className="text-xs text-slate-400">
+        Page {page} of {totalPages}
+      </span>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={page >= totalPages}
+        onClick={() => onPageChange(page + 1)}
+        className="bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700 text-xs h-7 px-3"
+      >
+        Next
+      </Button>
+    </div>
+  );
+};
+
 // ── AdminView (main) ──────────────────────────────────────────────────────────
 
 export const AdminView = () => {
@@ -790,16 +919,21 @@ export const AdminView = () => {
   const [selectedSession, setSelectedSession] = useState(null);
   const [lastRefresh, setLastRefresh] = useState(null);
   const [secondsAgo, setSecondsAgo] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [sessionsPagination, setSessionsPagination] = useState(null);
   const timerRef = useRef(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (page = currentPage) => {
     setLoading(true);
     try {
       const [stats, h] = await Promise.all([
-        dashboardApi.getStats(),
+        dashboardApi.getStats(page, 25),
         orchestratorApi.health().catch(() => null),
       ]);
-      if (stats.status === 'success') setData(stats);
+      if (stats.status === 'success') {
+        setData(stats);
+        setSessionsPagination(stats.sessions_pagination || null);
+      }
       setHealth(h);
       setLastRefresh(new Date());
       setSecondsAgo(0);
@@ -807,11 +941,11 @@ export const AdminView = () => {
       console.error('Dashboard load failed', e);
     }
     setLoading(false);
-  }, []);
+  }, [currentPage]);
 
   useEffect(() => {
     load();
-    const refresh = setInterval(load, 30000);
+    const refresh = setInterval(() => load(), 30000);
     return () => clearInterval(refresh);
   }, [load]);
 
@@ -820,6 +954,11 @@ export const AdminView = () => {
     timerRef.current = setInterval(() => setSecondsAgo(s => s + 1), 1000);
     return () => clearInterval(timerRef.current);
   }, []);
+
+  const handlePageChange = (newPage) => {
+    setCurrentPage(newPage);
+    load(newPage);
+  };
 
   const stats    = data?.stats;
   const sessions = data?.recent_sessions || [];
@@ -905,7 +1044,9 @@ export const AdminView = () => {
                   <CardTitle className="text-sm text-slate-300 flex items-center gap-2">
                     <MessageSquare className="w-4 h-4" />
                     Sessions
-                    <span className="text-slate-600 font-normal text-xs ml-1">({sessions.length})</span>
+                    <span className="text-slate-600 font-normal text-xs ml-1">
+                      ({sessionsPagination ? sessionsPagination.total_count : sessions.length})
+                    </span>
                   </CardTitle>
                 </CardHeader>
                 <div className="flex-1 min-h-0">
@@ -916,6 +1057,13 @@ export const AdminView = () => {
                     onJumpToSession={handleJumpToSession}
                   />
                 </div>
+                {sessionsPagination && (
+                  <PaginationControls
+                    page={sessionsPagination.page}
+                    totalPages={sessionsPagination.total_pages}
+                    onPageChange={handlePageChange}
+                  />
+                )}
               </Card>
 
               {/* Session detail */}
@@ -932,6 +1080,9 @@ export const AdminView = () => {
 
             {/* ── Fulfillment table ── */}
             <FulfillmentTable sessions={sessions} onSelect={handleJumpToSession} />
+
+            {/* ── Recommended Volunteers table ── */}
+            <RecommendedTable sessions={sessions} onSelect={handleJumpToSession} />
           </>
         )}
       </div>

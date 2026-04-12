@@ -124,8 +124,11 @@ export const healthApi = {
  * Tech Dashboard API
  */
 export const dashboardApi = {
-  getStats: async () => {
-    const response = await apiClient.get('/mcp/dashboard/stats', { headers: _dashboardAuthHeader() });
+  getStats: async (page = 1, pageSize = 25) => {
+    const params = {};
+    if (page !== 1) params.page = page;
+    if (pageSize !== 25) params.page_size = pageSize;
+    const response = await apiClient.get('/mcp/dashboard/stats', { params, headers: _dashboardAuthHeader() });
     return response.data;
   },
   getConversation: async (sessionId, limit = 50) => {

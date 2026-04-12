@@ -3,7 +3,7 @@
  * Pipeline dashboard for managing volunteer entries
  */
 import { useState, useEffect } from 'react';
-import { RefreshCw, User, Clock, CheckCircle, PauseCircle, AlertCircle } from 'lucide-react';
+import { RefreshCw, User, Clock, CheckCircle, PauseCircle, AlertCircle, UserPlus } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -110,6 +110,166 @@ const StatsCard = ({ title, value, icon: Icon, color }) => (
   </Card>
 );
 
+// Recommended Volunteer card component
+const RecommendedCard = ({ session }) => {
+  let volunteerName = session.volunteer_name;
+  let volunteerPhone = null;
+  let stage = session.stage;
+  let identityStatus = 'pending';
+
+  try {
+    const ss = session.sub_state ? JSON.parse(session.sub_state) : {};
+    volunteerName = ss.engagement_context?.volunteer_name || volunteerName;
+    volunteerPhone = ss.engagement_context?.volunteer_phone;
+    identityStatus = ss.identity_verified === true ? 'verified'
+                   : ss.identity_verified === false ? 'not_registered'
+                   : 'pending';
+    if (!volunteerPhone) {
+      try {
+        const cm = typeof session.channel_metadata === 'string' ? JSON.parse(session.channel_metadata) : (session.channel_metadata || {});
+        volunteerPhone = cm.volunteer_phone;
+      } catch (_) {}
+    }
+  } catch (_) {}
+
+  const identityColor = identityStatus === 'verified' ? 'bg-emerald-100 text-emerald-700'
+                       : identityStatus === 'not_registered' ? 'bg-red-100 text-red-700'
+                       : 'bg-slate-100 text-slate-600';
+
+  const stageLabels = {
+    verifying_identity: 'Verifying Identity',
+    gathering_preferences: 'Gathering Preferences',
+    active: 'Active',
+    not_registered: 'Not Registered',
+    human_review: 'Human Review',
+    paused: 'Paused',
+  };
+
+  return (
+    <div className="pipeline-card cursor-default">
+      <div className="flex items-start justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-full bg-violet-100 flex items-center justify-center">
+            <UserPlus className="w-4 h-4 text-violet-600" />
+          </div>
+          <div>
+            <p className="font-medium text-slate-900 text-sm">
+              {volunteerName || 'Recommended Volunteer'}
+            </p>
+            <p className="text-xs text-slate-500">
+              {volunteerPhone || '—'}
+            </p>
+          </div>
+        </div>
+        <StatusBadge status={session.status} />
+      </div>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-slate-500">Stage:</span>
+          <span className="text-slate-700 font-medium">
+            {stageLabels[stage] || stage}
+          </span>
+        </div>
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-slate-500">Identity:</span>
+          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${identityColor}`}>
+            {identityStatus === 'verified' ? 'Verified' : identityStatus === 'not_registered' ? 'Not Registered' : 'Pending'}
+          </span>
+        </div>
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-slate-500">Last Active:</span>
+          <span className="text-slate-600 text-xs">
+            {session.last_message_at ? new Date(session.last_message_at).toLocaleDateString() : '—'}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Recommended Volunteers panel
+const RecommendedVolunteersPanel = ({ sessions }) => {
+  const recommended = sessions.filter(s =>
+    s.workflow === 'recommended_volunteer' || s.persona === 'recommended_volunteer'
+  );
+
+  const active = recommended.filter(s => s.status === 'active');
+  const completed = recommended.filter(s => s.status === 'completed');
+  const paused = recommended.filter(s => s.status === 'paused' || s.stage === 'human_review');
+
+  return (
+    <div className="space-y-6">
+      {/* Stats */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatsCard title="Total Recommended" value={recommended.length} icon={UserPlus} color="bg-violet-500" />
+        <StatsCard title="Active" value={active.length} icon={Clock} color="bg-emerald-500" />
+        <StatsCard title="Completed" value={completed.length} icon={CheckCircle} color="bg-cyan-500" />
+        <StatsCard title="Needs Review" value={paused.length} icon={PauseCircle} color="bg-amber-500" />
+      </div>
+
+      {/* Cards grid */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <Card className="border-none shadow-sm">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-emerald-500" />
+              In Progress
+              <Badge variant="secondary" className="ml-auto">{active.length}</Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ScrollArea className="h-[500px] pr-4">
+              <div className="space-y-3">
+                {active.length === 0 ? (
+                  <p className="text-sm text-slate-500 text-center py-8">No active sessions</p>
+                ) : active.map(s => <RecommendedCard key={s.id} session={s} />)}
+              </div>
+            </ScrollArea>
+          </CardContent>
+        </Card>
+
+        <Card className="border-none shadow-sm">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-cyan-500" />
+              Completed
+              <Badge variant="secondary" className="ml-auto">{completed.length}</Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ScrollArea className="h-[500px] pr-4">
+              <div className="space-y-3">
+                {completed.length === 0 ? (
+                  <p className="text-sm text-slate-500 text-center py-8">No completed sessions</p>
+                ) : completed.map(s => <RecommendedCard key={s.id} session={s} />)}
+              </div>
+            </ScrollArea>
+          </CardContent>
+        </Card>
+
+        <Card className="border-none shadow-sm">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-amber-500" />
+              Needs Review
+              <Badge variant="secondary" className="ml-auto">{paused.length}</Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ScrollArea className="h-[500px] pr-4">
+              <div className="space-y-3">
+                {paused.length === 0 ? (
+                  <p className="text-sm text-slate-500 text-center py-8">No sessions pending review</p>
+                ) : paused.map(s => <RecommendedCard key={s.id} session={s} />)}
+              </div>
+            </ScrollArea>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+};
+
 export const OpsView = () => {
   const [sessions, setSessions] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -168,6 +328,7 @@ export const OpsView = () => {
         <div className="px-6 pt-6 pb-0 flex items-center justify-between">
           <TabsList>
             <TabsTrigger value="pipeline">Onboarding Pipeline</TabsTrigger>
+            <TabsTrigger value="recommended">Recommended Volunteers</TabsTrigger>
             <TabsTrigger value="agents">Agent Dashboard</TabsTrigger>
           </TabsList>
           <Button
@@ -263,6 +424,11 @@ export const OpsView = () => {
               </CardContent>
             </Card>
           </div>
+        </TabsContent>
+
+        {/* ── Recommended Volunteers tab ── */}
+        <TabsContent value="recommended" className="p-6 pt-4">
+          <RecommendedVolunteersPanel sessions={sessions} />
         </TabsContent>
 
         {/* ── Agent Dashboard tab ── */}

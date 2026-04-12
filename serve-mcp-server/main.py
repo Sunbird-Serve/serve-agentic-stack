@@ -1479,7 +1479,9 @@ def _check_dashboard_auth(request: _Request) -> bool:
 async def dashboard_stats(request: _Request) -> _JSONResponse:
     if not _check_dashboard_auth(request):
         return _JSONResponse({"error": "Unauthorized"}, status_code=401)
-    data = await get_dashboard_stats()
+    page = int(request.query_params.get("page", 1))
+    page_size = int(request.query_params.get("page_size", 25))
+    data = await get_dashboard_stats(page=page, page_size=page_size)
     return _JSONResponse(data)
 
 
