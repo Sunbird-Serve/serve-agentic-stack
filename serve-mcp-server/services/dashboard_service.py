@@ -2,6 +2,7 @@
 Dashboard stats service — read-only queries for the Tech Team dashboard.
 """
 import logging
+import math
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
@@ -17,12 +18,17 @@ from services.database import (
 logger = logging.getLogger(__name__)
 
 
-async def get_dashboard_stats() -> Dict[str, Any]:
-    """Return aggregated stats for the tech dashboard."""
+async def get_dashboard_stats(page: int = 1, page_size: int = 25) -> Dict[str, Any]:
+    """Return aggregated stats for the tech dashboard with pagination."""
     from services.database import check_db_health
     db_ok = await check_db_health()
     if not db_ok:
         return {"status": "error", "error": "Database not available"}
+
+    # Clamp pagination params
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    offset = (page - 1) * page_size
 
     try:
         async with get_db() as db:
@@ -78,7 +84,11 @@ async def get_dashboard_stats() -> Dict[str, Any]:
             submitted_needs = needs_by_status.get("submitted", 0)
             draft_needs     = needs_by_status.get("draft", 0)
 
-            # ── Recent sessions (last 50) ─────────────────────────────────────
+            # ── Recent sessions (paginated) ──────────────────────────────────
+            total_sessions_for_list = (await db.execute(
+                select(func.count()).select_from(DBSession)
+            )).scalar() or 0
+
             recent_rows = (await db.execute(
                 select(
                     DBSession.id,
@@ -96,7 +106,8 @@ async def get_dashboard_stats() -> Dict[str, Any]:
                     DBSession.last_message_at,
                 )
                 .order_by(desc(DBSession.updated_at))
-                .limit(50)
+                .limit(page_size)
+                .offset(offset)
             )).all()
 
             recent_sessions = [
@@ -118,7 +129,11 @@ async def get_dashboard_stats() -> Dict[str, Any]:
                 for r in recent_rows
             ]
 
-            # ── Recent need drafts (last 20) ──────────────────────────────────
+            # ── Recent need drafts (paginated) ─────────────────────────────────
+            total_needs_for_list = (await db.execute(
+                select(func.count()).select_from(NeedDraft)
+            )).scalar() or 0
+
             need_rows = (await db.execute(
                 select(
                     NeedDraft.id,
@@ -134,7 +149,8 @@ async def get_dashboard_stats() -> Dict[str, Any]:
                     NeedDraft.submitted_at,
                 )
                 .order_by(desc(NeedDraft.updated_at))
-                .limit(20)
+                .limit(page_size)
+                .offset(offset)
             )).all()
 
             # Fetch sub_state for each session to extract school/coordinator names
@@ -192,7 +208,19 @@ async def get_dashboard_stats() -> Dict[str, Any]:
                     },
                 },
                 "recent_sessions": recent_sessions,
+                "sessions_pagination": {
+                    "page":        page,
+                    "page_size":   page_size,
+                    "total_count": total_sessions_for_list,
+                    "total_pages": math.ceil(total_sessions_for_list / page_size) if page_size else 1,
+                },
                 "recent_needs":    recent_needs,
+                "needs_pagination": {
+                    "page":        page,
+                    "page_size":   page_size,
+                    "total_count": total_needs_for_list,
+                    "total_pages": math.ceil(total_needs_for_list / page_size) if page_size else 1,
+                },
             }
 
     except Exception as e:

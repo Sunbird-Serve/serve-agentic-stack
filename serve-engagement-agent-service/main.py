@@ -1,18 +1,20 @@
 """
 SERVE Engagement Agent Service
-FastAPI service for re-engaging returning volunteers.
+FastAPI service for re-engaging returning volunteers and recommended volunteers.
 
 Port: 8006
-Workflow: returning_volunteer, volunteer_engagement
+Workflow: returning_volunteer, volunteer_engagement, recommended_volunteer
 """
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import os
 import logging
 
 from app.schemas.engagement_schemas import EngagementAgentTurnRequest, EngagementAgentTurnResponse
+from app.schemas.recommended_schemas import RecommendedAgentTurnRequest, RecommendedAgentTurnResponse
 from app.service.engagement_logic import engagement_agent_service
+from app.service.recommended_handler import recommended_handler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,11 +46,22 @@ app.add_middleware(
 )
 
 
-@app.post("/api/turn", response_model=EngagementAgentTurnResponse)
-async def process_turn(request: EngagementAgentTurnRequest):
-    """Process a conversation turn for volunteer re-engagement."""
+@app.post("/api/turn")
+async def process_turn(request: Request):
+    """Process a conversation turn — dispatches by workflow type."""
     try:
-        return await engagement_agent_service.process_turn(request)
+        body = await request.json()
+        workflow = (body.get("session_state") or {}).get("workflow", "")
+
+        if workflow == "recommended_volunteer":
+            req = RecommendedAgentTurnRequest(**body)
+            response = await recommended_handler.process_turn(req)
+            return response.model_dump(mode="json")
+        else:
+            # Existing returning volunteer flow — untouched
+            req = EngagementAgentTurnRequest(**body)
+            response = await engagement_agent_service.process_turn(req)
+            return response.model_dump(mode="json")
     except Exception as e:
         logger.error(f"Error processing engagement turn: {e}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -80,6 +80,7 @@ def determine_workflow(persona: PersonaType) -> WorkflowType:
     persona_workflow_map = {
         PersonaType.NEW_VOLUNTEER: WorkflowType.NEW_VOLUNTEER_ONBOARDING,
         PersonaType.RETURNING_VOLUNTEER: WorkflowType.RETURNING_VOLUNTEER,
+        PersonaType.RECOMMENDED_VOLUNTEER: WorkflowType.RECOMMENDED_VOLUNTEER,
         PersonaType.NEED_COORDINATOR: WorkflowType.NEED_COORDINATION,
     }
     return persona_workflow_map.get(persona, WorkflowType.NEW_VOLUNTEER_ONBOARDING)
@@ -97,6 +98,7 @@ def determine_initial_agent(workflow: WorkflowType) -> AgentType:
     workflow_agent_map = {
         WorkflowType.NEW_VOLUNTEER_ONBOARDING: AgentType.ONBOARDING,
         WorkflowType.RETURNING_VOLUNTEER: AgentType.ENGAGEMENT,
+        WorkflowType.RECOMMENDED_VOLUNTEER: AgentType.ENGAGEMENT,
         WorkflowType.NEED_COORDINATION: AgentType.NEED,
     }
     return workflow_agent_map.get(workflow, AgentType.ONBOARDING)
@@ -484,50 +486,16 @@ class OrchestrationService:
                 auto_response = await agent_router.invoke_agent(auto_routing, auto_request)
 
                 if auto_response.assistant_message:
-                    # Replace engagement closing with fulfillment's opening message
+                    # Replace engagement closing with fulfillment's opening message.
+                    # If auto_continue is set, pass it through to the UI so it fires
+                    # the follow-up — this gives the volunteer a visible delay between
+                    # the ack and the real response.
                     agent_response = auto_response
                     logger.info(
                         f"[{session_context.session_id}] Auto-invoked {to_agent_value!r} "
-                        f"after handoff — response length={len(auto_response.assistant_message)}"
+                        f"after handoff — response length={len(auto_response.assistant_message)}, "
+                        f"auto_continue={getattr(auto_response, 'auto_continue', False)}"
                     )
-
-                    # If the agent wants a follow-up turn (e.g. ack → real response),
-                    # fire a second call immediately so the volunteer sees both bubbles.
-                    if getattr(auto_response, 'auto_continue', False):
-                        logger.info(
-                            f"[{session_context.session_id}] auto_continue from {to_agent_value!r} "
-                            f"— firing follow-up turn"
-                        )
-                        # Build follow-up with the ack in conversation history
-                        followup_state = auto_session_state.model_copy(update={
-                            "stage": auto_response.state,
-                            "sub_state": auto_response.sub_state,
-                        })
-                        followup_request = AgentTurnRequest(
-                            session_id=session_context.session_id,
-                            session_state=followup_state,
-                            user_message="__auto_continue__",
-                            conversation_history=[
-                                {"role": "assistant", "content": auto_response.assistant_message},
-                            ],
-                            intent_hint="continue_workflow",
-                            channel_metadata=event.raw_metadata if event.raw_metadata else None,
-                        )
-                        followup_routing = agent_router.make_routing_decision(
-                            session_context=followup_state,
-                            user_message="__auto_continue__",
-                            intent=intent_result,
-                        )
-                        followup_response = await agent_router.invoke_agent(followup_routing, followup_request)
-                        if followup_response.assistant_message:
-                            # Combine: ack as preliminary, real response as main
-                            followup_response.preliminary_message = auto_response.assistant_message
-                            followup_response.auto_continue = False
-                            agent_response = followup_response
-                            logger.info(
-                                f"[{session_context.session_id}] Follow-up from {to_agent_value!r} "
-                                f"succeeded — response length={len(followup_response.assistant_message)}"
-                            )
             except Exception as e:
                 logger.warning(
                     f"[{session_context.session_id}] Auto-invoke of {to_agent_value!r} failed: {e} "

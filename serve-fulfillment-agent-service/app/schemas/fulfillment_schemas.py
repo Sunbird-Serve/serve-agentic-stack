@@ -63,7 +63,7 @@ class FulfillmentAgentTurnResponse(BaseModel):
     assistant_message: str
     auto_continue: bool = False         # UI should auto-fire a follow-up request
     active_agent: str = "fulfillment"
-    workflow: str = "returning_volunteer"
+    workflow: str                        # echoes session workflow (returning_volunteer or recommended_volunteer)
     state: str
     sub_state: Optional[str] = None
     telemetry_events: List[Dict[str, Any]] = Field(default_factory=list)

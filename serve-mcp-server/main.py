@@ -58,7 +58,8 @@ from schemas import (
     GetSessionAnalyticsInput,
     # Engagement + Fulfillment agent tools
     GetVolunteerFulfillmentHistoryInput, CheckActiveNominationsInput,
-    GetEngagementContextInput, NominateVolunteerInput, ConfirmNominationInput,
+    GetEngagementContextInput, GetEngagementContextByEmailInput,
+    NominateVolunteerInput, ConfirmNominationInput,
     GetNominationsForNeedInput, GetRecommendedVolunteersInput,
     GetNeedsForEntityInput, GetNeedDetailsInput,
 )
@@ -1262,6 +1263,20 @@ async def get_engagement_context(params: GetEngagementContextInput) -> dict:
 
 
 @mcp.tool()
+async def get_engagement_context_by_email(params: GetEngagementContextByEmailInput) -> dict:
+    """
+    Fallback — looks up volunteer by email when phone lookup fails.
+    Returns the same structure as get_engagement_context.
+
+    Used by: Engagement Agent (when volunteer's WhatsApp number doesn't match registry)
+
+    Args:
+        email: Volunteer's email address used during eVidyaloka registration
+    """
+    return await engagement_service.get_engagement_context_by_email(params.email)
+
+
+@mcp.tool()
 async def get_needs_for_entity(params: GetNeedsForEntityInput) -> dict:
     """
     Get open needs for a school/entity.
@@ -1301,6 +1316,19 @@ async def get_all_entities() -> dict:
     # Ensure entity_id is explicitly set alongside id
     entities = [{**e, "entity_id": e.get("id")} for e in raw]
     return {"status": "success", "entities": entities, "total": len(entities)}
+
+
+@mcp.tool()
+async def search_approved_needs() -> dict:
+    """
+    Bulk-fetch all approved needs across all schools with enriched details.
+
+    Used by: Fulfillment Agent MatchFinder for efficient matching at scale.
+    Returns pre-filtered, enriched needs with school_name, subjects, grades, time_slots.
+    """
+    from services.serve_registry_client import need_service_client
+    needs = await need_service_client.get_approved_needs_bulk()
+    return {"status": "success", "needs": needs, "total": len(needs)}
 
 
 @mcp.tool()
@@ -1451,7 +1479,9 @@ def _check_dashboard_auth(request: _Request) -> bool:
 async def dashboard_stats(request: _Request) -> _JSONResponse:
     if not _check_dashboard_auth(request):
         return _JSONResponse({"error": "Unauthorized"}, status_code=401)
-    data = await get_dashboard_stats()
+    page = int(request.query_params.get("page", 1))
+    page_size = int(request.query_params.get("page_size", 25))
+    data = await get_dashboard_stats(page=page, page_size=page_size)
     return _JSONResponse(data)
 
 

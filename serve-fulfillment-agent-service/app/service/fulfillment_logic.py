@@ -42,6 +42,7 @@ class FulfillmentAgentService:
     async def process_turn(self, request: FulfillmentAgentTurnRequest) -> FulfillmentAgentTurnResponse:
         session_id = str(request.session_id)
         stage = request.session_state.stage
+        workflow = request.session_state.workflow
 
         # ── Terminal state guard ──────────────────────────────────────────────
         if stage in _TERMINAL_STATES:
@@ -50,6 +51,7 @@ class FulfillmentAgentService:
                 message=_TERMINAL_FALLBACK_MESSAGES.get(stage, "Shukriya!"),
                 state=stage,
                 sub_state=request.session_state.sub_state,
+                workflow=workflow,
             )
 
         # ── Load sub_state ────────────────────────────────────────────────────
@@ -94,6 +96,7 @@ class FulfillmentAgentService:
                 state=FulfillmentWorkflowState.ACTIVE.value,
                 sub_state=updated,
                 auto_continue=True,
+                workflow=workflow,
             )
 
         # Cache match result in sub_state so subsequent turns skip re-searching
@@ -132,7 +135,15 @@ class FulfillmentAgentService:
         messages = list(request.conversation_history[-20:])
         if request.user_message and request.user_message not in ("__handoff__", "__auto_continue__"):
             messages.append({"role": "user", "content": request.user_message})
-        elif request.user_message in ("__handoff__", "__auto_continue__") and not messages:
+        elif request.user_message == "__auto_continue__":
+            # Auto-continue after ack — inject ack as prior turn so LLM continues from it
+            ack = "Give me a moment while I find the best teaching opportunity for you... 🔍"
+            if not messages:
+                messages = [
+                    {"role": "assistant", "content": ack},
+                    {"role": "user", "content": "Please show me what you found."},
+                ]
+        elif request.user_message == "__handoff__" and not messages:
             messages.append({"role": "user", "content": "Please find me a teaching opportunity."})
 
         async def tool_executor(tool_name: str, tool_input: Dict[str, Any]) -> Any:
@@ -154,6 +165,7 @@ class FulfillmentAgentService:
                 text=text,
                 sub_state=sub_state,
                 session_id=session_id,
+                workflow=workflow,
             )
 
         # ── Loop exhausted ────────────────────────────────────────────────────
@@ -168,6 +180,7 @@ class FulfillmentAgentService:
                 message=_TERMINAL_FALLBACK_MESSAGES[FulfillmentWorkflowState.HUMAN_REVIEW.value],
                 state=FulfillmentWorkflowState.HUMAN_REVIEW.value,
                 sub_state=_dump_sub_state(sub_state),
+                workflow=workflow,
             )
 
         # ── Active turn ───────────────────────────────────────────────────────
@@ -178,11 +191,7 @@ class FulfillmentAgentService:
             message=text,
             state=FulfillmentWorkflowState.ACTIVE.value,
             sub_state=updated,
-        )
-        return self._build_response(
-            message=text,
-            state=FulfillmentWorkflowState.ACTIVE.value,
-            sub_state=updated,
+            workflow=workflow,
         )
 
     async def _execute_tool(
@@ -204,10 +213,12 @@ class FulfillmentAgentService:
         elif tool_name == "get_more_needs":
             hint = tool_input.get("hint", "")
             handoff = sub_state.get("handoff", {})
-            # Re-run matcher with relaxed constraints using hint as preference override
+            # Merge hint with original preferences instead of overwriting
+            original_notes = handoff.get("preference_notes") or ""
+            merged_notes = f"{original_notes}; {hint}".strip("; ") if original_notes else hint
             relaxed_handoff = {
                 **handoff,
-                "preference_notes": hint,
+                "preference_notes": merged_notes,
                 "preferred_school_id": None,   # broaden to all schools
                 "preferred_need_id": None,
             }
@@ -221,10 +232,27 @@ class FulfillmentAgentService:
             return llm_adapter.format_match_context(new_match)
 
         elif tool_name == "nominate_volunteer_for_need":
-            return await domain_client.nominate_volunteer_for_need(
+            # Guard: prevent duplicate nominations in the same session
+            if sub_state.get("nominated_need_id"):
+                existing = sub_state["nominated_need_id"]
+                logger.warning(
+                    f"Session {session_id}: blocked duplicate nomination — "
+                    f"already nominated for {existing}"
+                )
+                return {
+                    "status": "error",
+                    "reason": "already_nominated",
+                    "existing_need_id": existing,
+                    "message": "Volunteer already nominated for a need in this session.",
+                }
+            result = await domain_client.nominate_volunteer_for_need(
                 need_id=tool_input["need_id"],
                 volunteer_id=tool_input["volunteer_id"],
             )
+            # Track successful nomination
+            if isinstance(result, dict) and result.get("status") != "error":
+                sub_state["nominated_need_id"] = tool_input["need_id"]
+            return result
 
         else:
             logger.warning(f"Unknown tool: {tool_name}")
@@ -237,6 +265,7 @@ class FulfillmentAgentService:
         text: str,
         sub_state: Dict[str, Any],
         session_id: str,
+        workflow: str = "returning_volunteer",
     ) -> FulfillmentAgentTurnResponse:
         if outcome == "nominated":
             need_id = signal.get("need_id") or sub_state.get("nominated_need_id")
@@ -272,7 +301,7 @@ class FulfillmentAgentService:
         if message:
             await domain_client.save_message(session_id, "assistant", message)
 
-        return self._build_response(message=message, state=new_state, sub_state=updated)
+        return self._build_response(message=message, state=new_state, sub_state=updated, workflow=workflow)
 
     def _build_response(
         self,
@@ -280,10 +309,12 @@ class FulfillmentAgentService:
         state: str,
         sub_state: Optional[str],
         auto_continue: bool = False,
+        workflow: str = "returning_volunteer",
     ) -> FulfillmentAgentTurnResponse:
         return FulfillmentAgentTurnResponse(
             assistant_message=message,
             auto_continue=auto_continue,
+            workflow=workflow,
             state=state,
             sub_state=sub_state,
         )

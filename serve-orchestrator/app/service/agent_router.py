@@ -86,8 +86,9 @@ class AgentRegistry:
             'timeout': 60.0,
             'healthy': False,  # Conservative — undeployed; first probe may flip to True
             'last_check': None,
-            'workflows': ['returning_volunteer', 'volunteer_engagement'],
-            'stages': ['re_engaging', 'profile_refresh', 'matching_ready', 'human_review', 'paused'],
+            'workflows': ['returning_volunteer', 'volunteer_engagement', 'recommended_volunteer'],
+            'stages': ['re_engaging', 'profile_refresh', 'matching_ready', 'human_review', 'paused',
+                       'verifying_identity', 'gathering_preferences', 'not_registered'],
         }
 
         # ── Helpline agent — cross-cutting support queries ───────────────────
@@ -262,6 +263,39 @@ class AgentRouter:
                     reason=f"Active agent is fulfillment — routing to fulfillment agent (stage '{current_stage}')",
                     routing_context={
                         'decision_type': 'fulfillment',
+                        'stage': current_stage,
+                        'workflow': workflow,
+                        'intent': intent_value,
+                    }
+                )
+
+        # ── Recommended-volunteer workflow: prefer engagement agent, fall back to
+        #    onboarding if engagement is not yet deployed / unhealthy.
+        if workflow == 'recommended_volunteer':
+            if self.registry.is_agent_available('engagement'):
+                return RoutingDecision(
+                    target_agent='engagement',
+                    confidence=1.0,
+                    reason=f"Recommended volunteer workflow — routing to engagement agent (stage '{current_stage}')",
+                    fallback_agent='onboarding',
+                    routing_context={
+                        'decision_type': 'recommended_volunteer',
+                        'stage': current_stage,
+                        'workflow': workflow,
+                        'intent': intent_value,
+                    }
+                )
+            else:
+                logger.warning(
+                    f"Engagement agent unavailable for recommended_volunteer workflow "
+                    f"(session stage='{current_stage}'). Falling back to onboarding."
+                )
+                return RoutingDecision(
+                    target_agent='onboarding',
+                    confidence=0.6,
+                    reason="Recommended-volunteer: engagement agent unavailable, gracefully routing to onboarding",
+                    routing_context={
+                        'decision_type': 'recommended_volunteer_fallback',
                         'stage': current_stage,
                         'workflow': workflow,
                         'intent': intent_value,

@@ -36,6 +36,21 @@ ENGAGEMENT_TOOLS = [
         },
     },
     {
+        "name": "get_engagement_context_by_email",
+        "description": (
+            "Fallback: load the volunteer's fulfillment history by their email address. "
+            "Use this ONLY when get_engagement_context (phone lookup) returned status='not_found'. "
+            "Ask the volunteer for the email they used to register on eVidyaloka before calling this."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "email": {"type": "string", "description": "Volunteer's email used for eVidyaloka registration"},
+            },
+            "required": ["email"],
+        },
+    },
+    {
         "name": "signal_outcome",
         "description": (
             "Call this when the conversation reaches a terminal point. "
@@ -67,6 +82,15 @@ ENGAGEMENT_TOOLS = [
                 "preferred_need_id": {
                     "type": "string",
                     "description": "need_id from fulfillment history if volunteer wants the same need.",
+                },
+                "available_from": {
+                    "type": "string",
+                    "description": (
+                        "When the volunteer can start teaching. "
+                        "Use 'immediately' if they can start right away. "
+                        "Use an ISO date (YYYY-MM-DD) if they give a specific date. "
+                        "Use natural language like 'after 2 weeks', 'next month', 'after exams' otherwise."
+                    ),
                 },
                 "reason": {
                     "type": "string",
@@ -103,6 +127,10 @@ STEP 1 — LOAD CONTEXT (silent, no user interaction):
 - If "Last fulfillment:" is already present in WHAT YOU KNOW above, skip this step — context is already loaded.
 - Otherwise call get_engagement_context(phone=<volunteer_phone>) once and silently.
 - Do NOT tell the volunteer you are doing a lookup.
+- If get_engagement_context returns status='not_found': ask the volunteer warmly for the email they used to register on eVidyaloka.
+  Example: "I couldn't find your details with this number. Could you share the email you used when you registered on eVidyaloka?"
+  When they provide the email, call get_engagement_context_by_email(email=<their_email>) silently.
+- If both phone and email lookups fail, say: "Welcome back! I wasn't able to find your previous details, but no worries — would you like to continue volunteering this year?"
 # TEMPORARILY DISABLED: active nomination check
 # - If has_active_nomination=True: call signal_outcome(outcome="already_active", reason="volunteer already has an active nomination").
 
@@ -124,13 +152,21 @@ STEP 3 — CAPTURE PREFERENCES (if they say yes):
 - If they say "same everything" or "haan same hai" — treat both as confirmed.
 - If they are "fully flexible" or "kahi bhi" — continuity = "different".
 
+STEP 3.5 — ASK AVAILABILITY TIMELINE:
+- After school and time preferences are captured, ask: "When can you start? Can you begin within the next week or two?"
+- If they say "immediately", "haan abhi se", "right away", "kal se" → available_from = "immediately"
+- If they give a specific date → available_from = that date in YYYY-MM-DD format
+- If they say "after exams", "next month", "2-3 weeks" → available_from = their exact words
+- Ask this as a separate question. Do NOT combine it with preference questions.
+
 STEP 4 — SIGNAL READY:
-- Once you have school preference AND slot preference, call:
+- Once you have school preference AND slot preference AND availability timeline, call:
   signal_outcome(
     outcome="ready",
     preference_notes="<natural language summary of their preferences>",
     continuity="same" or "different",
-    preferred_need_id="<need_id from history if continuity=same, else omit>"
+    preferred_need_id="<need_id from history if continuity=same, else omit>",
+    available_from="<immediately | YYYY-MM-DD | natural language>"
   )
 - Then tell the volunteer: "Perfect. I've noted your preference and will now find the best match for you."
 

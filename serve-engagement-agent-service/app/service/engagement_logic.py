@@ -7,7 +7,9 @@ The LLM owns all branching logic. The state machine only enforces terminal condi
 Focused on: active volunteers who fulfilled needs and are re-engaging (user-initiated).
 """
 import logging
-from datetime import datetime
+import os
+import re
+from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 from app.schemas.engagement_schemas import (
@@ -22,6 +24,9 @@ from app.clients.domain_client import domain_client
 from app.service.llm_adapter import llm_adapter
 
 logger = logging.getLogger(__name__)
+
+# ── Configurable: max days a volunteer can delay before we defer instead of handoff
+_MAX_START_DELAY_DAYS = int(os.environ.get("ENGAGEMENT_MAX_START_DELAY_DAYS", "10"))
 
 _TERMINAL_STATES = {
     EngagementWorkflowState.HUMAN_REVIEW.value,
@@ -167,10 +172,12 @@ class EngagementAgentService:
                 sub_state["preference_notes"] = tool_input.get("preference_notes")
                 sub_state["continuity"] = tool_input.get("continuity", "same")
                 sub_state["preferred_need_id"] = tool_input.get("preferred_need_id")
+                sub_state["available_from"] = tool_input.get("available_from", "immediately")
             elif outcome in ("declined", "already_active"):
                 sub_state["human_review_reason"] = outcome
             elif outcome == "deferred":
                 sub_state["deferred"] = True
+                sub_state["deferred_reason"] = tool_input.get("reason")
             return tool_input
 
         elif tool_name == "get_engagement_context":
@@ -184,6 +191,20 @@ class EngagementAgentService:
                 logger.info(f"Session {session_id}: returning cached engagement_context")
                 return sub_state["engagement_context"]
             result = await domain_client.get_engagement_context(phone)
+            if result.get("status") == "success":
+                sub_state["engagement_context"] = result
+            return result
+
+        elif tool_name == "get_engagement_context_by_email":
+            # Email fallback — volunteer provided their registration email
+            email = tool_input.get("email", "")
+            if not email:
+                return {"status": "error", "error": "email required"}
+            # Return cached result if already loaded
+            if sub_state.get("engagement_context") and sub_state["engagement_context"].get("status") == "success":
+                logger.info(f"Session {session_id}: returning cached engagement_context (email fallback)")
+                return sub_state["engagement_context"]
+            result = await domain_client.get_engagement_context_by_email(email)
             if result.get("status") == "success":
                 sub_state["engagement_context"] = result
             return result
@@ -304,6 +325,49 @@ class EngagementAgentService:
             "volunteer_phone": request.session_state.volunteer_phone,
         })
 
+        # ── Check availability timeline — defer if too far out ────────────────
+        available_from = sub_state.get("available_from", "immediately")
+        delay_days = self._estimate_delay_days(available_from)
+        logger.info(
+            f"Session {session_id}: available_from={available_from!r}, "
+            f"estimated_delay={delay_days}d, threshold={_MAX_START_DELAY_DAYS}d"
+        )
+
+        if delay_days is not None and delay_days > _MAX_START_DELAY_DAYS:
+            # Too far out — defer instead of handing off to fulfillment
+            sub_state["deferred"] = True
+            sub_state["human_review_reason"] = "start_delay_too_long"
+            await domain_client.engagement_update_volunteer_status(
+                session_id,
+                volunteer_status="pause_outreach",
+                reason=f"volunteer_available_in_{delay_days}_days",
+            )
+            await domain_client.save_memory_summary(
+                session_id=session_id,
+                summary_text=(
+                    f"Volunteer wants to continue but can't start for ~{delay_days} days "
+                    f"(available_from: {available_from}). Deferred — will reconnect closer to their availability."
+                ),
+                key_facts=[
+                    "Outcome: deferred_start_delay",
+                    f"Available from: {available_from}",
+                    f"Continuity: {sub_state.get('continuity', 'same')}",
+                ],
+                volunteer_id=request.session_state.volunteer_id,
+            )
+            await domain_client.advance_state(
+                session_id, EngagementWorkflowState.PAUSED.value, _dump_sub_state(sub_state)
+            )
+            message = text or (
+                "Thank you for confirming! Since you're available a bit later, "
+                "we'll reach out closer to when you can start. Talk soon! 🙏"
+            )
+            return self._build_response(
+                message=message,
+                state=EngagementWorkflowState.PAUSED.value,
+                sub_state=_dump_sub_state(sub_state),
+            )
+
         # Try MCP-side handoff preparation first
         handoff_result = await domain_client.engagement_prepare_fulfillment_handoff(
             session_id,
@@ -349,11 +413,13 @@ class EngagementAgentService:
             summary_text=(
                 f"Volunteer confirmed re-engagement. "
                 f"Continuity: {sub_state.get('continuity', 'same')}. "
-                f"Preferences: {sub_state.get('preference_notes', '')}."
+                f"Preferences: {sub_state.get('preference_notes', '')}. "
+                f"Available from: {sub_state.get('available_from', 'immediately')}."
             ),
             key_facts=[
                 f"Outcome: ready_for_fulfillment",
                 f"Continuity: {sub_state.get('continuity', 'same')}",
+                f"Available from: {sub_state.get('available_from', 'immediately')}",
             ],
             volunteer_id=request.session_state.volunteer_id,
         )
@@ -378,6 +444,56 @@ class EngagementAgentService:
                 "reason": "Volunteer confirmed continuation preferences",
             },
         )
+
+    @staticmethod
+    def _estimate_delay_days(available_from: str) -> Optional[int]:
+        """
+        Estimate how many days from now until the volunteer can start.
+        Returns None if unparseable (treat as immediate).
+        """
+        if not available_from:
+            return 0
+
+        lower = available_from.strip().lower()
+
+        # Immediate signals
+        if lower in ("immediately", "now", "today", "abhi", "kal se", "tomorrow", "right away", "haan abhi se"):
+            return 0
+        if lower == "tomorrow" or lower == "kal":
+            return 1
+
+        # Try ISO date parse (YYYY-MM-DD)
+        try:
+            target = datetime.strptime(available_from.strip()[:10], "%Y-%m-%d").date()
+            delta = (target - datetime.utcnow().date()).days
+            return max(delta, 0)
+        except (ValueError, TypeError):
+            pass
+
+        # Try to extract "N weeks/days/month" patterns
+        m = re.search(r"(\d+)\s*(day|week|month)", lower)
+        if m:
+            n = int(m.group(1))
+            unit = m.group(2)
+            if "day" in unit:
+                return n
+            if "week" in unit:
+                return n * 7
+            if "month" in unit:
+                return n * 30
+
+        # Common Hindi/English phrases
+        if any(w in lower for w in ("next month", "agle mahine", "agle month")):
+            return 30
+        if any(w in lower for w in ("2 week", "do hafte", "two week")):
+            return 14
+        if any(w in lower for w in ("next week", "agle hafte")):
+            return 7
+        if any(w in lower for w in ("after exam", "exam ke baad")):
+            return 21  # conservative estimate
+
+        # Can't parse — treat as unknown, don't block
+        return None
 
     def _build_local_payload(
         self,

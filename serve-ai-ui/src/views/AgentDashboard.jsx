@@ -201,16 +201,37 @@ const EngagementAgentPanel = ({ sessions }) => {
     let continuity = null;
     let reviewReason = null;
     let volunteerName = s.volunteer_name;
+    let volunteerPhone = null;
+    let volunteerId = s.volunteer_id;
+    let preferenceNotes = null;
+
+    // Safely extract channel_metadata (could be object or JSON string)
+    let chMeta = {};
+    try {
+      chMeta = typeof s.channel_metadata === 'string' ? JSON.parse(s.channel_metadata) : (s.channel_metadata || {});
+    } catch (_) {}
+
     try {
       const ss = s.sub_state ? JSON.parse(s.sub_state) : {};
-      reviewReason  = ss.human_review_reason;
-      continuity    = ss.continuity;
-      volunteerName = ss.engagement_context?.volunteer_name || ss.handoff?.volunteer_name || volunteerName;
+      reviewReason     = ss.human_review_reason;
+      continuity       = ss.continuity || ss.handoff?.continuity;
+      preferenceNotes  = ss.preference_notes || ss.handoff?.preference_notes;
+      volunteerName    = ss.engagement_context?.volunteer_name || ss.handoff?.volunteer_name || volunteerName;
+      volunteerPhone   = ss.engagement_context?.volunteer_phone || ss.handoff?.volunteer_phone || chMeta.volunteer_phone || null;
+      volunteerId      = ss.engagement_context?.volunteer_id || ss.handoff?.volunteer_id || volunteerId;
       if (ss.deferred) outcome = 'deferred';
       else if (reviewReason === 'volunteer_declined') outcome = 'declined';
       else if (ss.handoff?.volunteer_id) outcome = 'ready';
     } catch (_) {}
-    return { ...s, outcome, continuity, reviewReason, volunteerName };
+    return { ...s, outcome, continuity, reviewReason, volunteerName, volunteerPhone, volunteerId, preferenceNotes, deferredReason: null };
+  });
+
+  // Extract deferred reason in a second pass (avoids complicating the try block)
+  withOutcome.forEach(s => {
+    try {
+      const ss = s.sub_state ? JSON.parse(s.sub_state) : {};
+      s.deferredReason = ss.deferred_reason || ss.human_review_reason?.replace(/_/g, ' ') || null;
+    } catch (_) {}
   });
 
   const readyCount    = withOutcome.filter(s => s.outcome === 'ready').length;
@@ -255,29 +276,43 @@ const EngagementAgentPanel = ({ sessions }) => {
           <CardTitle className="text-sm text-slate-600 font-medium">Returning Volunteer Sessions</CardTitle>
         </CardHeader>
         <CardContent className="px-0 pb-2">
-          <ScrollArea className="h-72">
+          <ScrollArea className="h-80">
             {engSessions.length === 0 ? (
               <EmptyState message="No engagement sessions yet" />
             ) : (
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-slate-100">
-                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Volunteer</th>
-                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Stage</th>
-                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Outcome</th>
-                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Continuity</th>
+                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Volunteer ID</th>
+                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Name</th>
+                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Phone</th>
+                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Consent</th>
+                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Preference</th>
+                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Reason</th>
                     <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Last Active</th>
                   </tr>
                 </thead>
                 <tbody>
                   {withOutcome.map((s) => (
                     <tr key={s.id} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
-                      <td className="px-4 py-2.5 text-slate-700">
-                        {s.volunteerName || s.actor_id?.slice(0, 10) || '—'}
+                      <td className="px-4 py-2.5 text-slate-500 text-xs font-mono">
+                        {s.volunteerId?.slice(0, 12) || '—'}
                       </td>
-                      <td className="px-4 py-2.5"><StagePill stage={s.stage} /></td>
-                      <td className="px-4 py-2.5"><OutcomePill outcome={s.outcome} /></td>
-                      <td className="px-4 py-2.5 text-slate-500 text-xs capitalize">{s.continuity || '—'}</td>
+                      <td className="px-4 py-2.5 text-slate-700">
+                        {s.volunteerName || '—'}
+                      </td>
+                      <td className="px-4 py-2.5 text-slate-500 text-xs">
+                        {s.volunteerPhone || '—'}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <OutcomePill outcome={s.outcome} />
+                      </td>
+                      <td className="px-4 py-2.5 text-slate-500 text-xs max-w-[200px] truncate" title={s.preferenceNotes || ''}>
+                        {s.preferenceNotes || (s.continuity ? `Continuity: ${s.continuity}` : '—')}
+                      </td>
+                      <td className="px-4 py-2.5 text-slate-500 text-xs max-w-[160px] truncate" title={s.deferredReason || ''}>
+                        {s.deferredReason || '—'}
+                      </td>
                       <td className="px-4 py-2.5 text-slate-400 text-xs">{timeAgo(s.last_message_at)}</td>
                     </tr>
                   ))}
@@ -307,14 +342,24 @@ const FulfillmentAgentPanel = ({ sessions }) => {
     let matchStatus = null;
     let reviewReason = null;
     let volunteerName = s.volunteer_name;
+    let volunteerId = s.volunteer_id;
+    let volunteerPhone = null;
+    let preferenceNotes = null;
+    let candidateNames = [];
     try {
       const ss = s.sub_state ? JSON.parse(s.sub_state) : {};
       nominatedNeedId = ss.nominated_need_id;
       reviewReason    = ss.human_review_reason;
       matchStatus     = ss.match_result?.status;
       volunteerName   = ss.handoff?.volunteer_name || volunteerName;
+      volunteerId     = ss.handoff?.volunteer_id || volunteerId;
+      preferenceNotes = ss.handoff?.preference_notes;
+      volunteerPhone  = ss.engagement_context?.volunteer_phone;
+      // Extract shown candidate names/ids
+      const candidates = ss.match_result?.candidates || [];
+      candidateNames = candidates.map(c => c.name || c.school_name || c.id?.slice(0, 10) || '?');
     } catch (_) {}
-    return { ...s, nominatedNeedId, matchStatus, reviewReason, volunteerName };
+    return { ...s, nominatedNeedId, matchStatus, reviewReason, volunteerName, volunteerId, volunteerPhone, preferenceNotes, candidateNames };
   });
 
   const nominated  = enriched.filter(s => s.nominatedNeedId).length;
@@ -358,37 +403,45 @@ const FulfillmentAgentPanel = ({ sessions }) => {
           <CardTitle className="text-sm text-slate-600 font-medium">Fulfillment Sessions</CardTitle>
         </CardHeader>
         <CardContent className="px-0 pb-2">
-          <ScrollArea className="h-72">
+          <ScrollArea className="h-80">
             {fulSessions.length === 0 ? (
               <EmptyState message="No fulfillment sessions yet" />
             ) : (
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-slate-100">
-                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Volunteer</th>
-                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Stage</th>
-                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Match</th>
-                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Review Reason</th>
+                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Volunteer ID</th>
+                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Name</th>
+                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Phone</th>
+                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Preference</th>
+                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Needs Shown</th>
+                    <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Nominated Need</th>
                     <th className="text-left text-xs text-slate-400 font-medium px-4 py-2">Last Active</th>
                   </tr>
                 </thead>
                 <tbody>
                   {enriched.map((s) => (
                     <tr key={s.id} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
-                      <td className="px-4 py-2.5 text-slate-700">
-                        {s.volunteerName || s.actor_id?.slice(0, 10) || '—'}
+                      <td className="px-4 py-2.5 text-slate-500 text-xs font-mono">
+                        {s.volunteerId?.slice(0, 12) || '—'}
                       </td>
-                      <td className="px-4 py-2.5"><StagePill stage={s.stage} /></td>
-                      <td className="px-4 py-2.5">
-                        {s.nominatedNeedId
-                          ? <OutcomePill outcome="nominated" />
-                          : s.matchStatus === 'not_found'
-                            ? <OutcomePill outcome="no_match" />
-                            : <span className="text-xs text-slate-400">—</span>
-                        }
+                      <td className="px-4 py-2.5 text-slate-700">
+                        {s.volunteerName || '—'}
                       </td>
                       <td className="px-4 py-2.5 text-slate-500 text-xs">
-                        {s.reviewReason?.replace(/_/g, ' ') || '—'}
+                        {s.volunteerPhone || '—'}
+                      </td>
+                      <td className="px-4 py-2.5 text-slate-500 text-xs max-w-[160px] truncate" title={s.preferenceNotes || ''}>
+                        {s.preferenceNotes || '—'}
+                      </td>
+                      <td className="px-4 py-2.5 text-slate-500 text-xs max-w-[160px] truncate" title={s.candidateNames.join(', ')}>
+                        {s.candidateNames.length > 0 ? s.candidateNames.join(', ') : (s.matchStatus === 'not_found' ? 'No match' : '—')}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        {s.nominatedNeedId
+                          ? <span className="text-xs font-mono text-emerald-600" title={s.nominatedNeedId}>{s.nominatedNeedId.slice(0, 12)}…</span>
+                          : <span className="text-xs text-slate-400">—</span>
+                        }
                       </td>
                       <td className="px-4 py-2.5 text-slate-400 text-xs">{timeAgo(s.last_message_at)}</td>
                     </tr>

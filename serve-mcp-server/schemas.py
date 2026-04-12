@@ -43,7 +43,7 @@ class StartSessionInput(BaseModel):
         default="web_ui"
     )
     persona: Literal[
-        "new_volunteer", "returning_volunteer",
+        "new_volunteer", "returning_volunteer", "recommended_volunteer",
         "inactive_volunteer", "need_coordinator", "system"
     ] = Field(default="new_volunteer")
     channel_metadata: Optional[Dict[str, Any]] = Field(default=None)
@@ -579,6 +579,13 @@ class GetEngagementContextInput(BaseModel):
     phone: str = Field(
         min_length=7,
         description="Volunteer's WhatsApp/mobile number — used to look up the volunteer and return fulfillment history + profile in one call"
+    )
+
+
+class GetEngagementContextByEmailInput(BaseModel):
+    email: str = Field(
+        min_length=3,
+        description="Volunteer's email address — fallback when phone lookup fails"
     )
 
 
