@@ -42,6 +42,7 @@ class FulfillmentAgentService:
     async def process_turn(self, request: FulfillmentAgentTurnRequest) -> FulfillmentAgentTurnResponse:
         session_id = str(request.session_id)
         stage = request.session_state.stage
+        workflow = request.session_state.workflow
 
         # ── Terminal state guard ──────────────────────────────────────────────
         if stage in _TERMINAL_STATES:
@@ -50,6 +51,7 @@ class FulfillmentAgentService:
                 message=_TERMINAL_FALLBACK_MESSAGES.get(stage, "Shukriya!"),
                 state=stage,
                 sub_state=request.session_state.sub_state,
+                workflow=workflow,
             )
 
         # ── Load sub_state ────────────────────────────────────────────────────
@@ -94,6 +96,7 @@ class FulfillmentAgentService:
                 state=FulfillmentWorkflowState.ACTIVE.value,
                 sub_state=updated,
                 auto_continue=True,
+                workflow=workflow,
             )
 
         # Cache match result in sub_state so subsequent turns skip re-searching
@@ -162,6 +165,7 @@ class FulfillmentAgentService:
                 text=text,
                 sub_state=sub_state,
                 session_id=session_id,
+                workflow=workflow,
             )
 
         # ── Loop exhausted ────────────────────────────────────────────────────
@@ -176,6 +180,7 @@ class FulfillmentAgentService:
                 message=_TERMINAL_FALLBACK_MESSAGES[FulfillmentWorkflowState.HUMAN_REVIEW.value],
                 state=FulfillmentWorkflowState.HUMAN_REVIEW.value,
                 sub_state=_dump_sub_state(sub_state),
+                workflow=workflow,
             )
 
         # ── Active turn ───────────────────────────────────────────────────────
@@ -186,11 +191,7 @@ class FulfillmentAgentService:
             message=text,
             state=FulfillmentWorkflowState.ACTIVE.value,
             sub_state=updated,
-        )
-        return self._build_response(
-            message=text,
-            state=FulfillmentWorkflowState.ACTIVE.value,
-            sub_state=updated,
+            workflow=workflow,
         )
 
     async def _execute_tool(
@@ -212,10 +213,12 @@ class FulfillmentAgentService:
         elif tool_name == "get_more_needs":
             hint = tool_input.get("hint", "")
             handoff = sub_state.get("handoff", {})
-            # Re-run matcher with relaxed constraints using hint as preference override
+            # Merge hint with original preferences instead of overwriting
+            original_notes = handoff.get("preference_notes") or ""
+            merged_notes = f"{original_notes}; {hint}".strip("; ") if original_notes else hint
             relaxed_handoff = {
                 **handoff,
-                "preference_notes": hint,
+                "preference_notes": merged_notes,
                 "preferred_school_id": None,   # broaden to all schools
                 "preferred_need_id": None,
             }
@@ -262,6 +265,7 @@ class FulfillmentAgentService:
         text: str,
         sub_state: Dict[str, Any],
         session_id: str,
+        workflow: str = "returning_volunteer",
     ) -> FulfillmentAgentTurnResponse:
         if outcome == "nominated":
             need_id = signal.get("need_id") or sub_state.get("nominated_need_id")
@@ -297,7 +301,7 @@ class FulfillmentAgentService:
         if message:
             await domain_client.save_message(session_id, "assistant", message)
 
-        return self._build_response(message=message, state=new_state, sub_state=updated)
+        return self._build_response(message=message, state=new_state, sub_state=updated, workflow=workflow)
 
     def _build_response(
         self,
@@ -305,10 +309,12 @@ class FulfillmentAgentService:
         state: str,
         sub_state: Optional[str],
         auto_continue: bool = False,
+        workflow: str = "returning_volunteer",
     ) -> FulfillmentAgentTurnResponse:
         return FulfillmentAgentTurnResponse(
             assistant_message=message,
             auto_continue=auto_continue,
+            workflow=workflow,
             state=state,
             sub_state=sub_state,
         )

@@ -305,11 +305,80 @@ RETURNING_VOLUNTEER_WORKFLOW = WorkflowDefinition(
 )
 
 
+# Define the Recommended Volunteer workflow
+RECOMMENDED_VOLUNTEER_WORKFLOW = WorkflowDefinition(
+    workflow_id='recommended_volunteer',
+    display_name='Recommended Volunteer',
+    description='Handles volunteers who arrive via recommendation/referral',
+    initial_stage='verifying_identity',
+    terminal_stages=['not_registered', 'human_review'],
+    stages={
+        'verifying_identity': WorkflowStageDefinition(
+            stage_id='verifying_identity',
+            display_name='Verifying Identity',
+            responsible_agent='engagement',
+            valid_next_stages=['gathering_preferences', 'not_registered', 'human_review', 'paused'],
+            required_fields=[],
+            can_pause=True,
+        ),
+        'gathering_preferences': WorkflowStageDefinition(
+            stage_id='gathering_preferences',
+            display_name='Capturing Preferences',
+            responsible_agent='engagement',
+            valid_next_stages=['active', 'paused', 'human_review'],
+            required_fields=[],
+            can_pause=True,
+        ),
+        'active': WorkflowStageDefinition(
+            stage_id='active',
+            display_name='Matching In Progress',
+            responsible_agent='fulfillment',
+            valid_next_stages=['complete', 'human_review', 'paused'],
+            required_fields=[],
+            can_pause=True,
+        ),
+        'complete': WorkflowStageDefinition(
+            stage_id='complete',
+            display_name='Matched',
+            responsible_agent='fulfillment',
+            valid_next_stages=[],
+            required_fields=[],
+            can_pause=False,
+        ),
+        'not_registered': WorkflowStageDefinition(
+            stage_id='not_registered',
+            display_name='Not Registered',
+            responsible_agent='engagement',
+            valid_next_stages=[],
+            required_fields=[],
+            can_pause=False,
+        ),
+        'human_review': WorkflowStageDefinition(
+            stage_id='human_review',
+            display_name='Needs Human Follow-up',
+            responsible_agent='engagement',
+            valid_next_stages=[],
+            required_fields=[],
+            can_pause=False,
+        ),
+        'paused': WorkflowStageDefinition(
+            stage_id='paused',
+            display_name='Paused',
+            responsible_agent='engagement',
+            valid_next_stages=['verifying_identity', 'gathering_preferences'],
+            required_fields=[],
+            can_pause=False,
+        ),
+    }
+)
+
+
 # Registry of all workflows
 WORKFLOW_REGISTRY: Dict[str, WorkflowDefinition] = {
     'new_volunteer_onboarding': NEW_VOLUNTEER_ONBOARDING_WORKFLOW,
     'need_coordination': NEED_COORDINATION_WORKFLOW,
     'returning_volunteer': RETURNING_VOLUNTEER_WORKFLOW,
+    'recommended_volunteer': RECOMMENDED_VOLUNTEER_WORKFLOW,
 }
 
 
@@ -484,6 +553,9 @@ class WorkflowValidator:
             ],
             'returning_volunteer': [
                 're_engaging', 'profile_refresh', 'matching_ready', 'active', 'complete'
+            ],
+            'recommended_volunteer': [
+                'verifying_identity', 'gathering_preferences', 'active', 'complete'
             ],
         }
         

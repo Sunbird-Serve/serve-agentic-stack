@@ -43,7 +43,7 @@ class StartSessionInput(BaseModel):
         default="web_ui"
     )
     persona: Literal[
-        "new_volunteer", "returning_volunteer",
+        "new_volunteer", "returning_volunteer", "recommended_volunteer",
         "inactive_volunteer", "need_coordinator", "system"
     ] = Field(default="new_volunteer")
     channel_metadata: Optional[Dict[str, Any]] = Field(default=None)

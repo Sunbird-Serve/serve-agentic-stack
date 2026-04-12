@@ -114,6 +114,27 @@ class PersonaResolver:
                 metadata={"from": "self_identification_phrase", "matched": event.payload[:80]},
             )
 
+        # ── 1c. Recommended volunteer self-identification phrase ────────────
+        # Detect common phrases a recommended/referred volunteer might use.
+        # Positioned after returning volunteer check so returning takes priority.
+        _RECOMMENDED_RE = re.compile(
+            r"\b(i was recommended|someone recommended|recommended volunteer|"
+            r"mujhe recommend kiya|recommend kiya gaya|"
+            r"referral|i got a referral|referred by|"
+            r"kisi ne bataya|kisi ne bheja)\b",
+            re.IGNORECASE,
+        )
+        if _RECOMMENDED_RE.search(event.payload):
+            logger.info(
+                f"Recommended volunteer self-identified via phrase for actor={event.actor_id!r}"
+            )
+            return PersonaResolutionResult(
+                persona=PersonaType.RECOMMENDED_VOLUNTEER,
+                confidence=0.95,
+                source="explicit",
+                metadata={"from": "recommendation_phrase", "matched": event.payload[:80]},
+            )
+
         # ── 2. System / scheduled trigger → SYSTEM persona ─────────────────
         if event.trigger_type in (TriggerType.SCHEDULED, TriggerType.SYSTEM_TRIGGER):
             return PersonaResolutionResult(

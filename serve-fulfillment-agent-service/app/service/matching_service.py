@@ -48,9 +48,10 @@ class MatchFinder:
         continuity          = handoff.get("continuity", "same")
 
         preferred_time = self._extract_time_preference(preference_notes)
+        preferred_days = self._extract_day_preference(preference_notes)
         logger.info(
             f"MatchFinder: continuity={continuity}, school={preferred_school_id}, "
-            f"need={preferred_need_id}, time_pref={preferred_time}"
+            f"need={preferred_need_id}, time_pref={preferred_time}, day_pref={preferred_days}"
         )
 
         # ── Bulk fetch all approved needs (single MCP call) ──────────────────
@@ -71,10 +72,20 @@ class MatchFinder:
         if preferred_school_id:
             school_needs = [n for n in all_needs if n.get("entity_id") == preferred_school_id]
             if school_needs:
-                ranked = self._rank(school_needs, preferred_time)
+                ranked = self._rank(school_needs, preferred_time, preferred_days)
                 return self._wrap(ranked[:3])
 
-        # ── 3. Time preference match across all schools ──────────────────────
+        # ── 3. Day + time preference match across all schools ────────────────
+        if preferred_days:
+            day_matches = [n for n in all_needs if self._day_matches(n, preferred_days)]
+            if day_matches:
+                # Further filter by time if available
+                if preferred_time:
+                    day_time_matches = [n for n in day_matches if self._time_matches(n, preferred_time)]
+                    if day_time_matches:
+                        return self._wrap(day_time_matches[:3])
+                return self._wrap(day_matches[:3])
+
         if preferred_time:
             time_matches = [n for n in all_needs if self._time_matches(n, preferred_time)]
             if time_matches:
@@ -85,13 +96,26 @@ class MatchFinder:
 
     # ── Ranking ───────────────────────────────────────────────────────────────
 
-    def _rank(self, needs: List[Dict], preferred_time: Optional[str]) -> List[Dict]:
-        """Rank needs: time-matching first, then the rest."""
-        if not preferred_time:
+    def _rank(self, needs: List[Dict], preferred_time: Optional[str], preferred_days: Optional[List[str]] = None) -> List[Dict]:
+        """Rank needs: day+time matching first, then day-only, then time-only, then the rest."""
+        if not preferred_time and not preferred_days:
             return needs
-        time_match = [n for n in needs if self._time_matches(n, preferred_time)]
-        others = [n for n in needs if not self._time_matches(n, preferred_time)]
-        return time_match + others
+        day_and_time = []
+        day_only = []
+        time_only = []
+        others = []
+        for n in needs:
+            d_match = self._day_matches(n, preferred_days) if preferred_days else False
+            t_match = self._time_matches(n, preferred_time) if preferred_time else False
+            if d_match and t_match:
+                day_and_time.append(n)
+            elif d_match:
+                day_only.append(n)
+            elif t_match:
+                time_only.append(n)
+            else:
+                others.append(n)
+        return day_and_time + day_only + time_only + others
 
     # ── Time matching ─────────────────────────────────────────────────────────
 
@@ -130,7 +154,50 @@ class MatchFinder:
                 if ampm == "pm" and hour < 12:
                     hour += 12
                 return f"{hour:02d}:{minute_str}"
+        # Also handle "morning" / "afternoon" keywords
+        lower = notes.lower()
+        if "morning" in lower or "subah" in lower:
+            return "09:00"
+        if "afternoon" in lower or "dopahar" in lower:
+            return "13:00"
         return None
+
+    # ── Day matching ──────────────────────────────────────────────────────────
+
+    _DAY_NAMES = {
+        "monday": "monday", "mon": "monday",
+        "tuesday": "tuesday", "tue": "tuesday", "tues": "tuesday",
+        "wednesday": "wednesday", "wed": "wednesday",
+        "thursday": "thursday", "thu": "thursday", "thurs": "thursday",
+        "friday": "friday", "fri": "friday",
+        "saturday": "saturday", "sat": "saturday",
+        "sunday": "sunday", "sun": "sunday",
+    }
+
+    def _extract_day_preference(self, notes: str) -> Optional[List[str]]:
+        """Extract preferred day names from preference notes."""
+        if not notes:
+            return None
+        lower = notes.lower()
+        found = set()
+        for keyword, canonical in self._DAY_NAMES.items():
+            if re.search(r"\b" + keyword + r"\b", lower):
+                found.add(canonical)
+        return sorted(found) if found else None
+
+    def _day_matches(self, need: Dict, preferred_days: Optional[List[str]]) -> bool:
+        """Check if a need's scheduled days overlap with preferred days."""
+        if not preferred_days:
+            return False
+        need_days_raw = need.get("days", "")
+        if not need_days_raw:
+            return False
+        need_days_lower = need_days_raw.lower()
+        for day in preferred_days:
+            # Check full name or common abbreviation
+            if day in need_days_lower or day[:3] in need_days_lower:
+                return True
+        return False
 
     def _parse_hour(self, time_str: str) -> Optional[int]:
         """Parse hour from time strings like '10:00', '2026-04-01T10:00:00Z'."""

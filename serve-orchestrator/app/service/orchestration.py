@@ -80,6 +80,7 @@ def determine_workflow(persona: PersonaType) -> WorkflowType:
     persona_workflow_map = {
         PersonaType.NEW_VOLUNTEER: WorkflowType.NEW_VOLUNTEER_ONBOARDING,
         PersonaType.RETURNING_VOLUNTEER: WorkflowType.RETURNING_VOLUNTEER,
+        PersonaType.RECOMMENDED_VOLUNTEER: WorkflowType.RECOMMENDED_VOLUNTEER,
         PersonaType.NEED_COORDINATOR: WorkflowType.NEED_COORDINATION,
     }
     return persona_workflow_map.get(persona, WorkflowType.NEW_VOLUNTEER_ONBOARDING)
@@ -97,6 +98,7 @@ def determine_initial_agent(workflow: WorkflowType) -> AgentType:
     workflow_agent_map = {
         WorkflowType.NEW_VOLUNTEER_ONBOARDING: AgentType.ONBOARDING,
         WorkflowType.RETURNING_VOLUNTEER: AgentType.ENGAGEMENT,
+        WorkflowType.RECOMMENDED_VOLUNTEER: AgentType.ENGAGEMENT,
         WorkflowType.NEED_COORDINATION: AgentType.NEED,
     }
     return workflow_agent_map.get(workflow, AgentType.ONBOARDING)

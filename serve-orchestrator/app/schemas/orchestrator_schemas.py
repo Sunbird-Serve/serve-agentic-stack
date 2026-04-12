@@ -31,6 +31,7 @@ class TriggerType(str, Enum):
 class PersonaType(str, Enum):
     NEW_VOLUNTEER = "new_volunteer"
     RETURNING_VOLUNTEER = "returning_volunteer"
+    RECOMMENDED_VOLUNTEER = "recommended_volunteer"
     INACTIVE_VOLUNTEER = "inactive_volunteer"
     NEED_COORDINATOR = "need_coordinator"
     SYSTEM = "system"
@@ -39,6 +40,7 @@ class PersonaType(str, Enum):
 class WorkflowType(str, Enum):
     NEW_VOLUNTEER_ONBOARDING = "new_volunteer_onboarding"
     RETURNING_VOLUNTEER = "returning_volunteer"
+    RECOMMENDED_VOLUNTEER = "recommended_volunteer"
     NEED_COORDINATION = "need_coordination"
     VOLUNTEER_ENGAGEMENT = "volunteer_engagement"
     SYSTEM_TRIGGERED = "system_triggered"

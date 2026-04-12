@@ -220,8 +220,16 @@ async def wa_receive(request: Request):
                         "need", "school", "coordinator", "teacher chahiye",
                         "register", "raise need", "padhane wale", "volunteer chahiye",
                     ]
+                    recommended_signals = [
+                        "i was recommended", "someone recommended", "recommended volunteer",
+                        "mujhe recommend kiya", "recommend kiya gaya",
+                        "referral", "i got a referral", "referred by",
+                        "kisi ne bataya", "kisi ne bheja",
+                    ]
                     if any(s in lower for s in volunteer_signals):
                         return PersonaType.RETURNING_VOLUNTEER
+                    if any(s in lower for s in recommended_signals):
+                        return PersonaType.RECOMMENDED_VOLUNTEER
                     if any(s in lower for s in coordinator_signals):
                         return PersonaType.NEED_COORDINATOR
                     return None

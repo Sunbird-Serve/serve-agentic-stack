@@ -3,7 +3,7 @@
  * Internal route for staff access to different views
  * Not visible to volunteers
  */
-import { MessageSquare, Users, Settings, ArrowRight, ShieldCheck, School } from 'lucide-react';
+import { MessageSquare, Users, Settings, ArrowRight, ShieldCheck, School, UserPlus } from 'lucide-react';
 
 const ROLES = [
   {
@@ -21,6 +21,14 @@ const ROLES = [
     icon: ArrowRight,
     color: 'bg-violet-500',
     hoverColor: 'hover:border-violet-400',
+  },
+  {
+    id: 'recommended_volunteer',
+    title: 'Recommended Volunteer',
+    description: 'I was recommended to volunteer with eVidyaloka. Start the referral onboarding flow.',
+    icon: UserPlus,
+    color: 'bg-teal-500',
+    hoverColor: 'hover:border-teal-400',
   },
   {
     id: 'need_coordinator',

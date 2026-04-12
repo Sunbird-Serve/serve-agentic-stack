@@ -65,6 +65,10 @@ class SessionService:
             workflow     = "returning_volunteer"
             active_agent = "engagement"
             stage        = "re_engaging"
+        elif persona == "recommended_volunteer":
+            workflow     = "recommended_volunteer"
+            active_agent = "engagement"
+            stage        = "verifying_identity"
         else:
             workflow     = "new_volunteer_onboarding"
             active_agent = "onboarding"
