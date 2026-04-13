@@ -963,7 +963,7 @@ export const AdminView = () => {
     setLoading(true);
     try {
       const [stats, h] = await Promise.all([
-        dashboardApi.getStats(page, 25),
+        dashboardApi.getStats(page, 500),
         orchestratorApi.health().catch(() => null),
       ]);
       if (stats.status === 'success') {
