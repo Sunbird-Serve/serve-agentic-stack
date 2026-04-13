@@ -524,17 +524,25 @@ const SessionDetail = ({ sessionId }) => {
 
 // ── NeedsTable ────────────────────────────────────────────────────────────────
 
-const NeedsTable = ({ needs, onJumpToSession }) => (
+const NeedsTable = ({ needs, onJumpToSession }) => {
+  const [page, setPage] = useState(1);
+  const perPage = 15;
+  const totalPages = Math.ceil(needs.length / perPage);
+  const paged = needs.slice((page - 1) * perPage, page * perPage);
+
+  return (
   <Card className="border-none shadow-sm bg-slate-800">
     <CardHeader className="pb-2 pt-4 px-5">
       <CardTitle className="text-sm text-slate-300 flex items-center gap-2">
         <BookOpen className="w-4 h-4" /> Recent Needs
+        <span className="text-slate-600 font-normal text-xs ml-1">({needs.length})</span>
       </CardTitle>
     </CardHeader>
     <CardContent className="px-0 pb-2">
       {needs.length === 0 ? (
         <p className="text-xs text-slate-500 px-5 py-4">No needs raised yet</p>
       ) : (
+        <>
         <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead>
@@ -550,7 +558,7 @@ const NeedsTable = ({ needs, onJumpToSession }) => (
               </tr>
             </thead>
             <tbody>
-              {needs.map(n => (
+              {paged.map(n => (
                 <tr
                   key={n.id}
                   className="border-b border-slate-700 hover:bg-slate-750 cursor-pointer"
@@ -581,14 +589,20 @@ const NeedsTable = ({ needs, onJumpToSession }) => (
             </tbody>
           </table>
         </div>
+        <PaginationControls page={page} totalPages={totalPages} onPageChange={setPage} />
+        </>
       )}
     </CardContent>
   </Card>
-);
+  );
+};
 
 // ── EngagementTable (Tech) ─────────────────────────────────────────────────────
 
 const EngagementTable = ({ sessions, onSelect }) => {
+  const [page, setPage] = useState(1);
+  const perPage = 15;
+
   // Filter to engagement/returning_volunteer sessions
   const engSessions = sessions.filter(s =>
     s.workflow === 'returning_volunteer' || s.active_agent === 'engagement'
@@ -618,6 +632,9 @@ const EngagementTable = ({ sessions, onSelect }) => {
     return { ...s, outcome, continuity, volunteerName, volunteerPhone, volunteerId, preferenceNotes, deferredReason };
   });
 
+  const totalPages = Math.ceil(rows.length / perPage);
+  const paged = rows.slice((page - 1) * perPage, page * perPage);
+
   const consentLabel = (o) => {
     if (o === 'ready') return <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-900/40 text-green-400 font-medium">Yes</span>;
     if (o === 'declined') return <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-900/40 text-red-400 font-medium">No</span>;
@@ -637,6 +654,7 @@ const EngagementTable = ({ sessions, onSelect }) => {
         {rows.length === 0 ? (
           <p className="text-xs text-slate-500 px-5 py-4">No engagement sessions yet</p>
         ) : (
+          <>
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead>
@@ -652,7 +670,7 @@ const EngagementTable = ({ sessions, onSelect }) => {
                 </tr>
               </thead>
               <tbody>
-                {rows.map(s => (
+                {paged.map(s => (
                   <tr
                     key={s.id}
                     className="border-b border-slate-700 hover:bg-slate-750 cursor-pointer"
@@ -683,6 +701,8 @@ const EngagementTable = ({ sessions, onSelect }) => {
               </tbody>
             </table>
           </div>
+          <PaginationControls page={page} totalPages={totalPages} onPageChange={setPage} />
+          </>
         )}
       </CardContent>
     </Card>
@@ -692,6 +712,8 @@ const EngagementTable = ({ sessions, onSelect }) => {
 // ── FulfillmentTable (Tech) ────────────────────────────────────────────────────
 
 const FulfillmentTable = ({ sessions, onSelect }) => {
+  const [page, setPage] = useState(1);
+  const perPage = 15;
   const fulSessions = sessions.filter(s => s.active_agent === 'fulfillment');
 
   const rows = fulSessions.map(s => {
@@ -712,6 +734,9 @@ const FulfillmentTable = ({ sessions, onSelect }) => {
     return { ...s, nominatedNeedId, matchStatus, volunteerName, volunteerId, volunteerPhone, preferenceNotes, candidateNames };
   });
 
+  const totalPages = Math.ceil(rows.length / perPage);
+  const paged = rows.slice((page - 1) * perPage, page * perPage);
+
   return (
     <Card className="border-none shadow-sm bg-slate-800">
       <CardHeader className="pb-2 pt-4 px-5">
@@ -724,6 +749,7 @@ const FulfillmentTable = ({ sessions, onSelect }) => {
         {rows.length === 0 ? (
           <p className="text-xs text-slate-500 px-5 py-4">No fulfillment sessions yet</p>
         ) : (
+          <>
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead>
@@ -739,7 +765,7 @@ const FulfillmentTable = ({ sessions, onSelect }) => {
                 </tr>
               </thead>
               <tbody>
-                {rows.map(s => (
+                {paged.map(s => (
                   <tr
                     key={s.id}
                     className="border-b border-slate-700 hover:bg-slate-750 cursor-pointer"
@@ -774,6 +800,8 @@ const FulfillmentTable = ({ sessions, onSelect }) => {
               </tbody>
             </table>
           </div>
+          <PaginationControls page={page} totalPages={totalPages} onPageChange={setPage} />
+          </>
         )}
       </CardContent>
     </Card>
@@ -792,6 +820,8 @@ const RECOMMENDED_STAGE_COLOR = {
 };
 
 const RecommendedTable = ({ sessions, onSelect }) => {
+  const [page, setPage] = useState(1);
+  const perPage = 15;
   const recSessions = sessions.filter(s => s.workflow === 'recommended_volunteer');
 
   const rows = recSessions.map(s => {
@@ -816,6 +846,9 @@ const RecommendedTable = ({ sessions, onSelect }) => {
     return { ...s, volunteerName, volunteerId, volunteerPhone, identityStatus, preferenceNotes };
   });
 
+  const totalPages = Math.ceil(rows.length / perPage);
+  const paged = rows.slice((page - 1) * perPage, page * perPage);
+
   const identityBadge = (status) => {
     if (status === 'verified') return <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-900/40 text-green-400 font-medium">Verified</span>;
     if (status === 'not_registered') return <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-900/40 text-red-400 font-medium">Not Registered</span>;
@@ -834,6 +867,7 @@ const RecommendedTable = ({ sessions, onSelect }) => {
         {rows.length === 0 ? (
           <p className="text-xs text-slate-500 px-5 py-4">No recommended volunteer sessions yet</p>
         ) : (
+          <>
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead>
@@ -848,7 +882,7 @@ const RecommendedTable = ({ sessions, onSelect }) => {
                 </tr>
               </thead>
               <tbody>
-                {rows.map(s => (
+                {paged.map(s => (
                   <tr
                     key={s.id}
                     className="border-b border-slate-700 hover:bg-slate-750 cursor-pointer"
@@ -872,6 +906,8 @@ const RecommendedTable = ({ sessions, onSelect }) => {
               </tbody>
             </table>
           </div>
+          <PaginationControls page={page} totalPages={totalPages} onPageChange={setPage} />
+          </>
         )}
       </CardContent>
     </Card>
