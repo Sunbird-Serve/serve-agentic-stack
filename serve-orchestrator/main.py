@@ -211,8 +211,14 @@ async def wa_receive(request: Request):
                 # Mimics the UI role selection — keyword-based
                 def _detect_persona(msg: str):
                     lower = msg.lower()
+                    recommended_signals = [
+                        "i was recommended", "someone recommended", "recommended volunteer",
+                        "mujhe recommend kiya", "recommend kiya gaya",
+                        "referral", "i got a referral", "referred by",
+                        "kisi ne bataya", "kisi ne bheja",
+                    ]
                     volunteer_signals = [
-                        "returning volunteer", "volunteer", "pehle padhaya",
+                        "returning volunteer", "pehle padhaya",
                         "continue teaching", "wapas", "re-engage", "last year",
                         "pichle saal", "continue karna", "teaching again",
                     ]
@@ -220,16 +226,12 @@ async def wa_receive(request: Request):
                         "need", "school", "coordinator", "teacher chahiye",
                         "register", "raise need", "padhane wale", "volunteer chahiye",
                     ]
-                    recommended_signals = [
-                        "i was recommended", "someone recommended", "recommended volunteer",
-                        "mujhe recommend kiya", "recommend kiya gaya",
-                        "referral", "i got a referral", "referred by",
-                        "kisi ne bataya", "kisi ne bheja",
-                    ]
-                    if any(s in lower for s in volunteer_signals):
-                        return PersonaType.RETURNING_VOLUNTEER
+                    # Check recommended FIRST — "recommended volunteer" contains "volunteer"
+                    # which would falsely match returning volunteer if checked second
                     if any(s in lower for s in recommended_signals):
                         return PersonaType.RECOMMENDED_VOLUNTEER
+                    if any(s in lower for s in volunteer_signals):
+                        return PersonaType.RETURNING_VOLUNTEER
                     if any(s in lower for s in coordinator_signals):
                         return PersonaType.NEED_COORDINATOR
                     return None
