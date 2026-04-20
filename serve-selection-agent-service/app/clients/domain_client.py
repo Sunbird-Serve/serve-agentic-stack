@@ -2,16 +2,13 @@
 SERVE Selection Agent Service - MCP Tool Client
 
 Calls serve-mcp-server tools via the MCP SSE protocol.
-Same transport pattern as the other agent services.
-
-TODO (contributor): Add methods as evaluation logic requires.
-  e.g. get_volunteer_profile, get_onboarding_summary, log_evaluation_result, etc.
+Selection reuses the generic profile, readiness, memory, and telemetry tools.
 """
 import asyncio
 import json
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +18,7 @@ _MCP_RETRIES = int(os.environ.get("MCP_RETRIES", "3"))
 
 async def _call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict:
     """Call an MCP server tool via SSE transport with retry."""
-    last_error = None
+    last_error: Exception | None = None
     wire_args = {"params": arguments} if arguments else {}
 
     for attempt in range(_MCP_RETRIES):
@@ -46,5 +43,35 @@ async def _call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict:
             if attempt < _MCP_RETRIES - 1:
                 await asyncio.sleep(0.5 * (2 ** attempt))
 
-    logger.error(f"MCP tool [{tool_name}] failed after {_MCP_RETRIES} attempts: {last_error}")
+    logger.error("MCP tool [%s] failed after %s attempts: %s", tool_name, _MCP_RETRIES, last_error)
     return {"status": "error", "error": str(last_error)}
+
+
+class DomainClient:
+    async def get_volunteer_profile(self, session_id: str) -> Dict[str, Any]:
+        return await _call_mcp_tool("get_volunteer_profile", {"session_id": session_id})
+
+    async def evaluate_readiness(self, session_id: str) -> Dict[str, Any]:
+        return await _call_mcp_tool("evaluate_readiness", {"session_id": session_id})
+
+    async def get_memory_summary(self, session_id: str) -> Dict[str, Any]:
+        return await _call_mcp_tool("get_memory_summary", {"session_id": session_id})
+
+    async def log_event(
+        self,
+        session_id: str,
+        event_type: str,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        return await _call_mcp_tool(
+            "log_event",
+            {
+                "session_id": session_id,
+                "event_type": event_type,
+                "agent": "selection",
+                "data": data or {},
+            },
+        )
+
+
+domain_client = DomainClient()

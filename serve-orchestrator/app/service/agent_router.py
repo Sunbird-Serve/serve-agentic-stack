@@ -119,7 +119,7 @@ class AgentRegistry:
         self._agents['selection'] = {
             'url': os.environ.get('SELECTION_AGENT_URL', 'http://serve-selection-agent-service:8009'),
             'health_path': '/api/health',
-            'endpoint': '/api/evaluate',
+            'endpoint': '/api/turn',
             'timeout': 30.0,
             'healthy': False,  # Conservative — undeployed; first probe may flip to True
             'last_check': None,
