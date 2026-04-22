@@ -99,7 +99,7 @@ class EngagementAgentService:
 
         # ── Build conversation history (bounded to last 20 messages) ──────────
         messages = list(request.conversation_history[-20:])
-        if request.user_message and request.user_message != "__auto_continue__":
+        if request.user_message and request.user_message not in ("__handoff__", "__auto_continue__"):
             messages.append({"role": "user", "content": request.user_message})
         # ── Build system prompt ───────────────────────────────────────────────
         session_context = self._build_session_context(request, sub_state)

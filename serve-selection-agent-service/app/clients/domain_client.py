@@ -54,8 +54,43 @@ class DomainClient:
     async def evaluate_readiness(self, session_id: str) -> Dict[str, Any]:
         return await _call_mcp_tool("evaluate_readiness", {"session_id": session_id})
 
+    async def save_confirmed_fields(self, session_id: str, fields: Dict[str, Any]) -> Dict[str, Any]:
+        return await _call_mcp_tool(
+            "save_volunteer_fields",
+            {
+                "session_id": session_id,
+                "fields": fields,
+            },
+        )
+
+    async def advance_state(
+        self,
+        session_id: str,
+        new_state: str,
+        sub_state: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        args: Dict[str, Any] = {"session_id": session_id, "new_state": new_state}
+        if sub_state is not None:
+            args["sub_state"] = sub_state
+        return await _call_mcp_tool("advance_session_state", args)
+
     async def get_memory_summary(self, session_id: str) -> Dict[str, Any]:
         return await _call_mcp_tool("get_memory_summary", {"session_id": session_id})
+
+    async def save_memory_summary(
+        self,
+        session_id: str,
+        summary_text: str,
+        key_facts: Optional[list[str]] = None,
+    ) -> Dict[str, Any]:
+        return await _call_mcp_tool(
+            "save_memory_summary",
+            {
+                "session_id": session_id,
+                "summary_text": summary_text,
+                "key_facts": key_facts or [],
+            },
+        )
 
     async def log_event(
         self,

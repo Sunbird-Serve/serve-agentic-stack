@@ -405,23 +405,33 @@ class OrchestrationService:
                     f"{handoff_result.get('error')}"
                 )
 
-            # Critical: persist the new active_agent AND the fulfillment sub_state
-            # so the handoff payload survives any failure in the auto-invoke path.
-            # Build fulfillment sub_state from the handoff payload right now.
-            fulfillment_sub_state_str = None
+            # Critical: persist the new active_agent and the target agent's
+            # handoff sub_state so the payload survives any failure in the
+            # auto-invoke path.
+            handoff_sub_state_str = agent_response.sub_state
             handoff_payload = agent_response.handoff_event.payload if agent_response.handoff_event else {}
-            if handoff_payload:
-                fulfillment_sub_state_str = json.dumps({
+            target_sub_state = handoff_payload.get("target_sub_state") if isinstance(handoff_payload, dict) else None
+
+            if to_agent_value == "fulfillment" and handoff_payload:
+                handoff_sub_state_str = json.dumps({
                     "handoff": handoff_payload,
                     "nominated_need_id": None,
                     "human_review_reason": None,
                 })
+            elif target_sub_state is not None:
+                handoff_sub_state_str = (
+                    target_sub_state
+                    if isinstance(target_sub_state, str)
+                    else json.dumps(target_sub_state)
+                )
+            elif handoff_payload and handoff_sub_state_str is None:
+                handoff_sub_state_str = json.dumps({"handoff": handoff_payload})
 
             handoff_advance = await domain_client.advance_state(
                 session_id=session_context.session_id,
                 new_state=agent_response.state,
                 active_agent=to_agent_value,
-                sub_state=fulfillment_sub_state_str,
+                sub_state=handoff_sub_state_str,
             )
             if handoff_advance.get("status") == "error":
                 logger.warning(
@@ -431,7 +441,7 @@ class OrchestrationService:
             else:
                 logger.info(
                     f"[{session_context.session_id}] active_agent updated → {to_agent_value!r}, "
-                    f"fulfillment sub_state persisted"
+                    f"handoff sub_state persisted"
                 )
 
             self._log_event(
@@ -448,7 +458,7 @@ class OrchestrationService:
             # ── Auto-invoke the target agent immediately so the volunteer
             #    doesn't have to send another message to trigger it.
             #    We update session_context to reflect the new active_agent,
-            #    then invoke the fulfillment agent with a synthetic trigger.
+            #    then invoke that target agent with a synthetic trigger.
             try:
                 session_context.active_agent = to_agent_value
                 session_context.current_stage = agent_response.state
@@ -461,7 +471,7 @@ class OrchestrationService:
                     active_agent=to_agent_value,
                     status=session_context.status,
                     stage=agent_response.state,
-                    sub_state=fulfillment_sub_state_str,  # fulfillment sub_state with handoff
+                    sub_state=handoff_sub_state_str,
                     volunteer_id=UUID(session_context.volunteer_id) if session_context.volunteer_id else None,
                     volunteer_name=session_context.volunteer_name,
                     volunteer_phone=session_context.volunteer_phone,

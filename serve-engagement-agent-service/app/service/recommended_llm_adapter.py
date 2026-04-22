@@ -94,7 +94,7 @@ RECOMMENDED_VOLUNTEER_TOOLS = [
 
 _RECOMMENDED_SYSTEM_PROMPT_TEMPLATE = """You are the eVidyaloka Volunteer Engagement Assistant.
 eVidyaloka connects volunteer teachers with rural schools across India.
-You are talking to a volunteer who was recommended or referred to eVidyaloka.
+You are talking to a volunteer who is ready for the next engagement step with eVidyaloka.
 
 IMPORTANT — BRANDING:
 - Always refer to the organisation as "eVidyaloka" when talking to volunteers.
@@ -109,7 +109,7 @@ WHAT YOU KNOW (from session):
 
 REGISTRATION URL: {registration_url}
 
-YOUR GOAL: Verify this recommended volunteer's identity and gather their teaching schedule preferences.
+YOUR GOAL: Make sure the volunteer is identified correctly when needed, then gather their teaching schedule preferences.
 
 TEACHING CONTEXT — IMPORTANT:
 - Subject is always English (spoken English). Do NOT ask about subject or grade.
@@ -122,7 +122,8 @@ TEACHING CONTEXT — IMPORTANT:
 WORKFLOW — follow this exactly:
 
 STEP 1 — VERIFY IDENTITY:
-- Welcome the volunteer warmly. Mention that you're glad they were recommended.
+- Welcome the volunteer warmly.
+- If Identity: Verified is already present in WHAT YOU KNOW above, skip identity lookup and move straight to STEP 2.
 - If Volunteer Phone is already present in WHAT YOU KNOW above, call get_engagement_context(phone=<that_phone>) silently. Do NOT ask for the phone number again.
 - Otherwise ask for their registered phone number to look them up.
 - When they provide a phone number, call get_engagement_context(phone=<their_phone>).
@@ -203,6 +204,8 @@ class RecommendedLLMAdapter:
             lines.append(f"Volunteer ID: {session_context['volunteer_id']}")
         if session_context.get("volunteer_phone"):
             lines.append(f"Volunteer Phone: {session_context['volunteer_phone']}")
+        if session_context.get("entry_type"):
+            lines.append(f"Entry Type: {session_context['entry_type']}")
         if session_context.get("identity_verified"):
             lines.append("Identity: Verified ✓")
 

@@ -26,68 +26,108 @@ logger = logging.getLogger(__name__)
 NEW_VOLUNTEER_ONBOARDING_WORKFLOW = WorkflowDefinition(
     workflow_id='new_volunteer_onboarding',
     display_name='New Volunteer Onboarding',
-    description='Guides new volunteers through the onboarding process to collect profile information',
-    initial_stage='init',
-    terminal_stages=['onboarding_complete'],
+    description='Welcomes new volunteers, runs eligibility checks, registers them, then moves through selection and engagement',
+    initial_stage='welcome',
+    terminal_stages=['complete', 'human_review'],
     stages={
-        'init': WorkflowStageDefinition(
-            stage_id='init',
+        'welcome': WorkflowStageDefinition(
+            stage_id='welcome',
             display_name='Welcome',
             responsible_agent='onboarding',
-            valid_next_stages=['intent_discovery'],
+            valid_next_stages=['orientation_video'],
             required_fields=[],
             can_pause=False,
             can_skip=False
         ),
-        'intent_discovery': WorkflowStageDefinition(
-            stage_id='intent_discovery',
-            display_name='Understanding Your Interest',
+        'orientation_video': WorkflowStageDefinition(
+            stage_id='orientation_video',
+            display_name='Orientation Video',
             responsible_agent='onboarding',
-            valid_next_stages=['purpose_orientation', 'paused'],
-            required_fields=[],
-            optional_fields=['motivation', 'interests'],
-            can_pause=True
-        ),
-        'purpose_orientation': WorkflowStageDefinition(
-            stage_id='purpose_orientation',
-            display_name='About Our Mission',
-            responsible_agent='onboarding',
-            valid_next_stages=['eligibility_confirmation', 'paused'],
+            valid_next_stages=['eligibility_screening', 'paused'],
             required_fields=[],
             can_pause=True
         ),
-        'eligibility_confirmation': WorkflowStageDefinition(
-            stage_id='eligibility_confirmation',
-            display_name='Getting to Know You',
+        'eligibility_screening': WorkflowStageDefinition(
+            stage_id='eligibility_screening',
+            display_name='Eligibility Check',
             responsible_agent='onboarding',
-            valid_next_stages=['capability_discovery', 'paused'],
-            required_fields=['full_name', 'email'],
-            optional_fields=['phone', 'location'],
+            valid_next_stages=['contact_capture', 'human_review', 'paused'],
+            required_fields=[],
             can_pause=True
         ),
-        'capability_discovery': WorkflowStageDefinition(
-            stage_id='capability_discovery',
-            display_name='Your Skills & Availability',
+        'contact_capture': WorkflowStageDefinition(
+            stage_id='contact_capture',
+            display_name='Contact Details',
             responsible_agent='onboarding',
-            valid_next_stages=['profile_confirmation', 'paused'],
-            required_fields=['skills', 'availability'],
-            optional_fields=['experience_level', 'preferred_causes'],
+            valid_next_stages=['registration_review', 'paused'],
+            required_fields=['full_name', 'phone', 'email'],
+            optional_fields=['location'],
             can_pause=True
         ),
-        'profile_confirmation': WorkflowStageDefinition(
-            stage_id='profile_confirmation',
-            display_name='Confirm Your Profile',
+        'teaching_profile': WorkflowStageDefinition(
+            stage_id='teaching_profile',
+            display_name='Legacy Teaching Profile',
             responsible_agent='onboarding',
-            valid_next_stages=['onboarding_complete', 'capability_discovery', 'paused'],
-            required_fields=['full_name', 'email', 'skills', 'availability'],
+            valid_next_stages=['registration_review', 'paused'],
+            required_fields=[],
+            optional_fields=['skills', 'availability', 'languages', 'interests'],
+            can_pause=True
+        ),
+        'registration_review': WorkflowStageDefinition(
+            stage_id='registration_review',
+            display_name='Confirm Details',
+            responsible_agent='onboarding',
+            valid_next_stages=['onboarding_complete', 'contact_capture', 'human_review', 'paused'],
+            required_fields=['full_name', 'phone', 'email'],
             can_pause=True
         ),
         'onboarding_complete': WorkflowStageDefinition(
             stage_id='onboarding_complete',
-            display_name='Welcome Aboard!',
-            responsible_agent='onboarding',
-            valid_next_stages=[],  # Terminal state
-            required_fields=['full_name', 'email', 'skills', 'availability'],
+            display_name='Registration Complete',
+            responsible_agent='selection',
+            valid_next_stages=['selection_conversation'],
+            required_fields=['full_name', 'phone', 'email'],
+            can_pause=False,
+            can_skip=False
+        ),
+        'selection_conversation': WorkflowStageDefinition(
+            stage_id='selection_conversation',
+            display_name='Selection Conversation',
+            responsible_agent='selection',
+            valid_next_stages=['gathering_preferences', 'human_review', 'paused'],
+            required_fields=[],
+            can_pause=True
+        ),
+        'gathering_preferences': WorkflowStageDefinition(
+            stage_id='gathering_preferences',
+            display_name='Engagement Preferences',
+            responsible_agent='engagement',
+            valid_next_stages=['active', 'paused', 'human_review'],
+            required_fields=[],
+            can_pause=True
+        ),
+        'active': WorkflowStageDefinition(
+            stage_id='active',
+            display_name='Fulfillment Active',
+            responsible_agent='fulfillment',
+            valid_next_stages=['complete', 'human_review', 'paused'],
+            required_fields=[],
+            can_pause=True
+        ),
+        'complete': WorkflowStageDefinition(
+            stage_id='complete',
+            display_name='Completed',
+            responsible_agent='fulfillment',
+            valid_next_stages=[],
+            required_fields=[],
+            can_pause=False
+        ),
+        'human_review': WorkflowStageDefinition(
+            stage_id='human_review',
+            display_name='Review Pending',
+            responsible_agent='selection',
+            valid_next_stages=[],
+            required_fields=[],
             can_pause=False,
             can_skip=False
         ),
@@ -96,9 +136,9 @@ NEW_VOLUNTEER_ONBOARDING_WORKFLOW = WorkflowDefinition(
             display_name='Paused',
             responsible_agent='onboarding',
             # Can resume to any active stage
-            valid_next_stages=['init', 'intent_discovery', 'purpose_orientation',
-                              'eligibility_confirmation', 'capability_discovery',
-                              'profile_confirmation'],
+            valid_next_stages=['welcome', 'orientation_video', 'eligibility_screening',
+                              'contact_capture', 'registration_review',
+                              'selection_conversation', 'gathering_preferences', 'active'],
             required_fields=[],
             can_pause=False  # Already paused
         )
@@ -542,9 +582,9 @@ class WorkflowValidator:
         # Define stage order for progress calculation by workflow
         stage_orders = {
             'new_volunteer_onboarding': [
-                'init', 'intent_discovery', 'purpose_orientation',
-                'eligibility_confirmation', 'capability_discovery',
-                'profile_confirmation', 'onboarding_complete'
+                'welcome', 'orientation_video', 'eligibility_screening',
+                'contact_capture', 'registration_review', 'onboarding_complete',
+                'selection_conversation', 'gathering_preferences', 'active', 'complete'
             ],
             'need_coordination': [
                 'initiated', 'capturing_phone', 'resolving_coordinator', 'confirming_identity',

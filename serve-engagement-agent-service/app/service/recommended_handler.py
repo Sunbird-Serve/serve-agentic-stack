@@ -63,6 +63,7 @@ class RecommendedVolunteerHandler:
                 message=_TERMINAL_FALLBACK_MESSAGES.get(stage, "How can I help you?"),
                 state=stage,
                 sub_state=request.session_state.sub_state,
+                workflow=request.session_state.workflow,
             )
 
         # Load sub_state
@@ -74,7 +75,7 @@ class RecommendedVolunteerHandler:
 
         # Build conversation history (bounded to last 20 messages)
         messages = list(request.conversation_history[-20:])
-        if request.user_message and request.user_message != "__auto_continue__":
+        if request.user_message and request.user_message not in ("__handoff__", "__auto_continue__"):
             messages.append({"role": "user", "content": request.user_message})
 
         # Build system prompt
@@ -113,6 +114,7 @@ class RecommendedVolunteerHandler:
                 message=_TERMINAL_FALLBACK_MESSAGES[RecommendedWorkflowState.HUMAN_REVIEW.value],
                 state=RecommendedWorkflowState.HUMAN_REVIEW.value,
                 sub_state=_dump_recommended_sub_state(sub_state),
+                workflow=request.session_state.workflow,
             )
 
         # Determine current workflow stage based on sub_state
@@ -131,6 +133,7 @@ class RecommendedVolunteerHandler:
             message=text,
             state=current_stage,
             sub_state=updated_sub_state,
+            workflow=request.session_state.workflow,
         )
 
     async def _execute_tool(
@@ -224,6 +227,7 @@ class RecommendedVolunteerHandler:
                 message=message,
                 state=RecommendedWorkflowState.PAUSED.value,
                 sub_state=_dump_recommended_sub_state(sub_state),
+                workflow=request.session_state.workflow,
             )
 
         elif outcome == "declined":
@@ -241,6 +245,7 @@ class RecommendedVolunteerHandler:
                 message=message,
                 state=RecommendedWorkflowState.HUMAN_REVIEW.value,
                 sub_state=_dump_recommended_sub_state(sub_state),
+                workflow=request.session_state.workflow,
             )
 
         else:
@@ -252,6 +257,7 @@ class RecommendedVolunteerHandler:
                 message=text or _TERMINAL_FALLBACK_MESSAGES[RecommendedWorkflowState.HUMAN_REVIEW.value],
                 state=RecommendedWorkflowState.HUMAN_REVIEW.value,
                 sub_state=_dump_recommended_sub_state(sub_state),
+                workflow=request.session_state.workflow,
             )
 
     async def _handle_ready(
@@ -279,6 +285,7 @@ class RecommendedVolunteerHandler:
                 ),
                 state=RecommendedWorkflowState.HUMAN_REVIEW.value,
                 sub_state=_dump_recommended_sub_state(sub_state),
+                workflow=request.session_state.workflow,
             )
 
         sub_state["handoff"] = payload
@@ -306,6 +313,7 @@ class RecommendedVolunteerHandler:
                 "payload": payload,
                 "reason": "Recommended volunteer confirmed teaching preferences",
             },
+            workflow=request.session_state.workflow,
         )
 
     async def _handle_not_registered(
@@ -336,6 +344,7 @@ class RecommendedVolunteerHandler:
             message=message,
             state=RecommendedWorkflowState.NOT_REGISTERED.value,
             sub_state=_dump_recommended_sub_state(sub_state),
+            workflow=request.session_state.workflow,
         )
 
     def _build_handoff_payload(
@@ -376,6 +385,7 @@ class RecommendedVolunteerHandler:
     ) -> Dict[str, Any]:
         """Assemble context dict for the system prompt."""
         ctx: Dict[str, Any] = {
+            "entry_type": sub_state.get("entry_type", "recommended"),
             "volunteer_id": request.session_state.volunteer_id,
             "volunteer_name": request.session_state.volunteer_name,
             "volunteer_phone": request.session_state.volunteer_phone,
@@ -394,9 +404,11 @@ class RecommendedVolunteerHandler:
         sub_state: Optional[str],
         handoff_event: Optional[Dict[str, Any]] = None,
         auto_continue: bool = False,
+        workflow: str = "recommended_volunteer",
     ) -> RecommendedAgentTurnResponse:
         return RecommendedAgentTurnResponse(
             assistant_message=message,
+            workflow=workflow,
             state=state,
             sub_state=sub_state,
             handoff_event=handoff_event,

@@ -1,9 +1,9 @@
 """
 SERVE Selection Agent Service - Schemas
 
-Selection is a lightweight post-onboarding evaluation agent.
-It accepts the standard orchestrator turn contract, evaluates the
-completed volunteer profile, and returns a concise next-step message.
+Selection is the conversational evaluation step that follows onboarding.
+It gathers readiness signals, decides the volunteer's immediate outcome,
+and hands appropriate cases to engagement for the next step.
 """
 import json
 from enum import Enum
@@ -31,10 +31,19 @@ class WorkflowType(str, Enum):
     SYSTEM_TRIGGERED = "system_triggered"
 
 
+class SelectionWorkflowState(str, Enum):
+    SELECTION_CONVERSATION = "selection_conversation"
+    GATHERING_PREFERENCES = "gathering_preferences"
+    HUMAN_REVIEW = "human_review"
+    PAUSED = "paused"
+
+
 class SelectionOutcome(str, Enum):
-    RECOMMEND = "recommend"
-    NOT_RECOMMEND = "not_recommend"
-    HOLD = "hold"
+    RECOMMENDED = "recommended"
+    ENGAGEMENT_LATER = "engagement_later"
+    NOT_MATCHED = "not_matched"
+    HUMAN_REVIEW = "human_review"
+    PAUSED = "paused"
 
 
 class EventType(str, Enum):
@@ -42,6 +51,30 @@ class EventType(str, Enum):
     AGENT_RESPONSE = "agent_response"
     HANDOFF = "handoff"
     ERROR = "error"
+
+
+DEFAULT_SELECTION_SUB_STATE: Dict[str, Any] = {
+    "handoff": {},
+    "signals": {
+        "motivation_alignment": None,
+        "continuity_intent": None,
+        "communication_clarity": None,
+        "language_comfort": None,
+        "availability_realism": None,
+        "readiness": None,
+        "blockers": [],
+        "risk_signals": [],
+    },
+    "notes": {
+        "motivation": None,
+        "availability": None,
+        "blockers": None,
+        "language_notes": None,
+    },
+    "asked_questions": [],
+    "outcome": None,
+    "outcome_reason": None,
+}
 
 
 class SessionState(BaseModel):
@@ -115,6 +148,7 @@ class SelectionEvaluateRequest(BaseModel):
     onboarding_summary: Optional[str] = None
     key_facts: List[str] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    selection_signals: Dict[str, Any] = Field(default_factory=dict)
 
 
 class SelectionEvaluateResponse(BaseModel):
@@ -140,3 +174,38 @@ def extract_handoff_payload(raw_sub_state: Optional[str]) -> Dict[str, Any]:
         return {}
     handoff = data.get("handoff")
     return handoff if isinstance(handoff, dict) else {}
+
+
+def load_selection_sub_state(raw_sub_state: Optional[str]) -> Dict[str, Any]:
+    if not raw_sub_state:
+        return json.loads(json.dumps(DEFAULT_SELECTION_SUB_STATE))
+    try:
+        data = json.loads(raw_sub_state)
+    except (json.JSONDecodeError, ValueError):
+        return json.loads(json.dumps(DEFAULT_SELECTION_SUB_STATE))
+    if not isinstance(data, dict):
+        return json.loads(json.dumps(DEFAULT_SELECTION_SUB_STATE))
+
+    merged = json.loads(json.dumps(DEFAULT_SELECTION_SUB_STATE))
+    merged.update(data)
+    merged_signals = dict(DEFAULT_SELECTION_SUB_STATE["signals"])
+    merged_signals.update(data.get("signals") or {})
+    merged["signals"] = merged_signals
+    merged_notes = dict(DEFAULT_SELECTION_SUB_STATE["notes"])
+    merged_notes.update(data.get("notes") or {})
+    merged["notes"] = merged_notes
+    merged["asked_questions"] = list(data.get("asked_questions") or [])
+    return merged
+
+
+def dump_selection_sub_state(sub_state: Dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "handoff": sub_state.get("handoff", {}),
+            "signals": sub_state.get("signals", {}),
+            "notes": sub_state.get("notes", {}),
+            "asked_questions": list(sub_state.get("asked_questions") or []),
+            "outcome": sub_state.get("outcome"),
+            "outcome_reason": sub_state.get("outcome_reason"),
+        }
+    )
