@@ -28,6 +28,7 @@ from app.schemas.selection_schemas import (
     extract_handoff_payload,
     load_selection_sub_state,
 )
+from app.service.llm_adapter import llm_adapter
 
 
 QUESTION_ORDER = [
@@ -156,6 +157,35 @@ def _extract_selection_signals(sub_state: Dict[str, Any], message: str) -> Tuple
     return signals, notes
 
 
+def _merge_llm_signals(sub_state: Dict[str, Any], tool_input: Dict[str, Any]) -> None:
+    current_signals = dict(sub_state.get("signals") or {})
+    current_notes = dict(sub_state.get("notes") or {})
+    incoming_signals = tool_input.get("signals") or {}
+    incoming_notes = tool_input.get("notes") or {}
+
+    for key, value in incoming_signals.items():
+        if value in (None, "", "unknown"):
+            continue
+        if key in ("blockers", "risk_signals"):
+            current = current_signals.get(key) or []
+            additions = value if isinstance(value, list) else [value]
+            current_signals[key] = sorted(set([*current, *[str(v) for v in additions if v]]))
+        else:
+            current_signals[key] = value
+
+    for key, value in incoming_notes.items():
+        if value not in (None, ""):
+            current_notes[key] = value
+
+    if tool_input.get("human_review_needed"):
+        current_signals["risk_signals"] = sorted(
+            set((current_signals.get("risk_signals") or []) + [tool_input.get("human_review_reason") or "human_review_needed"])
+        )
+
+    sub_state["signals"] = current_signals
+    sub_state["notes"] = current_notes
+
+
 def _next_question(sub_state: Dict[str, Any]) -> Optional[str]:
     signals = sub_state.get("signals") or {}
     for key in QUESTION_ORDER:
@@ -227,7 +257,63 @@ class SelectionAgentService:
 
         next_question_key = _next_question(sub_state)
         if next_question_key and not (sub_state.get("signals") or {}).get("risk_signals"):
-            if next_question_key not in sub_state["asked_questions"]:
+            fallback_question = QUESTION_PROMPTS[next_question_key]
+
+            messages = list(request.conversation_history[-12:])
+            if request.user_message and request.user_message not in ("__handoff__", "__auto_continue__"):
+                messages.append({"role": "user", "content": request.user_message})
+
+            async def tool_executor(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
+                if tool_name != "record_selection_turn":
+                    return {"status": "error", "message": f"Unknown tool: {tool_name}"}
+                _merge_llm_signals(sub_state, tool_input)
+                return {"status": "success", "recorded": True}
+
+            system_prompt = llm_adapter.build_system_prompt(
+                profile=profile.model_dump(mode="json"),
+                onboarding_summary=onboarding_summary,
+                key_facts=key_facts,
+                signals=sub_state.get("signals") or {},
+            )
+            assistant_message, collected = await llm_adapter.run_selection_loop(
+                system_prompt=system_prompt,
+                messages=messages,
+                tool_executor=tool_executor,
+                fallback_question=fallback_question,
+            )
+
+            llm_signal = collected.get("record_selection_turn") or {}
+            requested_next = llm_signal.get("next_missing_signal")
+            if requested_next and requested_next != "none":
+                next_question_key = requested_next
+
+            if llm_signal.get("pause_requested"):
+                summary, facts = _selection_summary(
+                    sub_state.get("signals") or {},
+                    sub_state.get("notes") or {},
+                    SelectionOutcome.PAUSED.value,
+                    "Volunteer asked to continue later during selection.",
+                )
+                await domain_client.save_memory_summary(session_id, summary, facts)
+                updated_sub_state = dump_selection_sub_state(sub_state)
+                await domain_client.advance_state(
+                    session_id,
+                    SelectionWorkflowState.PAUSED.value,
+                    updated_sub_state,
+                )
+                return self._build_response(
+                    request=request,
+                    message=assistant_message or "Of course. We can continue this whenever you're ready.",
+                    state=SelectionWorkflowState.PAUSED.value,
+                    sub_state=updated_sub_state,
+                    completion_status=SelectionOutcome.PAUSED.value,
+                    confirmed_fields={"selection_outcome": SelectionOutcome.PAUSED.value},
+                )
+
+            if next_question_key != "none" and next_question_key not in QUESTION_PROMPTS:
+                next_question_key = _next_question(sub_state) or "none"
+
+            if next_question_key != "none" and next_question_key not in sub_state["asked_questions"]:
                 sub_state["asked_questions"].append(next_question_key)
             updated_sub_state = dump_selection_sub_state(sub_state)
             await domain_client.advance_state(
@@ -245,7 +331,7 @@ class SelectionAgentService:
             ]
             return self._build_response(
                 request=request,
-                message=QUESTION_PROMPTS[next_question_key],
+                message=assistant_message or fallback_question,
                 state=SelectionWorkflowState.SELECTION_CONVERSATION.value,
                 sub_state=updated_sub_state,
                 completion_status="in_progress",
