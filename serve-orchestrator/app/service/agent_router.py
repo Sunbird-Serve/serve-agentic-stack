@@ -57,9 +57,10 @@ class AgentRegistry:
             'healthy': True,   # Optimistic until first probe
             'last_check': None,
             'workflows': ['new_volunteer_onboarding'],
-            'stages': ['init', 'intent_discovery', 'purpose_orientation',
-                       'eligibility_confirmation', 'capability_discovery',
-                       'profile_confirmation', 'onboarding_complete', 'paused'],
+            'stages': ['welcome', 'orientation_video', 'eligibility_screening',
+                       'contact_capture', 'teaching_profile',
+                       'registration_review', 'onboarding_complete',
+                       'human_review', 'paused'],
         }
 
         self._agents['need'] = {
@@ -124,7 +125,7 @@ class AgentRegistry:
             'healthy': False,  # Conservative — undeployed; first probe may flip to True
             'last_check': None,
             'workflows': ['new_volunteer_onboarding'],
-            'stages': ['onboarding_complete'],
+            'stages': ['onboarding_complete', 'selection_conversation'],
         }
 
     # ── Health probing ───────────────────────────────────────────────────────

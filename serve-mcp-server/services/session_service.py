@@ -72,7 +72,7 @@ class SessionService:
         else:
             workflow     = "new_volunteer_onboarding"
             active_agent = "onboarding"
-            stage        = "init"
+            stage        = "welcome"
 
         if is_db_healthy():
             try:
@@ -199,8 +199,7 @@ class SessionService:
         active_agent: Optional[str] = None,
     ) -> Dict[str, Any]:
         _TERMINAL = {
-            "onboarding_complete", "need_submitted",
-            "fulfillment_handoff_ready", "approved",
+            "need_submitted", "fulfillment_handoff_ready", "approved", "complete",
         }
         new_status = "completed" if new_state in _TERMINAL else None
 
