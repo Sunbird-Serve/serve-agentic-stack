@@ -60,9 +60,9 @@ _PAUSE_RE = re.compile(
 )
 
 _HELP_RE = re.compile(
-    r"\b(help|stuck|confused|don['\u2019]?t understand|not sure|what do i|"
-    r"how do i|what should|lost|unclear|explain|can you explain|"
-    r"i don['\u2019]?t get|what does)\b",
+    r"\b(i need help|help me|i('?m| am) stuck|confused|don['\u2019]?t understand|not sure|what do i|"
+    r"how do i|what should|i('?m| am) lost|unclear|can you explain|"
+    r"i don['\u2019]?t get|what does|please help)\b",
     re.IGNORECASE,
 )
 

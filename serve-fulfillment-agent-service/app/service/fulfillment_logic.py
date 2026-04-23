@@ -57,6 +57,7 @@ class FulfillmentAgentService:
         # ── Load sub_state ────────────────────────────────────────────────────
         sub_state = _load_sub_state(request.session_state.sub_state)
         handoff = sub_state.get("handoff") or {}
+        logger.info(f"Session {session_id}: stage={stage}, handoff keys={list(handoff.keys())}, handoff volunteer_id={handoff.get('volunteer_id')}, preference_notes={handoff.get('preference_notes')}")
 
         if not handoff and request.session_state.volunteer_id:
             handoff = {

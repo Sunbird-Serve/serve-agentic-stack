@@ -22,6 +22,8 @@ async def process_interaction(request: InteractionRequest):
     try:
         return await orchestration_service.process_interaction(request)
     except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Orchestrator /interact error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

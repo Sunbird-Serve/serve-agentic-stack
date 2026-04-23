@@ -66,6 +66,21 @@ class EngagementAgentService:
         # ── Load sub_state ────────────────────────────────────────────────────
         sub_state = _load_sub_state(request.session_state.sub_state)
 
+        # ── Fast-path for volunteers arriving from selection agent handoff ─────
+        # They already have identity verified, engagement_context loaded, and
+        # don't need phone lookup or identity verification.
+        entry_type = sub_state.get("entry_type")
+        if entry_type == "selected_new_volunteer" and sub_state.get("engagement_context"):
+            logger.info(f"Session {session_id}: selected_new_volunteer — skipping identity verification")
+            # Mark identity as verified so the LLM doesn't ask for phone
+            sub_state["identity_verified"] = True
+            context = sub_state["engagement_context"]
+            # Back-fill session state from the handoff context
+            if not request.session_state.volunteer_id and context.get("volunteer_id"):
+                request.session_state.volunteer_id = context["volunteer_id"]
+            if not request.session_state.volunteer_name and context.get("volunteer_name"):
+                request.session_state.volunteer_name = context["volunteer_name"]
+
         # ── Pre-load engagement context if not already cached ─────────────────
         context_was_missing = not sub_state.get("engagement_context")
         if context_was_missing and request.session_state.volunteer_phone:
@@ -549,6 +564,7 @@ class EngagementAgentService:
             "volunteer_name":  request.session_state.volunteer_name,
             "volunteer_phone": request.session_state.volunteer_phone,
             "last_active_at":  request.session_state.last_active_at,
+            "entry_type":      sub_state.get("entry_type"),
         }
         # Surface cached fulfillment history if already loaded
         engagement_context = sub_state.get("engagement_context") or {}

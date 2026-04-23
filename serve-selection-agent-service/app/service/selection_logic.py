@@ -225,6 +225,23 @@ class SelectionAgentService:
 
         profile, onboarding_summary, key_facts = await self._load_profile_context(request)
 
+        # Pre-evaluate motivation from onboarding welcome_response if not already assessed
+        signals = sub_state.get("signals") or {}
+        notes = sub_state.get("notes") or {}
+        if signals.get("motivation_alignment") is None and profile.motivation:
+            motivation_text = profile.motivation.lower()
+            if any(term in motivation_text for term in POSITIVE_MOTIVATION):
+                signals["motivation_alignment"] = "strong"
+                notes["motivation"] = profile.motivation
+                sub_state["signals"] = signals
+                sub_state["notes"] = notes
+            elif any(term in motivation_text for term in ["curious", "explore", "checking"]):
+                signals["motivation_alignment"] = "moderate"
+                notes["motivation"] = profile.motivation
+                sub_state["signals"] = signals
+                sub_state["notes"] = notes
+            # If generic ("saw ad", "don't know", etc.) — leave as None so the question gets asked
+
         user_message = (request.user_message or "").strip()
         if user_message and user_message not in ("__handoff__", "__auto_continue__"):
             signals, notes = _extract_selection_signals(sub_state, user_message)
@@ -502,7 +519,7 @@ class SelectionAgentService:
             interests=merged_profile.get("interests") or [],
             availability=merged_profile.get("availability"),
             languages=merged_profile.get("languages") or [],
-            motivation=merged_profile.get("motivation"),
+            motivation=merged_profile.get("motivation") or merged_profile.get("welcome_response"),
             qualification=merged_profile.get("qualification"),
             years_of_experience=str(merged_profile.get("years_of_experience")) if merged_profile.get("years_of_experience") is not None else None,
             employment_status=merged_profile.get("employment_status"),

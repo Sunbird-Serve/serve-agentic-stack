@@ -4,9 +4,11 @@ Autonomous agent for volunteer onboarding
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import os
 import logging
 from datetime import datetime
+from pathlib import Path
 
 from app.api import agent_router
 from app.schemas import HealthResponse
@@ -37,6 +39,12 @@ app.add_middleware(
 
 # Include routers
 app.include_router(agent_router, prefix="/api")
+
+# Serve media files (orientation videos)
+_media_dir = Path(__file__).parent / "media"
+if _media_dir.is_dir():
+    app.mount("/media", StaticFiles(directory=str(_media_dir)), name="media")
+    logger.info(f"Serving media files from {_media_dir}")
 
 
 @app.get("/api/health", response_model=HealthResponse)

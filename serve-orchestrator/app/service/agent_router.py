@@ -125,7 +125,7 @@ class AgentRegistry:
             'healthy': False,  # Conservative — undeployed; first probe may flip to True
             'last_check': None,
             'workflows': ['new_volunteer_onboarding'],
-            'stages': ['onboarding_complete', 'selection_conversation'],
+            'stages': ['onboarding_complete', 'selection_conversation', 'gathering_preferences', 'human_review', 'paused'],
         }
 
     # ── Health probing ───────────────────────────────────────────────────────

@@ -242,25 +242,42 @@ async def advance_session_state(params: AdvanceSessionStateInput) -> dict:
 
     # Write-back to Serve Registry on onboarding completion
     if params.new_state == "onboarding_complete":
+        logger.info(f"[{params.session_id}] ── REGISTRATION START ── onboarding_complete triggered")
         from services.database import get_db, Session as DBSession, is_db_healthy
         from sqlalchemy import update as sa_update
         from uuid import UUID
 
         session_result = await session_service.get_session(params.session_id)
         volunteer_id   = session_result.get("session", {}).get("volunteer_id")
+        logger.info(f"[{params.session_id}] existing volunteer_id on session: {volunteer_id}")
 
         if not volunteer_id:
-            # New user — create volunteer stub in Serve Registry first
+            # Check if a volunteer with this email already exists in the registry
             profile_result = await profile_service.get_profile(params.session_id)
             profile        = profile_result.get("profile", {})
-            new_vid = await volunteering_client.create_volunteer(
-                full_name=profile.get("full_name", ""),
-                email=profile.get("email"),
-                phone=profile.get("phone"),
-                city=profile.get("location"),
-            )
-            if new_vid:
-                volunteer_id = new_vid
+            email = profile.get("email")
+            logger.info(f"[{params.session_id}] profile for registration: name={profile.get('full_name')}, email={email}, phone={profile.get('phone')}, qualification={profile.get('qualification')}")
+
+            if email:
+                existing = await volunteering_client.lookup_by_email(email)
+                logger.info(f"[{params.session_id}] lookup_by_email({email}) result: {existing}")
+                if existing and existing.get("osid"):
+                    volunteer_id = existing["osid"]
+                    logger.info(f"[{params.session_id}] Existing volunteer found by email: {volunteer_id}")
+
+            if not volunteer_id:
+                logger.info(f"[{params.session_id}] Creating new volunteer in Serve Registry...")
+                new_vid = await volunteering_client.create_volunteer(
+                    full_name=profile.get("full_name", ""),
+                    email=email,
+                    phone=profile.get("phone"),
+                    city=profile.get("location"),
+                )
+                logger.info(f"[{params.session_id}] create_volunteer result: {new_vid}")
+                if new_vid:
+                    volunteer_id = new_vid
+
+            if volunteer_id:
                 if is_db_healthy():
                     try:
                         async with get_db() as db:
@@ -269,8 +286,11 @@ async def advance_session_state(params: AdvanceSessionStateInput) -> dict:
                                 .where(DBSession.id == UUID(params.session_id))
                                 .values(volunteer_id=volunteer_id)
                             )
+                        logger.info(f"[{params.session_id}] volunteer_id={volunteer_id} linked to session")
                     except Exception as e:
-                        logger.warning(f"Could not update volunteer_id on session: {e}")
+                        logger.warning(f"[{params.session_id}] Could not update volunteer_id on session: {e}")
+            else:
+                logger.warning(f"[{params.session_id}] No volunteer_id obtained — registration may have failed")
 
         if volunteer_id:
             sync_result = await profile_service.sync_to_registry(
@@ -278,7 +298,9 @@ async def advance_session_state(params: AdvanceSessionStateInput) -> dict:
                 volunteer_id=volunteer_id,
             )
             result["registry_sync"] = sync_result
-            logger.info(f"Profile synced to Serve Registry: {volunteer_id}")
+            logger.info(f"[{params.session_id}] ── REGISTRATION DONE ── synced to registry: {volunteer_id}")
+        else:
+            logger.warning(f"[{params.session_id}] ── REGISTRATION SKIPPED ── no volunteer_id available")
 
     return result
 

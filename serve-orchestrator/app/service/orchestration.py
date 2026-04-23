@@ -19,6 +19,16 @@ from typing import Optional, Tuple, Dict
 from uuid import UUID, uuid4
 from datetime import datetime, timedelta
 import json
+
+
+def _safe_uuid(value) -> Optional[UUID]:
+    """Convert a string to UUID safely. Returns None if invalid."""
+    if not value:
+        return None
+    try:
+        return UUID(str(value))
+    except (ValueError, AttributeError):
+        return None
 import logging
 
 from app.schemas import (
@@ -283,7 +293,7 @@ class OrchestrationService:
             stage=session_context.current_stage,
             sub_state=session_context.sub_state,
             context_summary=session_context.context_summary,
-            volunteer_id=UUID(session_context.volunteer_id) if session_context.volunteer_id else None,
+            volunteer_id=_safe_uuid(session_context.volunteer_id),
             volunteer_name=session_context.volunteer_name,
             volunteer_phone=session_context.volunteer_phone,
             # Forward live channel metadata (e.g. phone_number from Web UI pre-screen)
@@ -472,7 +482,7 @@ class OrchestrationService:
                     status=session_context.status,
                     stage=agent_response.state,
                     sub_state=handoff_sub_state_str,
-                    volunteer_id=UUID(session_context.volunteer_id) if session_context.volunteer_id else None,
+                    volunteer_id=_safe_uuid(session_context.volunteer_id),
                     volunteer_name=session_context.volunteer_name,
                     volunteer_phone=session_context.volunteer_phone,
                     channel_metadata=event.raw_metadata if event.raw_metadata else None,
@@ -660,7 +670,7 @@ class OrchestrationService:
             workflow=workflow.value,
             active_agent=initial_agent.value,
             status=SessionStatus.ACTIVE.value,
-            current_stage=start_result["data"].get("stage", OnboardingState.INIT.value),
+            current_stage=start_result["data"].get("stage", OnboardingState.WELCOME.value),
             volunteer_id=None,
             volunteer_name=volunteer_name,
             volunteer_phone=volunteer_phone,
@@ -841,7 +851,7 @@ class OrchestrationService:
             assistant_message=message,
             active_agent=_agent,
             workflow=_workflow,
-            state=OnboardingState.INIT.value,
+            state=OnboardingState.WELCOME.value,
             status=SessionStatus.ACTIVE,
         )
     

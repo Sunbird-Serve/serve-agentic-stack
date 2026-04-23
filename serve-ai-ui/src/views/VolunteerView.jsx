@@ -19,6 +19,43 @@ const TypingIndicator = () => (
   </div>
 );
 
+// Parse message content — renders [VIDEO:url|label] tags as embedded video players
+const RichContent = ({ text }) => {
+  const VIDEO_RE = /\[VIDEO:(.*?)\|(.*?)\]/g;
+  const parts = [];
+  let lastIndex = 0;
+  let match;
+
+  while ((match = VIDEO_RE.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(<span key={lastIndex}>{text.slice(lastIndex, match.index)}</span>);
+    }
+    const url = match[1];
+    const label = match[2];
+    parts.push(
+      <div key={match.index} className="my-2">
+        <p className="text-xs text-slate-500 mb-1">{label}</p>
+        <video
+          controls
+          preload="metadata"
+          className="rounded-lg w-full max-w-sm"
+          style={{ maxHeight: '240px' }}
+        >
+          <source src={url} type="video/mp4" />
+          Your browser does not support video playback.
+        </video>
+      </div>
+    );
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < text.length) {
+    parts.push(<span key={lastIndex}>{text.slice(lastIndex)}</span>);
+  }
+
+  return parts.length > 0 ? <>{parts}</> : <>{text}</>;
+};
+
 // Message bubble component
 const MessageBubble = ({ message, isUser }) => (
   <div
@@ -29,7 +66,7 @@ const MessageBubble = ({ message, isUser }) => (
       {isUser ? 'Y' : 'e'}
     </div>
     <div className={`message-content ${isUser ? 'chat-bubble-user' : 'chat-bubble-assistant'}`}>
-      {message.content}
+      <RichContent text={message.content} />
     </div>
   </div>
 );

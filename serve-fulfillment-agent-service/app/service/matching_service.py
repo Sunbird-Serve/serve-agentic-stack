@@ -58,6 +58,11 @@ class MatchFinder:
         bulk_result = await domain_client.search_approved_needs()
         all_needs = bulk_result.get("needs", []) if isinstance(bulk_result, dict) else []
         logger.info(f"MatchFinder: bulk search returned {len(all_needs)} approved needs")
+        if not all_needs:
+            logger.warning(f"MatchFinder: no approved needs found. bulk_result keys={list(bulk_result.keys()) if isinstance(bulk_result, dict) else 'not_dict'}, status={bulk_result.get('status')}")
+        else:
+            for n in all_needs[:5]:
+                logger.info(f"MatchFinder: need id={n.get('id')}, school={n.get('school_name')}, status={n.get('status')}, days={n.get('days')}, time_slots={n.get('time_slots')}")
 
         if not all_needs:
             return MatchResult(status="not_found", reason="no_approved_needs_in_system")

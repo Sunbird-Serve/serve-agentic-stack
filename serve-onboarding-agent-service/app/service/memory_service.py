@@ -62,7 +62,8 @@ class MemorySummarizer:
     
     def __init__(self):
         self.api_key = os.environ.get("EMERGENT_LLM_KEY")
-        self.model = os.environ.get("LLM_MODEL", "claude-sonnet-4-5-20250929")
+        # Use a cheaper/faster model for summarization — it's a simple task
+        self.model = os.environ.get("MEMORY_LLM_MODEL", "claude-haiku-4-5-20251001")
         self.summary_threshold = 6  # Summarize after this many messages
     
     async def should_summarize(self, message_count: int, last_summary_at: Optional[datetime] = None) -> bool:
@@ -177,19 +178,21 @@ class MemorySummarizer:
         
         try:
             from emergentintegrations.llm.chat import LlmChat, UserMessage
+
+            if not hasattr(self, '_chat') or self._chat is None:
+                self._chat = LlmChat(
+                    api_key=self.api_key,
+                    session_id=f"memory-{id(self)}",
+                    system_message="You are a helpful assistant that summarizes conversations accurately and concisely."
+                )
+                self._chat.with_model("anthropic", self.model)
             
-            chat = LlmChat(
-                api_key=self.api_key,
-                session_id=f"memory-{id(self)}",
-                system_message="You are a helpful assistant that summarizes conversations accurately and concisely."
-            )
-            chat.with_model("anthropic", self.model)
-            
-            response = await chat.send_message(UserMessage(text=prompt))
+            response = await self._chat.send_message(UserMessage(text=prompt))
             return response
             
         except Exception as e:
             logger.error(f"LLM summarization error: {e}")
+            self._chat = None  # Reset on error
             return self._fallback_summary(prompt)
     
     def _fallback_summary(self, prompt: str) -> str:

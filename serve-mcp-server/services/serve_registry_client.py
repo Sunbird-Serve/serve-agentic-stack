@@ -508,12 +508,14 @@ class NeedServiceClient:
         Returns enriched need details (with time_slots, subjects, grades).
         """
         entities = await self.search_entities(page=0, size=max_entities)
+        logger.info(f"get_approved_needs_bulk: found {len(entities)} entities")
         all_needs = []
         for entity in entities:
             entity_id = entity.get("id")
             if not entity_id:
                 continue
             raw_needs = await self.get_needs_for_entity(entity_id, page=0, size=max_needs_per_entity)
+            logger.info(f"  entity={entity.get('name', entity_id)}: {len(raw_needs)} needs, statuses={[n.get('status') for n in raw_needs]}")
             for need in raw_needs:
                 need_status = need.get("status", "")
                 if need_status != "Approved":
@@ -526,6 +528,7 @@ class NeedServiceClient:
                     details["school_name"] = entity.get("name", "")
                     details["entity_id"] = entity_id
                     all_needs.append(details)
+        logger.info(f"get_approved_needs_bulk: total approved needs = {len(all_needs)}")
         return all_needs
 
     async def get_need_details(self, need_id: str) -> Optional[Dict]:

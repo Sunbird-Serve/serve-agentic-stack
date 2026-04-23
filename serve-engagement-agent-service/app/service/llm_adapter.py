@@ -219,6 +219,13 @@ class EngagementLLMAdapter:
         if session_context.get("last_active_at"):
             lines.append(f"Last active: {session_context['last_active_at']}")
 
+        # For new volunteers from selection — no fulfillment history
+        entry_type = session_context.get("entry_type")
+        if entry_type == "selected_new_volunteer":
+            lines.append("Entry: NEW volunteer (just completed onboarding + selection). No prior teaching history.")
+            lines.append("IMPORTANT: Identity is already verified. Do NOT ask for phone number or do any lookup.")
+            lines.append("Go directly to understanding their teaching preferences — subject, time, availability.")
+
         # Surface cached history if already loaded (avoids redundant tool call on resume)
         history = session_context.get("fulfillment_history") or []
         if history:
