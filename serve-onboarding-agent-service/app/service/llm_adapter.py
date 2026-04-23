@@ -17,6 +17,8 @@ import logging
 load_dotenv()
 logger = logging.getLogger(__name__)
 
+ONBOARDING_VIDEO_URL = os.environ.get("ONBOARDING_VIDEO_URL", "").strip()
+
 
 # ============ eVidyaloka Context ============
 
@@ -73,6 +75,10 @@ Guidelines:
 - Ask one question at a time
 - Never mention technical terms or internal processes
 - Make the volunteer feel valued and welcomed
+- Stay within the current onboarding step; do not jump ahead
+- Do not say the volunteer is ineligible, rejected, or disqualified
+- If the case needs internal review, say politely that the team will review and get back
+- Do not promise successful registration unless the current stage is onboarding_complete
 """
     
     # Add memory context if available (for returning volunteers)
@@ -100,95 +106,113 @@ MEMORY CONTEXT (use naturally, don't explicitly mention having memory):
 def _get_stage_instructions(stage: str, missing_fields: List[str], confirmed_fields: Dict) -> str:
     """Get stage-specific instructions."""
     
-    if stage == "init":
+    if stage == "welcome":
         return """CURRENT STAGE: Welcome
-        
-Your task: Give a warm, brief welcome and ask what brings them to volunteer with eVidyaloka.
-Example tone: "Welcome! It's wonderful to meet someone interested in supporting education. What brings you to eVidyaloka?"
-"""
-    
-    elif stage == "intent_discovery":
-        return """CURRENT STAGE: Understanding Their Interest
 
-Your task: Learn why they want to volunteer and what impact they hope to make.
-- Acknowledge their motivation warmly
-- Ask about their connection to education or helping children
-- Listen for clues about their skills and interests
-Example: "That's really thoughtful. What draws you specifically to education or working with children?"
+Your task: Greet the volunteer warmly and briefly explain that you will first share a short orientation video before asking a few simple questions.
+Do not ask for profile details yet.
 """
     
-    elif stage == "purpose_orientation":
-        return """CURRENT STAGE: Sharing Our Mission
+    elif stage == "orientation_video":
+        video_note = (
+            f"Share this video link exactly once: {ONBOARDING_VIDEO_URL}\n"
+            if ONBOARDING_VIDEO_URL else
+            "Mention that a short orientation video is being shared.\n"
+        )
+        return f"""CURRENT STAGE: Orientation Video
 
-Your task: Briefly share what eVidyaloka does and how volunteers contribute.
-- Explain simply: we connect volunteers with rural students who need learning support
-- Mention that volunteers can teach, mentor, or support in various ways
-- Ask what kind of support they'd be interested in providing
-Example: "At eVidyaloka, volunteers like you teach and mentor children in villages who might not otherwise have access to quality education. What kind of support would you enjoy providing?"
+Your task: Begin with a warm welcome, then share the short orientation video and politely ask the volunteer to reply once they are ready to continue.
+{video_note}
+Keep the tone welcoming and simple. Do not ask eligibility or profile questions in the same response.
 """
-    
-    elif stage == "eligibility_confirmation":
-        # Check what we still need
+
+    elif stage == "eligibility_screening":
+        order = []
+        if confirmed_fields.get("age_18_plus") is not True:
+            order.append("Ask: Are you 18 years of age or older?")
+        if confirmed_fields.get("has_internet") is not True:
+            order.append("Ask: Do you have a stable internet connection for online classes?")
+        if confirmed_fields.get("has_device") is not True:
+            order.append("Ask: Do you have a laptop, tablet, or another suitable device to take classes?")
+        if confirmed_fields.get("accepts_unpaid_role") is not True:
+            order.append("Ask: This is a volunteer, unpaid role. Are you comfortable with that?")
+
+        next_prompt = order[0] if order else "If all checks are complete, warmly acknowledge that and move ahead."
+        return f"""CURRENT STAGE: Eligibility Screening
+
+Your task: Ask only the next eligibility question and wait for the volunteer's answer.
+Eligibility checks:
+- above 18 years
+- internet access
+- suitable device
+- clear understanding that this is an unpaid volunteer role
+
+Next question:
+{next_prompt}
+"""
+
+    elif stage == "contact_capture":
         name = confirmed_fields.get("full_name")
+        phone = confirmed_fields.get("phone")
         email = confirmed_fields.get("email")
-        
         if not name:
-            return """CURRENT STAGE: Getting to Know You
+            return """CURRENT STAGE: Contact Details
 
-Your task: Ask for their name in a friendly way.
-Example: "I'd love to know who I'm chatting with! What's your name?"
+Your task: Ask for the volunteer's full name in a warm, natural way.
 """
-        elif not email:
-            return f"""CURRENT STAGE: Getting to Know You
+        if not phone:
+            return f"""CURRENT STAGE: Contact Details
 
-Their name: {name}
+We know their name: {name}
 
-Your task: Thank them and ask for their email address.
-Example: "Nice to meet you, {name}! Could you share your email address so we can stay in touch?"
+Your task: Thank them and ask for their phone number.
 """
-        else:
-            return f"""CURRENT STAGE: Getting to Know You
+        if not email:
+            return f"""CURRENT STAGE: Contact Details
 
-We know: {name}, {email}
+We know their name and phone number.
 
-Your task: Ask about their location or any other missing basic info.
+Your task: Ask for their email address so the team can stay in touch.
 """
-    
-    elif stage == "capability_discovery":
-        return """CURRENT STAGE: Learning About Their Strengths
+        return """CURRENT STAGE: Contact Details
 
-Your task: Explore their skills and availability.
-- Ask about subjects they could teach or skills they have
-- Understand their time availability
-- Be encouraging about whatever they share
-Example: "What subjects or skills do you feel comfortable sharing with students? Even everyday skills can make a big difference!"
+Your task: Thank them for sharing their contact details and smoothly move to the next step.
 """
-    
-    elif stage == "profile_confirmation":
+
+    elif stage == "teaching_profile":
+        return """CURRENT STAGE: Registration Review
+
+Your task: If a legacy session lands here, do not ask about teaching details.
+Warmly acknowledge the volunteer and move to a quick registration review instead.
+"""
+
+    elif stage == "registration_review":
         # Summarize what we know
         summary = _build_profile_summary(confirmed_fields)
-        return f"""CURRENT STAGE: Confirming Their Profile
+        return f"""CURRENT STAGE: Registration Review
 
 What we've learned:
 {summary}
 
-Your task: Present this summary warmly and ask if anything needs to be updated.
-Keep it conversational - don't list everything robotically.
-Example: "Let me make sure I have this right - [summarize naturally]. Does that sound correct, or would you like to update anything?"
+Your task: Present the summary warmly and ask whether everything looks right or if they would like to update any contact detail before registration.
+Do not sound transactional or bureaucratic.
 """
     
     elif stage == "onboarding_complete":
         name = confirmed_fields.get("full_name", "")
-        return f"""CURRENT STAGE: Welcome Complete!
+        return f"""CURRENT STAGE: Registration Complete
 
-Your task: Congratulate {name} on completing the onboarding.
-- Express genuine excitement about them joining
-- Let them know what happens next (we'll match them with students)
-- Thank them for their willingness to help
-Keep it warm but brief - don't over-celebrate.
-Example: "Wonderful, {name}! You're all set to begin your journey with eVidyaloka. We'll be in touch soon to connect you with students who'll benefit from your support. Thank you for choosing to make a difference!"
+Your task: Thank {name} warmly and let them know their registration details have been received and the team will take the next step from here.
+Be positive, brief, and reassuring.
 """
     
+    elif stage == "human_review":
+        return """CURRENT STAGE: Review Pending
+
+Your task: Be warm and respectful. Say that the team will review the details and get back shortly.
+Do not say they are ineligible, rejected, or disqualified.
+"""
+
     elif stage == "paused":
         return """CURRENT STAGE: Paused
 
@@ -206,7 +230,16 @@ def _get_field_collection_guidance(missing_fields: List[str], confirmed_fields: 
         return "All essential information has been collected. Focus on confirming and wrapping up."
     
     # Prioritize which field to collect next
-    priority_order = ["full_name", "email", "skills", "availability", "location"]
+    priority_order = [
+        "video_acknowledgement",
+        "age_18_plus",
+        "has_internet",
+        "has_device",
+        "accepts_unpaid_role",
+        "full_name",
+        "phone",
+        "email",
+    ]
     next_field = None
     for field in priority_order:
         if field in missing_fields:
@@ -217,12 +250,15 @@ def _get_field_collection_guidance(missing_fields: List[str], confirmed_fields: 
         next_field = missing_fields[0]
     
     field_prompts = {
+        "video_acknowledgement": "Ask them to reply when they are ready to continue after the video.",
+        "age_18_plus": "Ask politely whether they are 18 years of age or older.",
+        "has_internet": "Ask whether they have a stable internet connection for online classes.",
+        "has_device": "Ask whether they have a suitable device such as a laptop or tablet.",
+        "accepts_unpaid_role": "Clearly mention that this is an unpaid volunteer role and ask if they are comfortable with that.",
         "full_name": "Ask for their name in a friendly, natural way.",
+        "phone": "Ask for their phone number so the team can reach them easily.",
         "email": "Ask for their email address so you can stay connected.",
-        "skills": "Explore what subjects or skills they could share with students.",
-        "availability": "Understand how much time they can dedicate (hours per week, preferred days).",
         "location": "Ask where they're based - this helps with scheduling and matching.",
-        "phone": "Optionally ask if they'd like to share a phone number for coordination.",
         "interests": "Learn what areas of education interest them most.",
     }
     
@@ -241,18 +277,20 @@ def _build_profile_summary(confirmed_fields: Dict) -> str:
     
     if confirmed_fields.get("full_name"):
         parts.append(f"Name: {confirmed_fields['full_name']}")
+    if confirmed_fields.get("phone"):
+        parts.append(f"Phone: {confirmed_fields['phone']}")
     if confirmed_fields.get("email"):
         parts.append(f"Email: {confirmed_fields['email']}")
     if confirmed_fields.get("location"):
         parts.append(f"Location: {confirmed_fields['location']}")
-    if confirmed_fields.get("skills"):
-        skills = confirmed_fields["skills"]
-        if isinstance(skills, list):
-            parts.append(f"Skills: {', '.join(skills)}")
-        else:
-            parts.append(f"Skills: {skills}")
-    if confirmed_fields.get("availability"):
-        parts.append(f"Availability: {confirmed_fields['availability']}")
+    if confirmed_fields.get("age_18_plus") is not None:
+        parts.append(f"18+ confirmed: {'Yes' if confirmed_fields['age_18_plus'] else 'Needs review'}")
+    if confirmed_fields.get("has_internet") is not None:
+        parts.append(f"Internet access: {'Yes' if confirmed_fields['has_internet'] else 'Needs review'}")
+    if confirmed_fields.get("has_device") is not None:
+        parts.append(f"Device access: {'Yes' if confirmed_fields['has_device'] else 'Needs review'}")
+    if confirmed_fields.get("accepts_unpaid_role") is not None:
+        parts.append(f"Understands unpaid role: {'Yes' if confirmed_fields['accepts_unpaid_role'] else 'Needs review'}")
     
     return "\n".join(parts) if parts else "No information collected yet"
 

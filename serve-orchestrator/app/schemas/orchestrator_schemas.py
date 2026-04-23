@@ -64,13 +64,14 @@ class SessionStatus(str, Enum):
 
 
 class OnboardingState(str, Enum):
-    INIT = "init"
-    INTENT_DISCOVERY = "intent_discovery"
-    PURPOSE_ORIENTATION = "purpose_orientation"
-    ELIGIBILITY_CONFIRMATION = "eligibility_confirmation"
-    CAPABILITY_DISCOVERY = "capability_discovery"
-    PROFILE_CONFIRMATION = "profile_confirmation"
+    WELCOME = "welcome"
+    ORIENTATION_VIDEO = "orientation_video"
+    ELIGIBILITY_SCREENING = "eligibility_screening"
+    CONTACT_CAPTURE = "contact_capture"
+    TEACHING_PROFILE = "teaching_profile"
+    REGISTRATION_REVIEW = "registration_review"
     ONBOARDING_COMPLETE = "onboarding_complete"
+    HUMAN_REVIEW = "human_review"
     PAUSED = "paused"
 
 
