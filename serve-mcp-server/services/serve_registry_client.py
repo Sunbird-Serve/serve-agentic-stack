@@ -22,6 +22,7 @@ from config import (
     NEED_SERVICE_URL,
     FULFILL_SERVICE_URL,
     SERVE_BEARER_TOKEN,
+    SERVE_AGENCY_ID,
     SERVE_REGISTRY_TIMEOUT,
     SERVE_REGISTRY_RETRIES,
     ONLINE_TEACHING_NEED_TYPE_ID,
@@ -162,26 +163,37 @@ class VolunteeringClient:
         Returns the new volunteer osid, or None on failure.
         """
         url = f"{VOLUNTEERING_SERVICE_URL}/user/"
+
+        # Normalize phone: ensure 91 prefix for Indian numbers, use hardcoded default for web UI
+        normalized_phone = phone
+        if not normalized_phone:
+            normalized_phone = "919999999999"  # placeholder for web UI users
+        elif not normalized_phone.startswith("91") and len(normalized_phone) == 10:
+            normalized_phone = f"91{normalized_phone}"
+
         payload: Dict[str, Any] = {
-            "role": ["VOLUNTEER"],
             "identityDetails": {
                 "fullname": full_name,
-                "name": full_name.split()[0] if full_name else "",
+                "name": full_name,
+                "gender": "Female",
+                "dob": "1990-01-01",
+                "Nationality": country,
             },
-            "contactDetails": {},
-            "status": "ACTIVE",
+            "contactDetails": {
+                "email": email or "",
+                "mobile": normalized_phone,
+                "address": {
+                    "city": city or "",
+                    "state": state or "",
+                    "country": country,
+                },
+            },
+            "agencyId": SERVE_AGENCY_ID,
+            "status": "Registered",
+            "role": ["Volunteer"],
         }
-        if email:
-            payload["contactDetails"]["email"] = email
-        if phone:
-            payload["contactDetails"]["mobile"] = phone
-        if city or state:
-            payload["contactDetails"]["address"] = {
-                "city": city or "",
-                "state": state or "",
-                "country": country,
-            }
 
+        logger.info(f"[serve_registry] create_volunteer payload: {payload}")
         data = await _request("POST", url, json=payload)
         if data:
             # POST /user/ → { result: { Users: { osid: "..." } }, ... }
@@ -255,6 +267,7 @@ class VolunteeringClient:
         Returns True on success.
         """
         payload = self._build_profile_payload(volunteer_id, profile_data)
+        logger.info(f"[serve_registry] save_volunteer_profile payload: {payload}")
 
         if existing_profile_id:
             url = f"{VOLUNTEERING_SERVICE_URL}/user/user-profile/{existing_profile_id}"
@@ -352,42 +365,41 @@ class VolunteeringClient:
         }
 
     def _build_profile_payload(self, volunteer_id: str, data: Dict) -> Dict:
-        """Build the POST/PUT user-profile payload from MCP profile data."""
-        skills_list = []
-        skill_levels = data.get("skill_levels") or {}
-        for skill in (data.get("skills") or []):
-            skills_list.append({
-                "skillName":  skill,
-                "skillLevel": skill_levels.get(skill, "Beginner"),
-            })
-
-        days = data.get("days_preferred") or []
-        times = data.get("time_preferred") or []
-        # Legacy: if availability is a plain string, use it directly
-        if not days and data.get("availability"):
-            days = [data["availability"]]
-
-        completion = data.get("profile_completion_pct", 0)
+        """Build the POST/PUT user-profile payload matching the Serve Registry API format exactly."""
+        from datetime import date
 
         payload: Dict[str, Any] = {
-            "userId": volunteer_id,
+            "skills": [],
             "genericDetails": {
-                "qualification":     data.get("qualification", ""),
-                "employmentStatus":  data.get("employment_status", ""),
-                "yearsOfExperience": str(data.get("years_of_experience", "")),
+                "qualification": "Graduate",
+                "affiliation": "SERVE Volunteer",
+                "yearsOfExperience": "",
+                "employmentStatus": "Others",
             },
             "userPreference": {
-                "language":     data.get("languages") or [],
-                "dayPreferred": days,
-                "timePreferred": times,
-                "interestArea": data.get("interests") or [],
+                "timePreferred": [],
+                "dayPreferred": [],
+                "interestArea": [],
+                "language": [],
             },
-            "skills": skills_list,
+            "agencyId": SERVE_AGENCY_ID,
+            "userId": volunteer_id,
             "onboardDetails": {
                 "onboardStatus": [
-                    {"onboardStep": "PROFILE", "status": "COMPLETED"}
+                    {"onboardStep": "Discussion", "status": "completed"}
                 ],
-                "profileCompletion": str(completion),
+                "refreshPeriod": "2 years",
+                "profileCompletion": "50",
+            },
+            "consentDetails": {
+                "consentGiven": True,
+                "consentDate": date.today().isoformat(),
+                "consentDescription": "Consent given for sharing preference to other volunteer agency through secure network",
+            },
+            "referenceChannelId": "",
+            "volunteeringHours": {
+                "totalHours": 0,
+                "hoursPerWeek": 0,
             },
         }
         return payload

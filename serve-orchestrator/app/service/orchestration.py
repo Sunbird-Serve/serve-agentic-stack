@@ -506,11 +506,11 @@ class OrchestrationService:
                 auto_response = await agent_router.invoke_agent(auto_routing, auto_request)
 
                 if auto_response.assistant_message:
-                    # Replace engagement closing with fulfillment's opening message.
-                    # If auto_continue is set, pass it through to the UI so it fires
-                    # the follow-up — this gives the volunteer a visible delay between
-                    # the ack and the real response.
+                    # Keep the previous agent's closing message as preliminary_message
+                    # so the UI shows both: closing + next agent's first response.
+                    previous_closing = agent_response.assistant_message
                     agent_response = auto_response
+                    agent_response.preliminary_message = previous_closing
                     logger.info(
                         f"[{session_context.session_id}] Auto-invoked {to_agent_value!r} "
                         f"after handoff — response length={len(auto_response.assistant_message)}, "

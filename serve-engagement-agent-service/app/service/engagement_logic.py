@@ -81,6 +81,9 @@ class EngagementAgentService:
             if not request.session_state.volunteer_name and context.get("volunteer_name"):
                 request.session_state.volunteer_name = context["volunteer_name"]
 
+            # ── New volunteer preference flow (Haiku, 2 stages) ───────────────
+            return await self._handle_new_volunteer_preferences(request, sub_state, session_id)
+
         # ── Pre-load engagement context if not already cached ─────────────────
         context_was_missing = not sub_state.get("engagement_context")
         if context_was_missing and request.session_state.volunteer_phone:
@@ -169,6 +172,233 @@ class EngagementAgentService:
             state=EngagementWorkflowState.RE_ENGAGING.value,
             sub_state=updated_sub_state,
         )
+
+    async def _handle_new_volunteer_preferences(
+        self,
+        request: EngagementAgentTurnRequest,
+        sub_state: dict,
+        session_id: str,
+    ) -> EngagementAgentTurnResponse:
+        """
+        Lightweight preference flow for new volunteers from selection.
+        Uses Haiku via httpx — 2 stages: ask_days → ask_time → handoff.
+        """
+        import httpx
+        import os
+
+        api_key = os.environ.get("EMERGENT_LLM_KEY", "")
+        model = os.environ.get("NEW_VOL_LLM_MODEL", "claude-haiku-4-5-20251001")
+        volunteer_name = request.session_state.volunteer_name or "there"
+
+        # Initialize stage on first entry
+        if not sub_state.get("new_vol_stage"):
+            sub_state["new_vol_stage"] = "ask_days"
+
+        stage = sub_state["new_vol_stage"]
+        user_msg = (request.user_message or "").strip()
+
+        # ── Extract days from user message ────────────────────────────────────
+        if stage == "ask_days" and user_msg and user_msg not in ("__handoff__", "__auto_continue__"):
+            days = self._extract_days(user_msg)
+            if days:
+                sub_state["preferred_days"] = days
+                sub_state["new_vol_stage"] = "ask_time"
+                stage = "ask_time"
+            elif any(w in user_msg.lower() for w in ["flexible", "any day", "anytime", "koi bhi", "koi bhi din"]):
+                sub_state["preferred_days"] = "flexible"
+                sub_state["new_vol_stage"] = "ask_time"
+                stage = "ask_time"
+
+        # ── Extract time from user message ────────────────────────────────────
+        if stage == "ask_time" and user_msg and user_msg not in ("__handoff__", "__auto_continue__"):
+            time_pref = self._extract_time(user_msg)
+            if time_pref:
+                sub_state["preferred_time"] = time_pref
+                sub_state["new_vol_stage"] = "ready"
+                stage = "ready"
+            elif any(w in user_msg.lower() for w in ["flexible", "anytime", "any time", "koi bhi", "kab bhi"]):
+                sub_state["preferred_time"] = "flexible"
+                sub_state["new_vol_stage"] = "ready"
+                stage = "ready"
+
+        # ── Ready: build handoff to fulfillment ───────────────────────────────
+        if stage == "ready":
+            days = sub_state.get("preferred_days", "flexible")
+            time = sub_state.get("preferred_time", "flexible")
+            pref_notes = f"Days: {days}; Time: {time}"
+            sub_state["preference_notes"] = pref_notes
+            sub_state["continuity"] = "different"
+            sub_state["available_from"] = "immediately"
+
+            logger.info(f"Session {session_id}: new vol ready — building handoff. engagement_context volunteer_id={sub_state.get('engagement_context', {}).get('volunteer_id')}, session volunteer_id={request.session_state.volunteer_id}")
+
+            # Try to get volunteer_id from multiple sources
+            vol_id = (
+                sub_state.get("engagement_context", {}).get("volunteer_id")
+                or request.session_state.volunteer_id
+            )
+            # If still None, fetch from MCP session directly
+            if not vol_id:
+                try:
+                    session_data = await domain_client.get_session_details(session_id)
+                    vol_id = session_data.get("session", {}).get("volunteer_id") if isinstance(session_data, dict) else None
+                    logger.info(f"Session {session_id}: fetched volunteer_id from MCP session: {vol_id}")
+                except Exception as e:
+                    logger.warning(f"Session {session_id}: failed to fetch volunteer_id from MCP: {e}")
+
+            # Inject into sub_state so _build_local_payload can find it
+            if vol_id:
+                ctx = sub_state.get("engagement_context") or {}
+                ctx["volunteer_id"] = vol_id
+                sub_state["engagement_context"] = ctx
+                request.session_state.volunteer_id = vol_id
+
+            payload = self._build_local_payload(request, sub_state)
+            logger.info(f"Session {session_id}: handoff payload={'built' if payload else 'NONE'}")
+            if not payload:
+                sub_state["human_review_reason"] = "missing_handoff_context"
+                await domain_client.advance_state(
+                    session_id, EngagementWorkflowState.HUMAN_REVIEW.value, _dump_sub_state(sub_state)
+                )
+                return self._build_response(
+                    message="Thanks! A team member will follow up with you shortly about your placement.",
+                    state=EngagementWorkflowState.HUMAN_REVIEW.value,
+                    sub_state=_dump_sub_state(sub_state),
+                )
+
+            sub_state["handoff"] = payload
+            await domain_client.advance_state(session_id, "active", _dump_sub_state(sub_state))
+
+            message = f"Perfect, {volunteer_name}! Let me find the best teaching opportunity for you based on your preferences... 🔍"
+            await domain_client.save_message(session_id, "assistant", message)
+
+            return self._build_response(
+                message=message,
+                state="active",
+                sub_state=_dump_sub_state(sub_state),
+                handoff_event={
+                    "session_id": str(request.session_id),
+                    "from_agent": "engagement",
+                    "to_agent": "fulfillment",
+                    "handoff_type": "agent_transition",
+                    "payload": payload,
+                    "reason": "New volunteer preferences captured",
+                },
+            )
+
+        # ── Build LLM prompt for current stage ────────────────────────────────
+        if stage == "ask_days":
+            system_prompt = f"""You are the eVidyaloka volunteer assistant. You are talking to {volunteer_name}, a new volunteer.
+
+Your task: Ask which weekdays work best for them to teach. Sessions run Monday to Friday only.
+Go straight to the question — do not introduce yourself or say "nice to meet you" or "let me get to know you".
+Say something like: "Which weekdays work best for you? Our sessions run Monday to Friday."
+If they ask questions, answer briefly and redirect to the days question.
+Keep it to 1-2 sentences. Do not use markdown."""
+        else:  # ask_time
+            days = sub_state.get("preferred_days", "your chosen days")
+            system_prompt = f"""You are the eVidyaloka volunteer assistant. You are talking to {volunteer_name}.
+They have chosen: {days} as their preferred days.
+
+Your task: Ask what time slot works best. Sessions run between 8 AM and 3 PM.
+Say something like: "Great! What time works best for you? Our sessions are between 8 AM and 3 PM."
+If they give a time outside this range, gently redirect.
+If they say morning/afternoon, accept that.
+Keep it to 2-3 sentences. Do not use markdown."""
+
+        # ── Call Haiku ────────────────────────────────────────────────────────
+        messages = []
+        if request.conversation_history:
+            for m in request.conversation_history[-2:]:
+                if m.get("role") in ("user", "assistant") and m.get("content"):
+                    messages.append({"role": m["role"], "content": m["content"]})
+        if user_msg and user_msg not in ("__handoff__", "__auto_continue__"):
+            messages.append({"role": "user", "content": user_msg})
+        if not messages or messages[0]["role"] != "user":
+            messages.insert(0, {"role": "user", "content": "Let's continue."})
+
+        # Deduplicate consecutive same-role
+        cleaned = [messages[0]]
+        for m in messages[1:]:
+            if m["role"] != cleaned[-1]["role"]:
+                cleaned.append(m)
+        messages = cleaned
+
+        text = f"Which weekdays work best for you? Our sessions run Monday to Friday, between 8 AM and 3 PM."
+        if api_key:
+            try:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    resp = await client.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={
+                            "x-api-key": api_key,
+                            "anthropic-version": "2023-06-01",
+                            "content-type": "application/json",
+                        },
+                        json={"model": model, "max_tokens": 300, "system": system_prompt, "messages": messages},
+                    )
+                    resp.raise_for_status()
+                    body = resp.json()
+                    text = body.get("content", [{}])[0].get("text", "").strip() or text
+            except Exception as e:
+                logger.warning(f"Session {session_id}: new vol LLM call failed: {e}")
+
+        updated = _dump_sub_state(sub_state)
+        await domain_client.save_message(session_id, "assistant", text)
+        await domain_client.advance_state(session_id, EngagementWorkflowState.RE_ENGAGING.value, updated)
+
+        return self._build_response(
+            message=text,
+            state=EngagementWorkflowState.RE_ENGAGING.value,
+            sub_state=updated,
+        )
+
+    @staticmethod
+    def _extract_days(message: str) -> Optional[str]:
+        """Extract weekday names from a message."""
+        day_map = {
+            "monday": "Monday", "mon": "Monday",
+            "tuesday": "Tuesday", "tue": "Tuesday", "tues": "Tuesday",
+            "wednesday": "Wednesday", "wed": "Wednesday",
+            "thursday": "Thursday", "thu": "Thursday", "thurs": "Thursday",
+            "friday": "Friday", "fri": "Friday",
+        }
+        lower = message.lower()
+        found = []
+        for keyword, canonical in day_map.items():
+            if re.search(r"\b" + keyword + r"\b", lower):
+                if canonical not in found:
+                    found.append(canonical)
+        # Hindi day names
+        hindi_days = {"somvar": "Monday", "mangalvar": "Tuesday", "budhvar": "Wednesday",
+                      "guruvar": "Thursday", "shukravar": "Friday"}
+        for hindi, canonical in hindi_days.items():
+            if hindi in lower and canonical not in found:
+                found.append(canonical)
+        return ", ".join(found) if found else None
+
+    @staticmethod
+    def _extract_time(message: str) -> Optional[str]:
+        """Extract time preference from a message."""
+        lower = message.lower()
+        # Match patterns like "10 am", "10:00", "2 pm", "10-11"
+        m = re.search(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", lower)
+        if m:
+            hour = int(m.group(1))
+            ampm = (m.group(3) or "").lower()
+            if ampm == "pm" and hour < 12:
+                hour += 12
+            if 8 <= hour <= 15:
+                minute = m.group(2) or "00"
+                suffix = "AM" if hour < 12 else "PM"
+                display_hour = hour if hour <= 12 else hour - 12
+                return f"{display_hour}:{minute} {suffix}"
+        # Natural language
+        if any(w in lower for w in ["morning", "subah", "savere"]):
+            return "Morning (8-11 AM)"
+        if any(w in lower for w in ["afternoon", "dopahar"]):
+            return "Afternoon (12-3 PM)"
+        return None
 
     async def _execute_tool(
         self,

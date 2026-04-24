@@ -18,9 +18,14 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_SUB_STATE: Dict[str, Any] = {
     "engagement_context": {},   # cached from get_engagement_context MCP tool
+    "entry_type": None,         # "selected_new_volunteer" for onboarding→selection path
+    "identity_verified": False,
     "preference_notes": None,   # LLM-captured natural language preference summary
     "continuity": None,         # "same" | "different"
     "preferred_need_id": None,  # need_id from history if continuity=same
+    "preferred_days": None,     # e.g. "Monday, Wednesday" — for new volunteer flow
+    "preferred_time": None,     # e.g. "10 AM" — for new volunteer flow
+    "new_vol_stage": None,      # "ask_days" | "ask_time" | "ready" — for new volunteer flow
     "available_from": None,     # "immediately" | ISO date | natural language
     "handoff": {},              # FulfillmentHandoffPayload once ready
     "human_review_reason": None,
@@ -101,9 +106,14 @@ def _load_sub_state(raw: Optional[str]) -> Dict[str, Any]:
             return dict(_DEFAULT_SUB_STATE)
         return {
             "engagement_context": data.get("engagement_context", {}),
+            "entry_type":         data.get("entry_type"),
+            "identity_verified":  data.get("identity_verified", False),
             "preference_notes":   data.get("preference_notes"),
             "continuity":         data.get("continuity"),
             "preferred_need_id":  data.get("preferred_need_id"),
+            "preferred_days":     data.get("preferred_days"),
+            "preferred_time":     data.get("preferred_time"),
+            "new_vol_stage":      data.get("new_vol_stage"),
             "available_from":     data.get("available_from"),
             "handoff":            data.get("handoff", {}),
             "human_review_reason": data.get("human_review_reason"),
@@ -119,9 +129,14 @@ def _dump_sub_state(sub_state: Dict[str, Any]) -> str:
     """Serialize engagement sub_state to JSON string."""
     return json.dumps({
         "engagement_context":  sub_state.get("engagement_context", {}),
+        "entry_type":          sub_state.get("entry_type"),
+        "identity_verified":   sub_state.get("identity_verified", False),
         "preference_notes":    sub_state.get("preference_notes"),
         "continuity":          sub_state.get("continuity"),
         "preferred_need_id":   sub_state.get("preferred_need_id"),
+        "preferred_days":      sub_state.get("preferred_days"),
+        "preferred_time":      sub_state.get("preferred_time"),
+        "new_vol_stage":       sub_state.get("new_vol_stage"),
         "available_from":      sub_state.get("available_from"),
         "handoff":             sub_state.get("handoff", {}),
         "human_review_reason": sub_state.get("human_review_reason"),

@@ -26,8 +26,8 @@ from services.serve_registry_client import volunteering_client
 logger = logging.getLogger(__name__)
 
 # Required fields for readiness check
-REQUIRED_FIELDS  = ["full_name", "email", "qualification"]
-OPTIONAL_FIELDS  = ["phone", "location", "interests", "skills", "availability", "languages", "motivation"]
+REQUIRED_FIELDS  = ["full_name", "email", "phone", "qualification"]
+OPTIONAL_FIELDS  = ["location", "interests", "skills", "availability", "languages", "motivation"]
 
 # In-memory fallback
 _mem_profiles: Dict[str, Dict] = {}

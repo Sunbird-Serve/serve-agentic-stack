@@ -182,5 +182,9 @@ class DomainClient:
         return await _call_mcp_tool("check_active_nominations", {"volunteer_id": volunteer_id})
 
 
+    async def get_session_details(self, session_id: str) -> Dict:
+        """Get session details including volunteer_id from MCP."""
+        return await _call_mcp_tool("get_session", {"session_id": session_id})
+
 # Singleton
 domain_client = DomainClient()

@@ -8,6 +8,7 @@ engagement for downstream preference capture.
 """
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -30,6 +31,8 @@ from app.schemas.selection_schemas import (
 )
 from app.service.llm_adapter import llm_adapter
 
+# Configurable teaching language
+TEACHING_LANGUAGE = os.environ.get("TEACHING_LANGUAGE", "English")
 
 QUESTION_ORDER = [
     "motivation_alignment",
@@ -48,7 +51,7 @@ QUESTION_PROMPTS = {
         "How do you see volunteering fitting into your routine over the next few months?"
     ),
     "language_comfort": (
-        "How comfortable are you communicating in English and Hindi while teaching?"
+        f"How comfortable are you communicating in {TEACHING_LANGUAGE} while teaching?"
     ),
     "availability_realism": (
         "What kind of time can you realistically commit each week right now?"

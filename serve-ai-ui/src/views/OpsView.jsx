@@ -11,6 +11,7 @@ import { ScrollArea } from '../components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { mcpApi } from '../services/api';
 import AgentDashboard from './AgentDashboard';
+import PipelineDashboard from './PipelineDashboard';
 
 // Status badge component
 const StatusBadge = ({ status }) => {
@@ -324,9 +325,10 @@ export const OpsView = () => {
 
   return (
     <div className="bg-slate-50 min-h-[calc(100vh-64px)]" data-testid="ops-view">
-      <Tabs defaultValue="pipeline" className="w-full">
+      <Tabs defaultValue="pipeline_dashboard" className="w-full">
         <div className="px-6 pt-6 pb-0 flex items-center justify-between">
           <TabsList>
+            <TabsTrigger value="pipeline_dashboard">Pipeline Dashboard</TabsTrigger>
             <TabsTrigger value="pipeline">Onboarding Pipeline</TabsTrigger>
             <TabsTrigger value="recommended">Recommended Volunteers</TabsTrigger>
             <TabsTrigger value="agents">Agent Dashboard</TabsTrigger>
@@ -342,6 +344,11 @@ export const OpsView = () => {
             Refresh
           </Button>
         </div>
+
+        {/* ── Pipeline Dashboard tab ── */}
+        <TabsContent value="pipeline_dashboard">
+          <PipelineDashboard />
+        </TabsContent>
 
         {/* ── Onboarding Pipeline tab ── */}
         <TabsContent value="pipeline" className="p-6 pt-4">

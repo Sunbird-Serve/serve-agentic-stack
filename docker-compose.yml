@@ -198,6 +198,7 @@ services:
       - MCP_SERVER_URL=http://serve-mcp-server:8004
       - LLM_MODEL=claude-sonnet-4-5-20250929
       - EMERGENT_LLM_KEY=${EMERGENT_LLM_KEY}
+      - TEACHING_LANGUAGE=${TEACHING_LANGUAGE:-English}
     ports:
       - "8009:8009"
     depends_on:

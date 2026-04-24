@@ -138,10 +138,44 @@ export const VolunteerView = ({ onBack }) => {
     try {
       const response = await orchestratorApi.interact(sessionId, userMessage);
       setSessionId(response.session_id);
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: response.assistant_message },
-      ]);
+      const newMessages = [];
+      if (response.preliminary_message) {
+        newMessages.push({ role: 'assistant', content: response.preliminary_message });
+      }
+      newMessages.push({ role: 'assistant', content: response.assistant_message });
+      setMessages((prev) => [...prev, ...newMessages]);
+      if (response.journey_progress) {
+        setJourneyState({
+          currentState: response.state,
+          progressPercent: response.journey_progress.progress_percent || 0,
+          confirmedFields: response.journey_progress.confirmed_fields || {},
+          missingFields: response.journey_progress.missing_fields || [],
+        });
+      }
+
+      // Auto-continue: if the agent wants a follow-up turn, fire it automatically
+      if (response.auto_continue && response.session_id) {
+        try {
+          const followUp = await orchestratorApi.interact(response.session_id, '__auto_continue__');
+          const followUpMessages = [];
+          if (followUp.preliminary_message) {
+            followUpMessages.push({ role: 'assistant', content: followUp.preliminary_message });
+          }
+          followUpMessages.push({ role: 'assistant', content: followUp.assistant_message });
+          setMessages((prev) => [...prev, ...followUpMessages]);
+          setSessionId(followUp.session_id);
+          if (followUp.journey_progress) {
+            setJourneyState({
+              currentState: followUp.state,
+              progressPercent: followUp.journey_progress.progress_percent || 0,
+              confirmedFields: followUp.journey_progress.confirmed_fields || {},
+              missingFields: followUp.journey_progress.missing_fields || [],
+            });
+          }
+        } catch (autoErr) {
+          console.error('Auto-continue failed:', autoErr);
+        }
+      }
       if (response.journey_progress) {
         setJourneyState({
           currentState: response.state,

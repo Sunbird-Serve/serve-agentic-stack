@@ -68,35 +68,29 @@ Do NOT share videos. Do NOT ask for name, email, or any details. Just welcome an
 
     if stage == "orientation_video":
         welcome_response = confirmed_fields.get("welcome_response") or ""
-        welcome_vid = ONBOARDING_WELCOME_VIDEO_URL
         classroom_vid = ONBOARDING_CLASSROOM_VIDEO_URL
 
-        # Determine which videos to include based on volunteer's response
-        videos_to_show = []
-        response_lower = welcome_response.lower()
-        if any(t in response_lower for t in ["curious", "explore", "what is", "tell me", "know more", "learn about"]):
-            videos_to_show = [("Welcome message from our coordinator", welcome_vid)]
-        elif any(t in response_lower for t in ["teach", "class", "session", "how does", "start", "ready"]):
-            videos_to_show = [("A glimpse of an actual online class", classroom_vid)]
-        else:
-            videos_to_show = [
-                ("Welcome message from our coordinator", welcome_vid),
-                ("A glimpse of an actual online class", classroom_vid),
-            ]
-
-        video_tags = "\n".join(f'[VIDEO:{url}|{label}]' for label, url in videos_to_show)
-
-        return f"""{_BASE_CONTEXT}
+        if classroom_vid:
+            return f"""{_BASE_CONTEXT}
 
 CURRENT STAGE: Orientation
 
 The volunteer said: "{welcome_response}"
 
-Your task: Write a brief warm message (1-2 sentences) introducing the video(s) below. Then include the video tags EXACTLY as shown — do not modify them. End by asking the volunteer to reply "done" or "ready" when they have watched.
+Your task: Write a brief warm message (1-2 sentences) introducing the video below — it shows a glimpse of an actual online class with eVidyaloka. Then include the video tag EXACTLY as shown. End by asking the volunteer to reply "done" or "ready" when they have watched.
 
-{video_tags}
+[VIDEO:{classroom_vid}|A glimpse of an actual eVidyaloka online class]
 
-IMPORTANT: Include the [VIDEO:...] tags exactly as they appear above in your response. The system will render them as embedded videos. Do not convert them to links or remove them."""
+IMPORTANT: Include the [VIDEO:...] tag exactly as it appears above in your response. The system will render it as an embedded video. Do not convert it to a link or remove it."""
+        else:
+            return f"""{_BASE_CONTEXT}
+
+CURRENT STAGE: Orientation
+
+The volunteer said: "{welcome_response}"
+
+Your task: Briefly explain how eVidyaloka works — volunteers teach online for 2-3 hours a week, connecting with rural school students via video call. Then ask if they are ready to continue.
+Do NOT ask eligibility or profile questions."""
 
     if stage == "eligibility_screening":
         # Check for pending clarifications
@@ -142,6 +136,7 @@ Your ENTIRE response must be about this eligibility question."""
     if stage == "contact_capture":
         name = confirmed_fields.get("full_name")
         email = confirmed_fields.get("email")
+        phone = confirmed_fields.get("phone")
         qualification = confirmed_fields.get("qualification")
 
         if not name:
@@ -151,7 +146,7 @@ CURRENT STAGE: Contact Details — Name
 
 Your task: Ask for the volunteer's full name. Nothing else.
 Example: "Could you share your full name?"
-Do NOT ask for email, qualification, or anything else."""
+Do NOT ask for email, phone, qualification, or anything else."""
 
         if not email:
             return f"""{_BASE_CONTEXT}
@@ -161,6 +156,17 @@ CURRENT STAGE: Contact Details — Email
 We know: Name = {name}
 
 Your task: Thank them briefly, then ask for their email address. Nothing else.
+Do NOT ask for phone, qualification, or anything else."""
+
+        if not phone:
+            return f"""{_BASE_CONTEXT}
+
+CURRENT STAGE: Contact Details — Phone
+
+We know: Name = {name}, Email = {email}
+
+Your task: Ask for their phone number so the team can reach them. Nothing else.
+Example: "Could you share your phone number?"
 Do NOT ask for qualification or anything else."""
 
         if not qualification:
@@ -168,7 +174,7 @@ Do NOT ask for qualification or anything else."""
 
 CURRENT STAGE: Contact Details — Qualification
 
-We know: Name = {name}, Email = {email}
+We know: Name = {name}, Email = {email}, Phone = {phone}
 
 Your task: Ask about their educational qualification. Nothing else.
 Example: "What is your educational qualification?"
@@ -192,7 +198,6 @@ All details captured. Thank them briefly and say you will now show a quick summa
         if phone: summary_parts.append(f"Phone: {phone}")
         if qualification: summary_parts.append(f"Qualification: {qualification}")
         summary = "\n".join(summary_parts)
-
         return f"""{_BASE_CONTEXT}
 
 CURRENT STAGE: Registration Review
@@ -210,10 +215,7 @@ Your ENTIRE response is the summary + confirmation question. Nothing else."""
 
 CURRENT STAGE: Registration Complete
 
-Your task: Thank {name} warmly for completing registration. Then say something like:
-"Your registration is done! Before we match you with a school, I would like to get to know you a little better so we can find the right fit for you."
-
-Keep it to 2-3 sentences. Be positive and reassuring. Do not ask any questions — the next agent will take over."""
+Your task: Thank {name} briefly for completing registration. Keep it to ONE short sentence like "Your registration is complete, {name}!" Do not mention next steps, matching, schools, or getting to know them. Just a brief celebration."""
 
     if stage == "human_review":
         return f"""{_BASE_CONTEXT}

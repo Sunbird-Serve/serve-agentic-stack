@@ -211,7 +211,7 @@ class SelectionLLMAdapter:
 
         # Ensure at least one user message — on handoff the history may be empty
         if not current_messages or current_messages[0]["role"] != "user":
-            current_messages.insert(0, {"role": "user", "content": "I just completed onboarding and am ready for the next step."})
+            current_messages.insert(0, {"role": "user", "content": "Let's continue."})
 
         try:
             for iteration in range(max_tool_iterations):

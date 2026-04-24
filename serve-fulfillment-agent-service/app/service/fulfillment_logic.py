@@ -76,7 +76,7 @@ class FulfillmentAgentService:
         )
 
         if is_handoff_turn and handoff:
-            ack_message = "Give me a moment while I find the best teaching opportunity for you... 🔍"
+            ack_message = "Searching for available opportunities... 🔍"
             # Run match finder now so it's cached for the auto-continue turn
             logger.info(f"Session {session_id}: running MatchFinder")
             match_result = await match_finder.find(handoff)
@@ -138,14 +138,14 @@ class FulfillmentAgentService:
             messages.append({"role": "user", "content": request.user_message})
         elif request.user_message == "__auto_continue__":
             # Auto-continue after ack — inject ack as prior turn so LLM continues from it
-            ack = "Give me a moment while I find the best teaching opportunity for you... 🔍"
+            ack = "Searching for available opportunities... 🔍"
             if not messages:
                 messages = [
                     {"role": "assistant", "content": ack},
-                    {"role": "user", "content": "Please show me what you found."},
+                    {"role": "user", "content": "Show me what you found."},
                 ]
         elif request.user_message == "__handoff__" and not messages:
-            messages.append({"role": "user", "content": "Please find me a teaching opportunity."})
+            messages.append({"role": "user", "content": "Find me a teaching opportunity."})
 
         async def tool_executor(tool_name: str, tool_input: Dict[str, Any]) -> Any:
             return await self._execute_tool(tool_name, tool_input, sub_state, session_id)

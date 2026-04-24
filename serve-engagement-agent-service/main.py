@@ -55,7 +55,7 @@ async def process_turn(request: Request):
         workflow = session_state.get("workflow", "")
         stage = session_state.get("stage", "")
 
-        if workflow == "recommended_volunteer" or stage in {"verifying_identity", "gathering_preferences", "not_registered"}:
+        if workflow == "recommended_volunteer":
             req = RecommendedAgentTurnRequest(**body)
             response = await recommended_handler.process_turn(req)
             return response.model_dump(mode="json")

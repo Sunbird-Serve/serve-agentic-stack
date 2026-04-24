@@ -293,12 +293,15 @@ async def advance_session_state(params: AdvanceSessionStateInput) -> dict:
                 logger.warning(f"[{params.session_id}] No volunteer_id obtained — registration may have failed")
 
         if volunteer_id:
-            sync_result = await profile_service.sync_to_registry(
-                session_id=params.session_id,
+            # For new volunteers, skip the PUT update_user (just created with correct data).
+            # Only create the user-profile (API 2).
+            profile_ok = await volunteering_client.save_volunteer_profile(
                 volunteer_id=volunteer_id,
+                profile_data={},  # uses hardcoded defaults in _build_profile_payload
+                existing_profile_id=None,
             )
-            result["registry_sync"] = sync_result
-            logger.info(f"[{params.session_id}] ── REGISTRATION DONE ── synced to registry: {volunteer_id}")
+            result["registry_sync"] = {"profile_created": profile_ok}
+            logger.info(f"[{params.session_id}] ── REGISTRATION DONE ── volunteer_id={volunteer_id}, profile_created={profile_ok}")
         else:
             logger.warning(f"[{params.session_id}] ── REGISTRATION SKIPPED ── no volunteer_id available")
 

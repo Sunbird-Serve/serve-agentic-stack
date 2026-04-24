@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 # ── Required fields ─────────────────────────────────────────────────────────────
 # These gate state transitions. The flow cannot advance until all are captured.
-CONTACT_FIELDS = ["full_name", "email", "qualification"]
+CONTACT_FIELDS = ["full_name", "email", "phone", "qualification"]
 ELIGIBILITY_FIELDS = ["age_18_plus", "has_internet_and_device", "accepts_unpaid_role"]
 
 DEFAULT_SUB_STATE: Dict[str, Any] = {
@@ -253,9 +253,15 @@ def _extract_age_eligibility(message: str) -> Optional[bool]:
 
 def _extract_video_ack(message: str) -> bool:
     lower = message.lower()
+    # Accept any positive/engaged response as video acknowledgement
     return _matches_any(lower, [
         r"\bdone\b", r"\bwatched\b", r"\bcontinue\b", r"\bready\b",
-        r"\bok\b", r"\bokay\b", r"\byes\b",
+        r"\bok\b", r"\bokay\b", r"\byes\b", r"\byeah\b", r"\byep\b",
+        r"\bnice\b", r"\bwow\b", r"\bgreat\b", r"\bgood\b", r"\bcool\b",
+        r"\bawesome\b", r"\bamazing\b", r"\binteresting\b", r"\bloved\b",
+        r"\bthanks\b", r"\bthank\b", r"\bgot it\b", r"\bnoted\b",
+        r"\bseen\b", r"\bsaw\b", r"\bsure\b", r"\bhaan\b", r"\bji\b",
+        r"\baccha\b", r"\bbadhiya\b", r"\bsahi\b", r"\btheek\b",
     ])
 
 

@@ -35,6 +35,9 @@ FULFILL_SERVICE_URL = f"{SERVE_BASE_URL}{FULFILL_API_PATH}"
 # deployments; an empty string means the Authorization header is omitted.
 SERVE_BEARER_TOKEN = os.environ.get("SERVE_BEARER_TOKEN", "")
 
+# Agency ID for volunteer registration
+SERVE_AGENCY_ID = os.environ.get("SERVE_AGENCY_ID", "1-74f81200-dc16-4c65-bf7a-a3ab75952432")
+
 # Static API key protecting the dashboard endpoints.
 # Set DASHBOARD_API_KEY in .env — if empty, dashboard is unprotected (dev only).
 DASHBOARD_API_KEY = os.environ.get("DASHBOARD_API_KEY", "")
