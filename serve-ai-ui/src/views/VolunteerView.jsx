@@ -20,47 +20,52 @@ const TypingIndicator = () => (
 );
 
 // Parse message content — renders [VIDEO:url|label] tags as embedded video players
-// and progress markers ([DONE]/[NOW]/[NEXT]) as a visual progress bar
+// and progress chains (✅/🔵/○ with arrows) as a visual progress bar
 const RichContent = ({ text }) => {
-  // Check for progress markers
-  const PROGRESS_LINE_RE = /^\[(DONE|NOW|NEXT)\]\s+(.+)$/gm;
-  const progressLines = [];
+  // Check for progress chain: "✅ Step  →  🔵 Step  →  ○ Step"
+  const PROGRESS_CHAIN_RE = /([✅🔵○])\s+([^→]+)/g;
+  const hasChain = text.includes('→') && (text.includes('✅') || text.includes('🔵'));
   let match;
-  const testText = text;
-  while ((match = PROGRESS_LINE_RE.exec(testText)) !== null) {
-    progressLines.push({ marker: match[1], label: match[2] });
-  }
 
-  if (progressLines.length >= 3) {
-    // Extract non-progress text (e.g. "Registration complete!")
-    const nonProgressText = text.replace(/\[(DONE|NOW|NEXT)\]\s+.+\n?/g, '').trim();
-    return (
-      <>
-        {nonProgressText && <p className="mb-2">{nonProgressText}</p>}
-        <div className="my-3 space-y-1.5">
-          {progressLines.map((line, i) => {
-            const isDone = line.marker === 'DONE';
-            const isCurrent = line.marker === 'NOW';
-            return (
-              <div key={i} className="flex items-center gap-2">
-                <div className={`w-5 h-5 rounded-full flex items-center justify-center text-xs shrink-0 ${
-                  isDone ? 'bg-emerald-500 text-white' :
-                  isCurrent ? 'bg-amber-500 text-white animate-pulse' :
-                  'bg-slate-200 text-slate-400'
-                }`}>
-                  {isDone ? '✓' : isCurrent ? '→' : (i + 1)}
-                </div>
-                <span className={`text-sm ${
-                  isDone ? 'text-emerald-700 line-through opacity-70' :
-                  isCurrent ? 'text-amber-700 font-medium' :
-                  'text-slate-400'
-                }`}>{line.label}</span>
-              </div>
-            );
-          })}
-        </div>
-      </>
-    );
+  if (hasChain) {
+    // Split into header line(s) and the chain line
+    const lines = text.split('\n');
+    const chainLine = lines.find(l => l.includes('→') && (l.includes('✅') || l.includes('🔵')));
+    const headerLines = lines.filter(l => l !== chainLine).map(l => l.trim()).filter(Boolean);
+
+    if (chainLine) {
+      const steps = [];
+      while ((match = PROGRESS_CHAIN_RE.exec(chainLine)) !== null) {
+        steps.push({ marker: match[1], label: match[2].trim().replace(/→\s*$/, '').trim() });
+      }
+
+      if (steps.length >= 3) {
+        return (
+          <>
+            {headerLines.map((line, i) => <p key={i} className="mb-1 text-sm">{line}</p>)}
+            <div className="my-3 flex flex-wrap items-center gap-1">
+              {steps.map((step, i) => {
+                const isDone = step.marker === '✅';
+                const isCurrent = step.marker === '🔵';
+                return (
+                  <div key={i} className="flex items-center gap-1">
+                    {i > 0 && <span className="text-slate-300 text-xs mx-0.5">→</span>}
+                    <div className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs ${
+                      isDone ? 'bg-emerald-100 text-emerald-700' :
+                      isCurrent ? 'bg-blue-100 text-blue-700 font-medium ring-1 ring-blue-300' :
+                      'bg-slate-100 text-slate-400'
+                    }`}>
+                      <span>{step.marker}</span>
+                      <span>{step.label}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        );
+      }
+    }
   }
 
   // Check for video tags
@@ -77,14 +82,8 @@ const RichContent = ({ text }) => {
     parts.push(
       <div key={match.index} className="my-2">
         <p className="text-xs text-slate-500 mb-1">{label}</p>
-        <video
-          controls
-          preload="metadata"
-          className="rounded-lg w-full max-w-sm"
-          style={{ maxHeight: '240px' }}
-        >
+        <video controls preload="metadata" className="rounded-lg w-full max-w-sm" style={{ maxHeight: '240px' }}>
           <source src={url} type="video/mp4" />
-          Your browser does not support video playback.
         </video>
       </div>
     );
@@ -92,9 +91,7 @@ const RichContent = ({ text }) => {
   }
 
   if (parts.length > 0) {
-    if (lastIndex < text.length) {
-      parts.push(<span key={lastIndex}>{text.slice(lastIndex)}</span>);
-    }
+    if (lastIndex < text.length) parts.push(<span key={lastIndex}>{text.slice(lastIndex)}</span>);
     return <>{parts}</>;
   }
 

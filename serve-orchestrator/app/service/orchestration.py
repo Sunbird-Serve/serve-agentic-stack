@@ -511,28 +511,20 @@ class OrchestrationService:
                     transition_lines = {
                         ("onboarding", "selection"): (
                             "Registration complete!\n\n"
-                            "[DONE] Orientation & Registration\n"
-                            "[NOW] Getting to Know You\n"
-                            "[NEXT] Schedule Preferences\n"
-                            "[NEXT] Teaching Assignment"
+                            "Step 2/4 → Getting to Know You\n"
+                            "✅ Orientation & Registration  →  🔵 Getting to Know You  →  ○ Schedule Preferences  →  ○ Teaching Assignment"
                         ),
                         ("selection", "engagement"): (
-                            "[DONE] Orientation & Registration\n"
-                            "[DONE] Getting to Know You\n"
-                            "[NOW] Schedule Preferences\n"
-                            "[NEXT] Teaching Assignment"
+                            "Step 3/4 → Schedule Preferences\n"
+                            "✅ Orientation & Registration  →  ✅ Getting to Know You  →  🔵 Schedule Preferences  →  ○ Teaching Assignment"
                         ),
                         ("engagement", "fulfillment"): (
-                            "[DONE] Orientation & Registration\n"
-                            "[DONE] Getting to Know You\n"
-                            "[DONE] Schedule Preferences\n"
-                            "[NOW] Teaching Assignment"
+                            "Step 4/4 → Teaching Assignment\n"
+                            "✅ Orientation & Registration  →  ✅ Getting to Know You  →  ✅ Schedule Preferences  →  🔵 Teaching Assignment"
                         ),
                         ("recommended_handler", "fulfillment"): (
-                            "[DONE] Orientation & Registration\n"
-                            "[DONE] Getting to Know You\n"
-                            "[DONE] Schedule Preferences\n"
-                            "[NOW] Teaching Assignment"
+                            "Step 4/4 → Teaching Assignment\n"
+                            "✅ Orientation & Registration  →  ✅ Getting to Know You  →  ✅ Schedule Preferences  →  🔵 Teaching Assignment"
                         ),
                     }
                     transition = transition_lines.get(

@@ -132,6 +132,45 @@ async def _wa_send(to: str, text: str) -> None:
             logger.error(f"WhatsApp send failed: {e}")
 
 
+import re as _re
+
+_VIDEO_TAG_RE = _re.compile(r'\[VIDEO:(.*?)\|(.*?)\]')
+
+
+async def _wa_send_rich(to: str, text: str) -> None:
+    """
+    Send a message to WhatsApp, handling [VIDEO:url|caption] tags.
+    Videos are uploaded to WhatsApp and sent as native video messages.
+    Text around the tags is sent as regular text messages.
+    """
+    from app.channel.wa_media import fetch_and_send_video
+
+    # Find all video tags
+    video_matches = list(_VIDEO_TAG_RE.finditer(text))
+
+    if not video_matches:
+        # No video tags — send as plain text
+        await _wa_send(to, text)
+        return
+
+    # Strip video tags from text and send the text part first
+    text_only = _VIDEO_TAG_RE.sub('', text).strip()
+    if text_only:
+        await _wa_send(to, text_only)
+
+    # Send each video as a native WhatsApp video message
+    for match in video_matches:
+        video_url = match.group(1)
+        # Rewrite localhost URLs to Docker internal hostname for container-to-container fetch
+        video_url = video_url.replace("http://localhost:8002", "http://serve-onboarding-agent-service:8002")
+        caption = match.group(2)
+        logger.info(f"Sending WhatsApp video: url={video_url}, caption={caption}")
+        ok = await fetch_and_send_video(to, video_url, caption)
+        if not ok:
+            logger.warning(f"WhatsApp video send failed for {video_url} — sending caption as text fallback")
+            await _wa_send(to, f"🎥 {caption}")
+
+
 async def _wa_mark_read(message_id: str) -> None:
     """Mark a message as read (blue ticks) and show typing indicator to the sender."""
     if not _WA_TOKEN or not _WA_PHONE_NUMBER_ID:
@@ -256,9 +295,9 @@ async def wa_receive(request: Request):
 
                         # Send preliminary message as a separate bubble if present
                         if getattr(resp, 'preliminary_message', None):
-                            await _wa_send(phone, resp.preliminary_message)
+                            await _wa_send_rich(phone, resp.preliminary_message)
 
-                        await _wa_send(phone, resp.assistant_message)
+                        await _wa_send_rich(phone, resp.assistant_message)
 
                         # Auto-continue: agent wants a follow-up turn (e.g. ack → real response)
                         if getattr(resp, 'auto_continue', False):
@@ -273,9 +312,9 @@ async def wa_receive(request: Request):
                             )
                             followup_resp = await orchestration_service.process_interaction(followup_req)
                             if getattr(followup_resp, 'preliminary_message', None):
-                                await _wa_send(phone, followup_resp.preliminary_message)
+                                await _wa_send_rich(phone, followup_resp.preliminary_message)
                             if followup_resp.assistant_message:
-                                await _wa_send(phone, followup_resp.assistant_message)
+                                await _wa_send_rich(phone, followup_resp.assistant_message)
                     except Exception as e:
                         logger.error(f"Error handling WhatsApp message from {phone[:6]}***: {e}")
                         await _wa_send(phone, "Something went wrong. Please try again in a moment.")
