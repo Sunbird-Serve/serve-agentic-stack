@@ -53,18 +53,42 @@ def _build_stage_prompt(
     """Build the complete system prompt for a single turn."""
 
     if stage == "welcome":
-        return f"""{_BASE_CONTEXT}
+        consent_given = confirmed_fields.get("consent_given") or False
+        welcome_shown = confirmed_fields.get("welcome_shown") or False
+
+        if not welcome_shown or not consent_given:
+            # Turn 1: Welcome + steps + "shall we begin?"
+            return f"""{_BASE_CONTEXT}
 
 CURRENT STAGE: Welcome
 
-Your task: Give a warm welcome. Introduce eVidyaloka and Project Serve in Uttar Pradesh in 3-4 sentences:
-- eVidyaloka is a non-profit connecting volunteers with children in rural India for online teaching.
+Your task: Give a warm welcome. Introduce eVidyaloka and Project Serve in Uttar Pradesh in 2-3 sentences:
+- eVidyaloka connects volunteers with children in rural India for online teaching.
 - Project Serve brings quality English education to government school students in grades 6-8 in UP.
 - Volunteers teach online for just 2-3 hours a week.
 
-End with: "What brings you to eVidyaloka?" or "What made you interested in volunteering?"
+Then show the journey steps EXACTLY like this (plain text, include the emojis):
 
-Do NOT share videos. Do NOT ask for name, email, or any details. Just welcome and ask why they are here."""
+Here is what we will do together:
+1. Orientation & Registration
+2. Getting to Know You
+3. Schedule Preferences
+4. Teaching Assignment
+
+End with: "Shall we begin?" or "Ready to get started?"
+
+Do NOT ask why they are here yet. Do NOT share videos. Do NOT ask for name or email. Just welcome, show the 4 steps, and ask if they are ready to begin."""
+        else:
+            # Turn 2: Consent given → ask intent
+            return f"""{_BASE_CONTEXT}
+
+CURRENT STAGE: Welcome — Intent
+
+The volunteer has agreed to begin.
+
+Your task: Ask what brings them to eVidyaloka. Say something like: "What brings you to eVidyaloka?" or "What made you interested in volunteering with us?"
+
+Keep it to 1 sentence. Do NOT share videos. Do NOT ask for name or email."""
 
     if stage == "orientation_video":
         welcome_response = confirmed_fields.get("welcome_response") or ""

@@ -506,11 +506,42 @@ class OrchestrationService:
                 auto_response = await agent_router.invoke_agent(auto_routing, auto_request)
 
                 if auto_response.assistant_message:
-                    # Keep the previous agent's closing message as preliminary_message
-                    # so the UI shows both: closing + next agent's first response.
-                    previous_closing = agent_response.assistant_message
+                    # Hardcoded transition line based on handoff pair
+                    from_agent = agent_response.handoff_event.from_agent.value
+                    transition_lines = {
+                        ("onboarding", "selection"): (
+                            "Registration complete!\n\n"
+                            "[DONE] Orientation & Registration\n"
+                            "[NOW] Getting to Know You\n"
+                            "[NEXT] Schedule Preferences\n"
+                            "[NEXT] Teaching Assignment"
+                        ),
+                        ("selection", "engagement"): (
+                            "[DONE] Orientation & Registration\n"
+                            "[DONE] Getting to Know You\n"
+                            "[NOW] Schedule Preferences\n"
+                            "[NEXT] Teaching Assignment"
+                        ),
+                        ("engagement", "fulfillment"): (
+                            "[DONE] Orientation & Registration\n"
+                            "[DONE] Getting to Know You\n"
+                            "[DONE] Schedule Preferences\n"
+                            "[NOW] Teaching Assignment"
+                        ),
+                        ("recommended_handler", "fulfillment"): (
+                            "[DONE] Orientation & Registration\n"
+                            "[DONE] Getting to Know You\n"
+                            "[DONE] Schedule Preferences\n"
+                            "[NOW] Teaching Assignment"
+                        ),
+                    }
+                    transition = transition_lines.get(
+                        (from_agent, to_agent_value),
+                        None
+                    )
                     agent_response = auto_response
-                    agent_response.preliminary_message = previous_closing
+                    if transition:
+                        agent_response.preliminary_message = transition
                     logger.info(
                         f"[{session_context.session_id}] Auto-invoked {to_agent_value!r} "
                         f"after handoff — response length={len(auto_response.assistant_message)}, "

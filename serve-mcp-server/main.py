@@ -244,6 +244,7 @@ async def advance_session_state(params: AdvanceSessionStateInput) -> dict:
     if params.new_state == "onboarding_complete":
         logger.info(f"[{params.session_id}] ── REGISTRATION START ── onboarding_complete triggered")
         from services.database import get_db, Session as DBSession, is_db_healthy
+        from services.firebase_service import ensure_user as firebase_ensure_user
         from sqlalchemy import update as sa_update
         from uuid import UUID
 
@@ -258,6 +259,18 @@ async def advance_session_state(params: AdvanceSessionStateInput) -> dict:
             email = profile.get("email")
             logger.info(f"[{params.session_id}] profile for registration: name={profile.get('full_name')}, email={email}, phone={profile.get('phone')}, qualification={profile.get('qualification')}")
 
+            # ── Step 1: Firebase auth — create user + send password reset ──────
+            if email:
+                firebase_result = await firebase_ensure_user(
+                    email=email,
+                    display_name=profile.get("full_name", ""),
+                    create_if_missing=True,
+                    generate_reset_link=True,
+                )
+                logger.info(f"[{params.session_id}] Firebase result: status={firebase_result.get('status')}, uid={firebase_result.get('firebase_uid')}, reset_sent={firebase_result.get('reset_email_sent')}")
+                result["firebase"] = firebase_result
+
+            # ── Step 2: Serve Registry — check duplicate + create ──────────────
             if email:
                 existing = await volunteering_client.lookup_by_email(email)
                 logger.info(f"[{params.session_id}] lookup_by_email({email}) result: {existing}")

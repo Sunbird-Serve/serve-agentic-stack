@@ -37,6 +37,7 @@ services:
       - FULFILL_API_PATH=${FULFILL_API_PATH:-/api/v1/serve-fulfill}
       - SERVE_REGISTRY_TIMEOUT=20
       - SERVE_REGISTRY_RETRIES=3
+      - FIREBASE_API_KEY=${FIREBASE_API_KEY:-}
     ports:
       - "8004:8004"
     depends_on:

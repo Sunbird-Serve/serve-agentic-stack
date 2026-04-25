@@ -20,11 +20,53 @@ const TypingIndicator = () => (
 );
 
 // Parse message content — renders [VIDEO:url|label] tags as embedded video players
+// and progress markers ([DONE]/[NOW]/[NEXT]) as a visual progress bar
 const RichContent = ({ text }) => {
+  // Check for progress markers
+  const PROGRESS_LINE_RE = /^\[(DONE|NOW|NEXT)\]\s+(.+)$/gm;
+  const progressLines = [];
+  let match;
+  const testText = text;
+  while ((match = PROGRESS_LINE_RE.exec(testText)) !== null) {
+    progressLines.push({ marker: match[1], label: match[2] });
+  }
+
+  if (progressLines.length >= 3) {
+    // Extract non-progress text (e.g. "Registration complete!")
+    const nonProgressText = text.replace(/\[(DONE|NOW|NEXT)\]\s+.+\n?/g, '').trim();
+    return (
+      <>
+        {nonProgressText && <p className="mb-2">{nonProgressText}</p>}
+        <div className="my-3 space-y-1.5">
+          {progressLines.map((line, i) => {
+            const isDone = line.marker === 'DONE';
+            const isCurrent = line.marker === 'NOW';
+            return (
+              <div key={i} className="flex items-center gap-2">
+                <div className={`w-5 h-5 rounded-full flex items-center justify-center text-xs shrink-0 ${
+                  isDone ? 'bg-emerald-500 text-white' :
+                  isCurrent ? 'bg-amber-500 text-white animate-pulse' :
+                  'bg-slate-200 text-slate-400'
+                }`}>
+                  {isDone ? '✓' : isCurrent ? '→' : (i + 1)}
+                </div>
+                <span className={`text-sm ${
+                  isDone ? 'text-emerald-700 line-through opacity-70' :
+                  isCurrent ? 'text-amber-700 font-medium' :
+                  'text-slate-400'
+                }`}>{line.label}</span>
+              </div>
+            );
+          })}
+        </div>
+      </>
+    );
+  }
+
+  // Check for video tags
   const VIDEO_RE = /\[VIDEO:(.*?)\|(.*?)\]/g;
   const parts = [];
   let lastIndex = 0;
-  let match;
 
   while ((match = VIDEO_RE.exec(text)) !== null) {
     if (match.index > lastIndex) {
@@ -49,11 +91,14 @@ const RichContent = ({ text }) => {
     lastIndex = match.index + match[0].length;
   }
 
-  if (lastIndex < text.length) {
-    parts.push(<span key={lastIndex}>{text.slice(lastIndex)}</span>);
+  if (parts.length > 0) {
+    if (lastIndex < text.length) {
+      parts.push(<span key={lastIndex}>{text.slice(lastIndex)}</span>);
+    }
+    return <>{parts}</>;
   }
 
-  return parts.length > 0 ? <>{parts}</> : <>{text}</>;
+  return <>{text}</>;
 };
 
 // Message bubble component

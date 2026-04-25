@@ -43,6 +43,7 @@ DEFAULT_SUB_STATE: Dict[str, Any] = {
     "resume_stage": OnboardingState.ORIENTATION_VIDEO.value,
     "video_acknowledged": False,
     "welcome_shown": False,
+    "consent_given": False,
     "welcome_response": None,
     "eligibility": {
         "age_18_plus": None,
@@ -204,6 +205,7 @@ def _load_sub_state(raw: Optional[str]) -> Dict[str, Any]:
         merged["eligibility_pending_negative"] = data.get("eligibility_pending_negative") or {}
         merged["welcome_response"] = data.get("welcome_response")
         merged["welcome_shown"] = data.get("welcome_shown", False)
+        merged["consent_given"] = data.get("consent_given", False)
         return merged
     except (json.JSONDecodeError, ValueError):
         return json.loads(json.dumps(DEFAULT_SUB_STATE))
@@ -214,6 +216,7 @@ def _dump_sub_state(sub_state: Dict[str, Any]) -> str:
         "resume_stage": sub_state.get("resume_stage"),
         "video_acknowledged": sub_state.get("video_acknowledged", False),
         "welcome_shown": sub_state.get("welcome_shown", False),
+        "consent_given": sub_state.get("consent_given", False),
         "welcome_response": sub_state.get("welcome_response"),
         "eligibility": sub_state.get("eligibility", {}),
         "eligibility_pending_negative": sub_state.get("eligibility_pending_negative", {}),
@@ -396,10 +399,14 @@ def _determine_next_state(
 
     if current_state == OnboardingState.WELCOME.value:
         if not sub_state.get("welcome_shown"):
-            # First turn — mark as shown, stay at welcome so the LLM generates the welcome message.
+            # Turn 1: show welcome + steps + "shall we begin?"
             sub_state["welcome_shown"] = True
             return current_state, "Showing welcome message"
-        # Second turn — volunteer has responded to "what brings you here?"
+        if not sub_state.get("consent_given"):
+            # Turn 2: volunteer said yes → ask intent
+            sub_state["consent_given"] = True
+            return current_state, "Consent given — asking intent"
+        # Turn 3: volunteer responded with intent → transition
         return OnboardingState.ORIENTATION_VIDEO.value, "Welcome response received — proceeding to orientation"
 
     if current_state == OnboardingState.ORIENTATION_VIDEO.value:
@@ -449,6 +456,8 @@ def _build_prompt_fields(confirmed_fields: Dict[str, Any], sub_state: Dict[str, 
         merged[key] = eligibility.get(key)
     merged["review_reason"] = sub_state.get("review_reason")
     merged["welcome_response"] = sub_state.get("welcome_response")
+    merged["welcome_shown"] = sub_state.get("welcome_shown", False)
+    merged["consent_given"] = sub_state.get("consent_given", False)
     return merged
 
 
@@ -657,8 +666,8 @@ class OnboardingAgentService:
 
     def _update_stage_specific_sub_state(self, current_state: str, user_message: str, sub_state: Dict[str, Any]) -> None:
         if current_state == OnboardingState.WELCOME.value:
-            # Capture the volunteer's response on the second turn (welcome_shown is already True)
-            if sub_state.get("welcome_shown") and user_message and user_message not in ("__handoff__", "__auto_continue__"):
+            # Capture the volunteer's response on the third turn (consent already given, now capturing intent)
+            if sub_state.get("welcome_shown") and sub_state.get("consent_given") and user_message and user_message not in ("__handoff__", "__auto_continue__"):
                 sub_state["welcome_response"] = user_message.strip()[:500]
         if current_state == OnboardingState.ORIENTATION_VIDEO.value and _extract_video_ack(user_message):
             sub_state["video_acknowledged"] = True

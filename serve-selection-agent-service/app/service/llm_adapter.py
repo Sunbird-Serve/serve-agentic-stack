@@ -114,6 +114,7 @@ CURRENT STRUCTURED SIGNALS:
 {signals_block}
 
 CONVERSATION RULES:
+- Do NOT greet or introduce yourself. The volunteer is already in a conversation. Go directly to your first question.
 - Be warm, respectful, concise, and human.
 - Ask only one question at a time.
 - Do not sound like a form or interview checklist.

@@ -14,6 +14,7 @@ from services.database import (
     NeedDraft,
     ConversationMessage,
 )
+from services.database import VolunteerProfile
 
 logger = logging.getLogger(__name__)
 
@@ -123,11 +124,31 @@ async def get_dashboard_stats(page: int = 1, page_size: int = 25) -> Dict[str, A
                     "sub_state":       r.sub_state,
                     "volunteer_id":    r.volunteer_id,
                     "volunteer_name":  (r.channel_metadata or {}).get("volunteer_name"),
+                    "channel_metadata": r.channel_metadata,
                     "created_at":      r.created_at.isoformat() if r.created_at else None,
                     "last_message_at": r.last_message_at.isoformat() if r.last_message_at else None,
                 }
                 for r in recent_rows
             ]
+
+            # Enrich with volunteer profile names
+            session_uuids = [r.id for r in recent_rows]
+            profile_name_map = {}
+            if session_uuids:
+                profile_rows = (await db.execute(
+                    select(VolunteerProfile.session_id, VolunteerProfile.full_name, VolunteerProfile.phone)
+                    .where(VolunteerProfile.session_id.in_(session_uuids))
+                )).all()
+                for pr in profile_rows:
+                    profile_name_map[str(pr.session_id)] = {"name": pr.full_name, "phone": pr.phone}
+
+            for s in recent_sessions:
+                profile = profile_name_map.get(s["id"])
+                if profile:
+                    if not s["volunteer_name"] and profile.get("name"):
+                        s["volunteer_name"] = profile["name"]
+                    if not s.get("volunteer_phone") and profile.get("phone"):
+                        s["volunteer_phone"] = profile["phone"]
 
             # ── Recent need drafts (paginated) ─────────────────────────────────
             total_needs_for_list = (await db.execute(
