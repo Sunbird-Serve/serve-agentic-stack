@@ -61,7 +61,7 @@ class MemorySummarizer:
     """
     
     def __init__(self):
-        self.api_key = os.environ.get("EMERGENT_LLM_KEY")
+        self.api_key = os.environ.get("ANTHROPIC_API_KEY")
         # Use a cheaper/faster model for summarization — it's a simple task
         self.model = os.environ.get("MEMORY_LLM_MODEL", "claude-haiku-4-5-20251001")
         self.summary_threshold = 6  # Summarize after this many messages
@@ -177,22 +177,29 @@ class MemorySummarizer:
             return self._fallback_summary(prompt)
         
         try:
-            from emergentintegrations.llm.chat import LlmChat, UserMessage
+            import httpx
 
-            if not hasattr(self, '_chat') or self._chat is None:
-                self._chat = LlmChat(
-                    api_key=self.api_key,
-                    session_id=f"memory-{id(self)}",
-                    system_message="You are a helpful assistant that summarizes conversations accurately and concisely."
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "x-api-key": self.api_key,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
+                    },
+                    json={
+                        "model": self.model,
+                        "max_tokens": 512,
+                        "system": "You are a helpful assistant that summarizes conversations accurately and concisely.",
+                        "messages": [{"role": "user", "content": prompt}],
+                    },
                 )
-                self._chat.with_model("anthropic", self.model)
-            
-            response = await self._chat.send_message(UserMessage(text=prompt))
-            return response
+                response.raise_for_status()
+                body = response.json()
+                return body.get("content", [{}])[0].get("text", "").strip() or self._fallback_summary(prompt)
             
         except Exception as e:
             logger.error(f"LLM summarization error: {e}")
-            self._chat = None  # Reset on error
             return self._fallback_summary(prompt)
     
     def _fallback_summary(self, prompt: str) -> str:

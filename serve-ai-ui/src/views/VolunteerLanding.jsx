@@ -5,7 +5,7 @@
 import { ArrowRight, Heart, BookOpen, Users } from 'lucide-react';
 import { Button } from '../components/ui/button';
 
-const HERO_IMAGE = 'https://static.prod-images.emergentagent.com/jobs/6fefa0da-0a0a-45ba-ae95-7feaeeb335cc/images/5eb1e1719e1116315610e910c3ae9eba097f8fd270aae18e2e5a300699688bae.png';
+const HERO_IMAGE = 'https://images.unsplash.com/photo-1497375638960-ca368c7231e4?w=1200&q=80';
 
 export const VolunteerLanding = ({ onStartJourney }) => {
   return (

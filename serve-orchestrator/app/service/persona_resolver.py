@@ -55,7 +55,7 @@ _INACTIVE_THRESHOLD_DAYS = 90
 
 
 # ── LLM classifier config ──────────────────────────────────────────────────────
-_LLM_API_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+_LLM_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 _LLM_MODEL = os.environ.get("PERSONA_LLM_MODEL", "claude-haiku-4-5-20251001")
 _LLM_TIMEOUT = float(os.environ.get("PERSONA_LLM_TIMEOUT", "5"))
 _LLM_API_URL = "https://api.anthropic.com/v1/messages"
@@ -426,7 +426,7 @@ class PersonaResolver:
         so the caller falls through to the default.
         """
         if not _LLM_API_KEY:
-            logger.debug("No EMERGENT_LLM_KEY set — skipping LLM persona classifier.")
+            logger.debug("No ANTHROPIC_API_KEY set — skipping LLM persona classifier.")
             return None
 
         # Don't waste an LLM call on very short / empty messages

@@ -35,7 +35,6 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
 - Legacy `mcp_client` naming has been removed
 
 ### Runtime
-- **Preview**: Monolithic `/app/backend/server.py` (in-memory storage)
 - **Production**: Docker Compose with all services + PostgreSQL + MCP Server
 
 ## User Personas
@@ -175,7 +174,7 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
   - Captured details display
 
 ### Phase 11: WhatsApp Channel Adapter ✅ (Dec 2025)
-- [x] **Twilio WhatsApp Sandbox Integration** (`/app/backend/channels/whatsapp_adapter.py`)
+- [x] **WhatsApp Cloud API Integration** (Meta WABA via serve-orchestrator)
   - Webhook endpoint for incoming messages: `POST /api/whatsapp/webhook`
   - Phone-to-session mapping (phone number as session identifier)
   - 24-hour session timeout with automatic cleanup
@@ -228,9 +227,6 @@ Build the foundational scaffold for a SERVE AI multi-agent volunteer management 
 ### MCP Server (Protocol-Compliant Tool Server)
 - `/app/serve-mcp-server/main.py` - FastMCP server with 13 tools
 - `/app/serve-mcp-server/services/` - Reusable business logic services
-
-### Preview Environment
-- `/app/backend/server.py` - Monolithic server with all features (in-memory)
 
 ## Prioritized Backlog
 

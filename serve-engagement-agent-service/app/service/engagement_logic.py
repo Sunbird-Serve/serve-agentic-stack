@@ -186,7 +186,7 @@ class EngagementAgentService:
         import httpx
         import os
 
-        api_key = os.environ.get("EMERGENT_LLM_KEY", "")
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
         model = os.environ.get("NEW_VOL_LLM_MODEL", "claude-haiku-4-5-20251001")
         volunteer_name = request.session_state.volunteer_name or "there"
 

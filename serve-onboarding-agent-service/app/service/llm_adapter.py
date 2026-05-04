@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-_API_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 _MODEL = os.environ.get("LLM_MODEL", "claude-haiku-4-5-20251001")
 _API_URL = "https://api.anthropic.com/v1/messages"
 _TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "15"))
@@ -269,7 +269,7 @@ async def _call_llm(system_prompt: str, messages: List[Dict[str, str]]) -> str:
     Sends only the system prompt + provided messages. No accumulated state.
     """
     if not _API_KEY:
-        logger.warning("No EMERGENT_LLM_KEY — using fallback response")
+        logger.warning("No ANTHROPIC_API_KEY — using fallback response")
         return "Welcome to eVidyaloka! We are glad you are interested in volunteering."
 
     try:

@@ -41,7 +41,7 @@ Thumbs.db
 .ruff_cache/
 .cache/
 
-# Emergent internal
+# Internal tooling
 .emergent/
 -e 
 # Environment files

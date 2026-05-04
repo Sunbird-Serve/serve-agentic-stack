@@ -191,7 +191,7 @@ class EngagementLLMAdapter:
 
     def __init__(self) -> None:
         self._api_key: Optional[str] = (
-            os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("EMERGENT_LLM_KEY")
+            os.environ.get("ANTHROPIC_API_KEY")
         )
         self._model: str = os.environ.get("LLM_MODEL", "claude-sonnet-4-5-20250929")
         self._client = None

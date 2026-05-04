@@ -3,15 +3,82 @@
  * Pipeline dashboard for managing volunteer entries
  */
 import { useState, useEffect } from 'react';
-import { RefreshCw, User, Clock, CheckCircle, PauseCircle, AlertCircle, UserPlus } from 'lucide-react';
+import { RefreshCw, User, Clock, CheckCircle, PauseCircle, AlertCircle, UserPlus, Lock } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { ScrollArea } from '../components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
-import { mcpApi } from '../services/api';
+import { Input } from '../components/ui/input';
+import { mcpApi, dashboardApi, dashboardAuth } from '../services/api';
 import AgentDashboard from './AgentDashboard';
 import PipelineDashboard from './PipelineDashboard';
+
+// ── OpsLogin ──────────────────────────────────────────────────────────────────
+
+const OpsLogin = ({ onAuthenticated }) => {
+  const [token, setToken] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    dashboardAuth.setToken(token.trim());
+    try {
+      const result = await dashboardApi.getStats();
+      if (result?.error === 'Unauthorized') {
+        dashboardAuth.clearToken();
+        setError('Invalid token. Please try again.');
+      } else {
+        onAuthenticated();
+      }
+    } catch (err) {
+      if (err.response?.status === 401) {
+        dashboardAuth.clearToken();
+        setError('Invalid token. Please try again.');
+      } else {
+        // Network error but token saved — let them through
+        onAuthenticated();
+      }
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div className="bg-slate-50 min-h-[calc(100vh-64px)] flex items-center justify-center">
+      <div className="bg-white rounded-xl p-8 w-full max-w-sm shadow-lg border border-slate-200">
+        <div className="flex justify-center mb-4">
+          <div className="w-12 h-12 rounded-xl bg-emerald-100 flex items-center justify-center">
+            <Lock className="w-6 h-6 text-emerald-600" />
+          </div>
+        </div>
+        <h2 className="text-lg font-semibold text-slate-900 text-center mb-1">Operations Dashboard</h2>
+        <p className="text-xs text-slate-500 text-center mb-6">Enter your access token to continue</p>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <Input
+            type="password"
+            placeholder="Access token"
+            value={token}
+            onChange={e => setToken(e.target.value)}
+            className="border-slate-300"
+            autoFocus
+          />
+          {error && <p className="text-xs text-red-500">{error}</p>}
+          <Button
+            type="submit"
+            disabled={!token.trim() || loading}
+            className="w-full bg-emerald-600 hover:bg-emerald-700 text-white"
+          >
+            {loading ? <RefreshCw className="w-4 h-4 animate-spin mr-2" /> : null}
+            Sign in
+          </Button>
+        </form>
+      </div>
+    </div>
+  );
+};
 
 // Status badge component
 const StatusBadge = ({ status }) => {
@@ -272,6 +339,7 @@ const RecommendedVolunteersPanel = ({ sessions }) => {
 };
 
 export const OpsView = () => {
+  const [authed, setAuthed] = useState(dashboardAuth.isAuthenticated());
   const [sessions, setSessions] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedSession, setSelectedSession] = useState(null);
@@ -323,6 +391,15 @@ export const OpsView = () => {
   const completedSessions = sessions.filter(s => s.status === 'completed');
   const pausedSessions = sessions.filter(s => s.status === 'paused');
 
+  if (!authed) {
+    return <OpsLogin onAuthenticated={() => setAuthed(true)} />;
+  }
+
+  const handleSignOut = () => {
+    dashboardAuth.clearToken();
+    setAuthed(false);
+  };
+
   return (
     <div className="bg-slate-50 min-h-[calc(100vh-64px)]" data-testid="ops-view">
       <Tabs defaultValue="pipeline_dashboard" className="w-full">
@@ -333,16 +410,26 @@ export const OpsView = () => {
             <TabsTrigger value="recommended">Recommended Volunteers</TabsTrigger>
             <TabsTrigger value="agents">Agent Dashboard</TabsTrigger>
           </TabsList>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={fetchSessions}
-            disabled={isLoading}
-            data-testid="refresh-sessions-btn"
-          >
-            <RefreshCw className={`w-4 h-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={fetchSessions}
+              disabled={isLoading}
+              data-testid="refresh-sessions-btn"
+            >
+              <RefreshCw className={`w-4 h-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleSignOut}
+              className="text-slate-500 hover:text-slate-700"
+            >
+              Sign out
+            </Button>
+          </div>
         </div>
 
         {/* ── Pipeline Dashboard tab ── */}

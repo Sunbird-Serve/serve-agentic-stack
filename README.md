@@ -107,7 +107,7 @@ cd serve-ai
 
 # Create environment file
 cp .env.example .env
-# Edit .env and add your EMERGENT_LLM_KEY
+# Edit .env and add your ANTHROPIC_API_KEY
 
 # Start all services
 docker-compose up -d
@@ -226,7 +226,7 @@ docker-compose up -d
 
 ### Root (.env)
 ```
-EMERGENT_LLM_KEY=your-key-here
+ANTHROPIC_API_KEY=your-key-here
 ```
 
 ### serve-orchestrator
@@ -242,7 +242,7 @@ EMERGENT_LLM_KEY=your-key-here
 | `MCP_SERVICE_URL` | URL to MCP service |
 | `LLM_PROVIDER` | LLM provider (claude/openai/gemini) |
 | `LLM_MODEL` | Model name |
-| `EMERGENT_LLM_KEY` | LLM API key |
+| `ANTHROPIC_API_KEY` | LLM API key |
 
 ### serve-agentic-mcp-service
 | Variable | Description |

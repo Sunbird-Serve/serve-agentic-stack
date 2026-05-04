@@ -125,7 +125,6 @@ The server follows a clean separation:
 ## Integration with Existing System
 
 The MCP server can run alongside the existing HTTP services:
-- **Preview Environment**: HTTP API in `/app/backend/server.py` (unchanged)
 - **Production**: MCP server for LLM integration + HTTP for UI
 
 ## Future Work

@@ -298,7 +298,7 @@ class NeedLLMAdapter:
     COMBINED_RESOLUTION_TOOLS: List[Dict] = []  # populated after class body
 
     def __init__(self) -> None:
-        self._api_key: Optional[str] = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("EMERGENT_LLM_KEY")
+        self._api_key: Optional[str] = os.environ.get("ANTHROPIC_API_KEY")
         self._model: str = os.environ.get("LLM_MODEL", "claude-sonnet-4-5-20250929")
         self._client = None  # lazy
 
