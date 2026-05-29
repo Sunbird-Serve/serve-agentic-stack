@@ -55,10 +55,11 @@ _INACTIVE_THRESHOLD_DAYS = 90
 
 
 # ── LLM classifier config ──────────────────────────────────────────────────────
-_LLM_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+_LLM_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "") or os.environ.get("EMERGENT_LLM_KEY", "")
+if _LLM_API_KEY and not os.environ.get("ANTHROPIC_API_KEY"):
+    os.environ["ANTHROPIC_API_KEY"] = _LLM_API_KEY
 _LLM_MODEL = os.environ.get("PERSONA_LLM_MODEL", "claude-haiku-4-5-20251001")
 _LLM_TIMEOUT = float(os.environ.get("PERSONA_LLM_TIMEOUT", "5"))
-_LLM_API_URL = "https://api.anthropic.com/v1/messages"
 _LLM_MIN_CONFIDENCE = 0.6  # Ignore LLM result below this threshold
 
 _PERSONA_CLASSIFIER_PROMPT = """You are a routing classifier for eVidyaloka, a volunteer education platform.
@@ -421,12 +422,12 @@ class PersonaResolver:
 
     async def _llm_classify(self, payload: str) -> Optional[PersonaResolutionResult]:
         """
-        Use a lightweight Claude model to classify the user's first message
-        into a persona type. Returns None on any failure or low confidence,
-        so the caller falls through to the default.
+        Use a lightweight LLM to classify the user's first message
+        into a persona type. Model-agnostic via LiteLLM.
+        Returns None on any failure or low confidence.
         """
         if not _LLM_API_KEY:
-            logger.debug("No ANTHROPIC_API_KEY set — skipping LLM persona classifier.")
+            logger.debug("No API key set — skipping LLM persona classifier.")
             return None
 
         # Don't waste an LLM call on very short / empty messages
@@ -435,27 +436,19 @@ class PersonaResolver:
             return None
 
         try:
-            async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:
-                response = await client.post(
-                    _LLM_API_URL,
-                    headers={
-                        "x-api-key": _LLM_API_KEY,
-                        "anthropic-version": "2023-06-01",
-                        "content-type": "application/json",
-                    },
-                    json={
-                        "model": _LLM_MODEL,
-                        "max_tokens": 150,
-                        "system": _PERSONA_CLASSIFIER_PROMPT,
-                        "messages": [
-                            {"role": "user", "content": stripped[:500]},
-                        ],
-                    },
-                )
-                response.raise_for_status()
+            import litellm
+            litellm.drop_params = True
 
-            body = response.json()
-            text = body.get("content", [{}])[0].get("text", "").strip()
+            response = await litellm.acompletion(
+                model=_LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": _PERSONA_CLASSIFIER_PROMPT},
+                    {"role": "user", "content": stripped[:500]},
+                ],
+                max_tokens=150,
+                timeout=_LLM_TIMEOUT,
+            )
+            text = response.choices[0].message.content.strip()
 
             # Parse the JSON response from the LLM
             parsed = json.loads(text)
@@ -485,7 +478,7 @@ class PersonaResolver:
 
             return PersonaResolutionResult(
                 persona=persona,
-                confidence=min(confidence, 0.90),  # Cap at 0.90 — LLM is never as sure as explicit
+                confidence=min(confidence, 0.90),
                 source="llm_classifier",
                 metadata={
                     "llm_model": _LLM_MODEL,
@@ -495,12 +488,6 @@ class PersonaResolver:
                 },
             )
 
-        except httpx.TimeoutException:
-            logger.warning("LLM persona classifier timed out — falling through to default.")
-            return None
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
-            logger.warning(f"LLM persona classifier parse error: {e} — falling through to default.")
-            return None
         except Exception as e:
             logger.warning(f"LLM persona classifier failed: {e} — falling through to default.")
             return None

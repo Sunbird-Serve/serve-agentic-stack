@@ -298,20 +298,10 @@ class NeedLLMAdapter:
     COMBINED_RESOLUTION_TOOLS: List[Dict] = []  # populated after class body
 
     def __init__(self) -> None:
-        self._api_key: Optional[str] = os.environ.get("ANTHROPIC_API_KEY")
+        self._api_key: Optional[str] = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("EMERGENT_LLM_KEY")
         self._model: str = os.environ.get("LLM_MODEL", "claude-sonnet-4-5-20250929")
-        self._client = None  # lazy
-
-    def _get_client(self):
-        if self._client is None:
-            if not self._api_key:
-                return None
-            try:
-                import anthropic
-                self._client = anthropic.AsyncAnthropic(api_key=self._api_key)
-            except ImportError:
-                logger.warning("anthropic package not installed — LLM features degraded")
-        return self._client
+        if self._api_key and not os.environ.get("ANTHROPIC_API_KEY"):
+            os.environ["ANTHROPIC_API_KEY"] = self._api_key
 
     # ── Tool-calling loop ─────────────────────────────────────────────────────
 
@@ -325,99 +315,95 @@ class NeedLLMAdapter:
         stage: str = "coordinator",
     ) -> Tuple[str, Dict[str, Any]]:
         """
-        Run a Claude tool-calling loop for one user turn.
-
-        Claude calls tools autonomously until it produces a plain-text response
-        (the message to send to the coordinator) or max_iterations is reached.
-
-        Returns:
-            (response_text_for_coordinator, collected_tool_results)
-            collected_tool_results is a flat dict of tool_name → last_result
-            so the caller can check what was resolved.
+        Run a model-agnostic tool-calling loop via LiteLLM.
+        Supports any model with tool calling (Claude, GPT, Gemini).
         """
-        client = self._get_client()
-        if client is None:
+        if not self._api_key:
             return self._tool_loop_fallback(initial_messages), {}
+
+        import litellm
+        litellm.drop_params = True
 
         messages = list(initial_messages)
         collected: Dict[str, Any] = {}
 
+        # Convert Anthropic tool format to OpenAI format for LiteLLM
+        litellm_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "parameters": t["input_schema"],
+                },
+            }
+            for t in tools
+        ]
+
+        llm_messages = [{"role": "system", "content": system_prompt}] + [
+            {"role": m["role"], "content": m["content"] if isinstance(m["content"], str) else json.dumps(m["content"])}
+            for m in messages
+            if m.get("role") and m.get("content") is not None
+        ]
+
         for iteration in range(max_iterations):
             try:
-                response = await client.messages.create(
+                response = await litellm.acompletion(
                     model=self._model,
+                    messages=llm_messages,
+                    tools=litellm_tools,
                     max_tokens=1024,
-                    system=system_prompt,
-                    messages=messages,
-                    tools=tools,
                 )
             except Exception as exc:
-                logger.error(f"Claude API error in tool loop (iter {iteration}): {exc}")
+                logger.error(f"LLM API error in tool loop (iter {iteration}): {exc}")
                 return self._tool_loop_fallback(messages), collected
 
-            tool_uses = [b for b in response.content if b.type == "tool_use"]
+            choice = response.choices[0]
+            message = choice.message
 
-            if not tool_uses:
-                # Claude produced a text response — that is the message for the coordinator.
-                # On the FIRST iteration with no prior tool results, this means Claude
-                # skipped all lookups and is likely hallucinating. Force it to use tools.
+            if not message.tool_calls:
+                # No tool calls — text response for the coordinator
                 if iteration == 0 and not collected:
-                    logger.warning(f"Claude skipped tool calls on first iteration (stage={stage}) — forcing tool use")
+                    logger.warning(f"LLM skipped tool calls on first iteration (stage={stage}) — forcing tool use")
                     nudge = (
                         "You must call get_schools_for_coordinator with the coordinator's ID "
-                        "before responding. Do not ask the coordinator which school they belong to "
-                        "until you have checked the system first."
+                        "before responding."
                         if stage == "school"
                         else
-                        "Please use the available tools to look up the coordinator's details "
-                        "before responding. If you already have a coordinator_id, call "
-                        "get_schools_for_coordinator immediately. Do not assume or infer anything "
-                        "without a tool result."
+                        "Please use the available tools to look up the coordinator's details before responding."
                     )
-                    messages.append({"role": "assistant", "content": [
-                        b for b in response.content if hasattr(b, "text")
-                    ] or [{"type": "text", "text": "Let me check our records."}]})
-                    messages.append({"role": "user", "content": nudge})
+                    llm_messages.append({"role": "assistant", "content": message.content or "Let me check our records."})
+                    llm_messages.append({"role": "user", "content": nudge})
                     continue
 
-                text = next(
-                    (b.text for b in response.content if hasattr(b, "text") and b.text),
-                    "I'm here to help. Could you provide a bit more information?",
-                )
-                return text, collected
+                return message.content or "I'm here to help. Could you provide a bit more information?", collected
 
-            # Claude wants to call tools — execute them all, collect results
-            messages.append({"role": "assistant", "content": response.content})
-            tool_results = []
-            for tu in tool_uses:
+            # Execute tool calls
+            llm_messages.append(message.model_dump())
+            for tool_call in message.tool_calls:
+                tool_name = tool_call.function.name
+                tool_input = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
                 try:
-                    result = await tool_executor(tu.name, tu.input)
+                    result = await tool_executor(tool_name, tool_input)
                 except Exception as exc:
-                    logger.error(f"Tool executor error for {tu.name!r}: {exc}")
+                    logger.error(f"Tool executor error for {tool_name!r}: {exc}")
                     result = {"status": "error", "error": str(exc)}
 
-                collected[tu.name] = result
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tu.id,
+                collected[tool_name] = result
+                llm_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
                     "content": json.dumps(result),
                 })
 
-            messages.append({"role": "user", "content": tool_results})
-
-        # Exhausted iterations — ask Claude for a plain response with current context
+        # Exhausted iterations
         try:
-            final = await client.messages.create(
+            final = await litellm.acompletion(
                 model=self._model,
+                messages=llm_messages + [{"role": "user", "content": "You have exhausted tool calls. Give the coordinator a clear next step."}],
                 max_tokens=512,
-                system=system_prompt + "\n\nYou have exhausted tool calls. Give the coordinator a clear next step.",
-                messages=messages,
             )
-            text = next(
-                (b.text for b in final.content if hasattr(b, "text") and b.text),
-                "I need a moment to look into this. Could you confirm your details?",
-            )
-            return text, collected
+            return final.choices[0].message.content or "I need a moment to look into this.", collected
         except Exception:
             return "I'm having trouble accessing our records right now. Could you try again shortly?", collected
 

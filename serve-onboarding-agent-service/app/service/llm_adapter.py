@@ -17,9 +17,10 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "") or os.environ.get("EMERGENT_LLM_KEY", "")
+if _API_KEY and not os.environ.get("ANTHROPIC_API_KEY"):
+    os.environ["ANTHROPIC_API_KEY"] = _API_KEY
 _MODEL = os.environ.get("LLM_MODEL", "claude-haiku-4-5-20251001")
-_API_URL = "https://api.anthropic.com/v1/messages"
 _TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "15"))
 
 # Video URLs — served from the onboarding agent's /media endpoint
@@ -265,33 +266,28 @@ Your task: Stay in the current step. Do not ask additional questions. If the vol
 
 async def _call_llm(system_prompt: str, messages: List[Dict[str, str]]) -> str:
     """
-    Make a single Anthropic API call via httpx.
-    Sends only the system prompt + provided messages. No accumulated state.
+    Make a single LLM call via LiteLLM (model-agnostic).
+    Supports any model: Claude, GPT, Gemini, Mistral, etc.
+    Set LLM_MODEL env var to switch models.
     """
     if not _API_KEY:
-        logger.warning("No ANTHROPIC_API_KEY — using fallback response")
+        logger.warning("No API key configured — using fallback response")
         return "Welcome to eVidyaloka! We are glad you are interested in volunteering."
 
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            response = await client.post(
-                _API_URL,
-                headers={
-                    "x-api-key": _API_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": _MODEL,
-                    "max_tokens": 300,
-                    "system": system_prompt,
-                    "messages": messages,
-                },
-            )
-            response.raise_for_status()
+        import litellm
+        litellm.drop_params = True  # Ignore unsupported params for different providers
 
-        body = response.json()
-        text = body.get("content", [{}])[0].get("text", "").strip()
+        # LiteLLM uses OpenAI message format with system as a message
+        llm_messages = [{"role": "system", "content": system_prompt}] + messages
+
+        response = await litellm.acompletion(
+            model=_MODEL,
+            messages=llm_messages,
+            max_tokens=300,
+            timeout=_TIMEOUT,
+        )
+        text = response.choices[0].message.content.strip()
         return text or "How can I help you today?"
 
     except Exception as e:

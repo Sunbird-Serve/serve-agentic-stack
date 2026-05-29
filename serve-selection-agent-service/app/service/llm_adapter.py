@@ -142,26 +142,16 @@ QUESTION GUIDANCE:
 
 
 class SelectionLLMAdapter:
-    """Natural LLM conversation adapter for selection."""
+    """Natural LLM conversation adapter for selection. Model-agnostic via LiteLLM."""
 
     def __init__(self) -> None:
         self._api_key: Optional[str] = (
-            os.environ.get("ANTHROPIC_API_KEY")
+            os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("EMERGENT_LLM_KEY")
         )
         self._model: str = os.environ.get("LLM_MODEL", "claude-sonnet-4-5-20250929")
-        self._client = None
-
-    def _get_client(self):
-        if self._client is None:
-            if not self._api_key:
-                return None
-            try:
-                import anthropic
-
-                self._client = anthropic.AsyncAnthropic(api_key=self._api_key)
-            except ImportError:
-                logger.warning("anthropic package not installed")
-        return self._client
+        # Set API key for LiteLLM
+        if self._api_key and not os.environ.get("ANTHROPIC_API_KEY"):
+            os.environ["ANTHROPIC_API_KEY"] = self._api_key
 
     def build_system_prompt(
         self,
@@ -199,9 +189,11 @@ class SelectionLLMAdapter:
         fallback_question: str,
         max_tool_iterations: int = 4,
     ) -> Tuple[str, Dict[str, Any]]:
-        client = self._get_client()
-        if client is None:
+        if not self._api_key:
             return fallback_question, {}
+
+        import litellm
+        litellm.drop_params = True
 
         collected: Dict[str, Any] = {}
         current_messages = [
@@ -214,54 +206,52 @@ class SelectionLLMAdapter:
         if not current_messages or current_messages[0]["role"] != "user":
             current_messages.insert(0, {"role": "user", "content": "Let's continue."})
 
+        # Convert Anthropic tool format to OpenAI format for LiteLLM
+        litellm_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "parameters": t["input_schema"],
+                },
+            }
+            for t in SELECTION_TOOLS
+        ]
+
+        # Prepend system message
+        llm_messages = [{"role": "system", "content": system_prompt}] + current_messages
+
         try:
             for iteration in range(max_tool_iterations):
-                response = await client.messages.create(
+                response = await litellm.acompletion(
                     model=self._model,
+                    messages=llm_messages,
+                    tools=litellm_tools,
                     max_tokens=512,
-                    system=system_prompt,
-                    tools=SELECTION_TOOLS,
-                    messages=current_messages,
                 )
 
-                text_blocks = [b for b in response.content if hasattr(b, "text") and b.text]
-                tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
+                choice = response.choices[0]
+                message = choice.message
 
-                if not tool_use_blocks:
-                    text = next((b.text for b in text_blocks), fallback_question)
+                # No tool calls — return text
+                if not message.tool_calls:
+                    text = message.content or fallback_question
                     return text, collected
 
-                tool_results = []
-                for tool_block in tool_use_blocks:
-                    tool_name = tool_block.name
-                    tool_input = tool_block.input or {}
+                # Process tool calls
+                llm_messages.append(message.model_dump())
+                for tool_call in message.tool_calls:
+                    tool_name = tool_call.function.name
+                    tool_input = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
                     logger.info("Selection loop: tool '%s' (iter %s)", tool_name, iteration + 1)
                     result = await tool_executor(tool_name, tool_input)
                     collected[tool_name] = tool_input
-                    tool_results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": tool_block.id,
-                            "content": json.dumps(result),
-                        }
-                    )
-
-                assistant_content: List[Dict[str, Any]] = []
-                for block in response.content:
-                    if block.type == "text":
-                        assistant_content.append({"type": "text", "text": block.text})
-                    elif block.type == "tool_use":
-                        assistant_content.append(
-                            {
-                                "type": "tool_use",
-                                "id": block.id,
-                                "name": block.name,
-                                "input": block.input,
-                            }
-                        )
-
-                current_messages.append({"role": "assistant", "content": assistant_content})
-                current_messages.append({"role": "user", "content": tool_results})
+                    llm_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps(result),
+                    })
 
             return fallback_question, collected
         except Exception as exc:
