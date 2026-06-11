@@ -5,7 +5,11 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   RefreshCw, Activity, Users, MessageSquare, BookOpen,
   CheckCircle, Wifi, WifiOff, Search, ChevronDown, Handshake, UserPlus,
+  TrendingDown, GitBranch,
 } from 'lucide-react';
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
+} from 'recharts';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -945,6 +949,158 @@ const PaginationControls = ({ page, totalPages, onPageChange }) => {
   );
 };
 
+// ── AnalyticsPanel (issue #50) ────────────────────────────────────────────────
+
+// Bar fill per journey stage, mirroring the STAGE_COLOR badges above so the
+// funnel reads the same as the stage chips in the sessions list.
+const STAGE_HEX = {
+  initiated:             '#64748b',
+  welcome:               '#06b6d4',
+  capturing_phone:       '#eab308',
+  resolving_coordinator: '#3b82f6',
+  confirming_identity:   '#6366f1',
+  resolving_school:      '#a855f7',
+  orientation_video:     '#8b5cf6',
+  drafting_need:         '#f97316',
+  pending_approval:      '#f59e0b',
+  re_engaging:           '#3b82f6',
+  gathering_preferences: '#eab308',
+  active:                '#22c55e',
+  submitted:             '#22c55e',
+  complete:              '#10b981',
+  human_review:          '#f97316',
+  paused:                '#475569',
+};
+
+// Bar fill per need status, mirroring the NEED_STATUS_COLOR badges above.
+const NEED_STATUS_HEX = {
+  draft:               '#64748b',
+  pending_approval:    '#f59e0b',
+  submitted:           '#22c55e',
+  approved:            '#10b981',
+  rejected:            '#ef4444',
+  refinement_required: '#f97316',
+};
+
+// Shared dark-theme styling for Recharts tooltips.
+const CHART_TOOLTIP = {
+  contentStyle: { background: '#1e293b', border: '1px solid #334155', borderRadius: 6, fontSize: 11 },
+  labelStyle: { color: '#94a3b8' },
+  itemStyle: { color: '#e2e8f0' },
+  cursor: { fill: 'rgba(148,163,184,0.06)' },
+};
+
+const AnalyticsPanel = ({ analytics }) => {
+  const funnel      = analytics?.funnel || [];
+  const fulfillment = analytics?.fulfillment || {};
+  const decisions   = analytics?.decisions || [];
+
+  const fulfillmentData = Object.entries(fulfillment.by_status || {})
+    .map(([status, count]) => ({ status, count }));
+  const conversionPct = fulfillment.conversion_pct ?? 0;
+
+  return (
+    <Card className="border-none shadow-sm bg-slate-800">
+      <CardHeader className="pb-2 pt-4 px-5">
+        <CardTitle className="text-sm text-slate-300 flex items-center gap-2">
+          <TrendingDown className="w-4 h-4" /> Analytics
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="px-5 pb-5">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+          {/* Volunteer funnel — count per journey stage */}
+          <div>
+            <p className="text-xs text-slate-500 mb-3 uppercase tracking-wide font-medium">Volunteer Funnel</p>
+            {funnel.length === 0 ? (
+              <p className="text-xs text-slate-600">No session data yet</p>
+            ) : (
+              <ResponsiveContainer width="100%" height={160}>
+                <BarChart data={funnel} margin={{ top: 0, right: 0, left: -20, bottom: 40 }}>
+                  <XAxis dataKey="stage" tick={{ fontSize: 9, fill: '#64748b' }} tickLine={false} axisLine={false} interval={0} angle={-35} textAnchor="end" />
+                  <YAxis tick={{ fontSize: 9, fill: '#64748b' }} tickLine={false} axisLine={false} allowDecimals={false} />
+                  <Tooltip
+                    {...CHART_TOOLTIP}
+                    formatter={(value, _name, item) => [`${value} (${item?.payload?.drop_off_pct ?? 0}% drop-off)`, 'Sessions']}
+                  />
+                  <Bar dataKey="count" radius={[3, 3, 0, 0]}>
+                    {funnel.map((d, i) => (
+                      <Cell key={i} fill={STAGE_HEX[d.stage] || '#64748b'} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+
+          {/* Need fulfillment — status breakdown + conversion */}
+          <div>
+            <p className="text-xs text-slate-500 mb-3 uppercase tracking-wide font-medium">Need Fulfillment</p>
+            <div className="flex items-end gap-3 mb-3">
+              <span className={`text-4xl font-bold ${conversionPct >= 50 ? 'text-green-400' : conversionPct >= 25 ? 'text-yellow-400' : 'text-red-400'}`}>
+                {conversionPct}%
+              </span>
+              <span className="text-xs text-slate-500 pb-1.5">of {fulfillment.total || 0} needs fulfilled</span>
+            </div>
+            {fulfillmentData.length === 0 ? (
+              <p className="text-xs text-slate-600">No needs yet</p>
+            ) : (
+              <ResponsiveContainer width="100%" height={110}>
+                <BarChart data={fulfillmentData} margin={{ top: 0, right: 0, left: -20, bottom: 20 }}>
+                  <XAxis dataKey="status" tick={{ fontSize: 9, fill: '#64748b' }} tickLine={false} axisLine={false} interval={0} angle={-25} textAnchor="end" />
+                  <YAxis tick={{ fontSize: 9, fill: '#64748b' }} tickLine={false} axisLine={false} allowDecimals={false} />
+                  <Tooltip {...CHART_TOOLTIP} />
+                  <Bar dataKey="count" radius={[3, 3, 0, 0]}>
+                    {fulfillmentData.map((d, i) => (
+                      <Cell key={i} fill={NEED_STATUS_HEX[d.status] || '#64748b'} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+
+          {/* Agent decision insights — why handoffs happened */}
+          <div>
+            <p className="text-xs text-slate-500 mb-3 uppercase tracking-wide font-medium flex items-center gap-1">
+              <GitBranch className="w-3 h-3" /> Agent Decisions
+            </p>
+            {decisions.length === 0 ? (
+              <p className="text-xs text-slate-600">No handoffs recorded yet</p>
+            ) : (
+              <div className="overflow-y-auto max-h-[160px]">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="border-b border-slate-700">
+                      <th className="py-1 text-[10px] text-slate-500 font-medium uppercase">Handoff</th>
+                      <th className="py-1 text-[10px] text-slate-500 font-medium uppercase">Reason</th>
+                      <th className="py-1 text-[10px] text-slate-500 font-medium uppercase text-right">#</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {decisions.map((d, i) => (
+                      <tr key={i} className="border-b border-slate-800">
+                        <td className="py-1.5 text-xs text-slate-300 whitespace-nowrap">
+                          {d.from_agent} → {d.to_agent}
+                        </td>
+                        <td className="py-1.5 text-xs text-slate-400 max-w-[120px] truncate" title={d.reason || ''}>
+                          {d.reason || d.handoff_type}
+                        </td>
+                        <td className="py-1.5 text-xs text-slate-300 text-right font-medium">{d.count}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
 // ── AdminView (main) ──────────────────────────────────────────────────────────
 
 export const AdminView = () => {
@@ -957,19 +1113,22 @@ export const AdminView = () => {
   const [secondsAgo, setSecondsAgo] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [sessionsPagination, setSessionsPagination] = useState(null);
+  const [analytics, setAnalytics] = useState(null);
   const timerRef = useRef(null);
 
   const load = useCallback(async (page = currentPage) => {
     setLoading(true);
     try {
-      const [stats, h] = await Promise.all([
+      const [stats, h, analyticsData] = await Promise.all([
         dashboardApi.getStats(page, 500),
         orchestratorApi.health().catch(() => null),
+        dashboardApi.getAnalytics().catch(() => null),
       ]);
       if (stats.status === 'success') {
         setData(stats);
         setSessionsPagination(stats.sessions_pagination || null);
       }
+      if (analyticsData?.status === 'success') setAnalytics(analyticsData);
       setHealth(h);
       setLastRefresh(new Date());
       setSecondsAgo(0);
@@ -1071,6 +1230,9 @@ export const AdminView = () => {
               <StatCard icon={BookOpen}    label="Needs Raised"    value={stats?.needs?.total}        sub={`${fmt(stats?.needs?.submitted)} submitted`} />
               <StatCard icon={CheckCircle} label="This Week"       value={stats?.sessions?.this_week} sub="new sessions" color="text-blue-400" />
             </div>
+
+            {/* ── Analytics panel ── */}
+            <AnalyticsPanel analytics={analytics} />
 
             {/* ── Sessions + Detail ── */}
             <div className="grid grid-cols-1 lg:grid-cols-[35%_65%] gap-3" style={{ height: '60vh' }}>
