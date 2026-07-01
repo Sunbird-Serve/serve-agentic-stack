@@ -55,9 +55,14 @@ _INACTIVE_THRESHOLD_DAYS = 90
 
 
 # ── LLM classifier config ──────────────────────────────────────────────────────
-_LLM_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "") or os.environ.get("EMERGENT_LLM_KEY", "")
-if _LLM_API_KEY and not os.environ.get("ANTHROPIC_API_KEY"):
-    os.environ["ANTHROPIC_API_KEY"] = _LLM_API_KEY
+_PROVIDER_KEY_VARS = (
+    "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY",
+    "OPENAI_API_KEY", "GEMINI_API_KEY", "EMERGENT_LLM_KEY",
+)
+_LLM_API_KEY = next((os.environ[k] for k in _PROVIDER_KEY_VARS if os.environ.get(k)), "")
+# Emergent key is Anthropic-compatible; map it so LiteLLM finds it.
+if os.environ.get("EMERGENT_LLM_KEY") and not os.environ.get("ANTHROPIC_API_KEY"):
+    os.environ["ANTHROPIC_API_KEY"] = os.environ["EMERGENT_LLM_KEY"]
 _LLM_MODEL = os.environ.get("PERSONA_LLM_MODEL", "claude-haiku-4-5-20251001")
 _LLM_TIMEOUT = float(os.environ.get("PERSONA_LLM_TIMEOUT", "5"))
 _LLM_MIN_CONFIDENCE = 0.6  # Ignore LLM result below this threshold

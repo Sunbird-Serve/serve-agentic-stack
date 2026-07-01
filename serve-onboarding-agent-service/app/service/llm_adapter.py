@@ -17,9 +17,14 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "") or os.environ.get("EMERGENT_LLM_KEY", "")
-if _API_KEY and not os.environ.get("ANTHROPIC_API_KEY"):
-    os.environ["ANTHROPIC_API_KEY"] = _API_KEY
+_PROVIDER_KEY_VARS = (
+    "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY",
+    "OPENAI_API_KEY", "GEMINI_API_KEY", "EMERGENT_LLM_KEY",
+)
+_API_KEY = next((os.environ[k] for k in _PROVIDER_KEY_VARS if os.environ.get(k)), "")
+# Emergent key is Anthropic-compatible; map it so LiteLLM finds it.
+if os.environ.get("EMERGENT_LLM_KEY") and not os.environ.get("ANTHROPIC_API_KEY"):
+    os.environ["ANTHROPIC_API_KEY"] = os.environ["EMERGENT_LLM_KEY"]
 _MODEL = os.environ.get("LLM_MODEL", "claude-haiku-4-5-20251001")
 _TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "15"))
 

@@ -178,12 +178,17 @@ class RecommendedLLMAdapter:
     """Tool-calling loop for the recommended volunteer workflow. Model-agnostic via LiteLLM."""
 
     def __init__(self) -> None:
-        self._api_key: Optional[str] = (
-            os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("EMERGENT_LLM_KEY")
+        self._api_key: Optional[str] = next(
+            (os.environ[k] for k in (
+                "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY",
+                "OPENAI_API_KEY", "GEMINI_API_KEY", "EMERGENT_LLM_KEY",
+            ) if os.environ.get(k)),
+            None,
         )
         self._model: str = os.environ.get("LLM_MODEL", "claude-sonnet-4-5-20250929")
-        if self._api_key and not os.environ.get("ANTHROPIC_API_KEY"):
-            os.environ["ANTHROPIC_API_KEY"] = self._api_key
+        # Emergent key is Anthropic-compatible; map it so LiteLLM finds it.
+        if os.environ.get("EMERGENT_LLM_KEY") and not os.environ.get("ANTHROPIC_API_KEY"):
+            os.environ["ANTHROPIC_API_KEY"] = os.environ["EMERGENT_LLM_KEY"]
 
     def build_system_prompt(self, session_context: Dict[str, Any]) -> str:
         """Build system prompt with injected session context and registration URL."""
