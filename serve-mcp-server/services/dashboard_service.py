@@ -6,7 +6,7 @@ import math
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
-from sqlalchemy import select, func, and_, desc
+from sqlalchemy import select, func, and_, or_, desc
 
 from services.database import (
     get_db, is_db_healthy,
@@ -17,6 +17,18 @@ from services.database import (
 from services.database import VolunteerProfile
 
 logger = logging.getLogger(__name__)
+
+# Canonical order of the volunteer journey, used to sort the funnel.
+# Stages not listed here are appended at the end in their natural order.
+VOLUNTEER_STAGE_ORDER = [
+    "initiated",
+    "capturing_phone",
+    "confirming_identity",
+    "re_engaging",
+    "gathering_preferences",
+    "active",
+    "complete",
+]
 
 
 async def get_dashboard_stats(page: int = 1, page_size: int = 25) -> Dict[str, Any]:
@@ -246,6 +258,100 @@ async def get_dashboard_stats(page: int = 1, page_size: int = 25) -> Dict[str, A
 
     except Exception as e:
         logger.error(f"Dashboard stats error: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+async def get_analytics() -> Dict[str, Any]:
+    """
+    Aggregated analytics for the dashboard (issue #50). All read-only:
+      - funnel:      volunteer drop-off across journey stages
+      - fulfillment: need_drafts status breakdown + conversion rate
+      - decisions:   why agents handed off (from agent_handoff_log)
+    """
+    from services.database import check_db_health, AgentHandoffLog
+    if not await check_db_health():
+        return {"status": "error", "error": "Database not available"}
+
+    try:
+        async with get_db() as db:
+            # ── Volunteer funnel ──────────────────────────────────────────────
+            # Exclude coordinator (need-raising) sessions — they are a separate
+            # journey and would distort volunteer drop-off numbers.
+            stage_rows = (await db.execute(
+                select(DBSession.stage, func.count().label("cnt"))
+                .where(or_(DBSession.workflow.is_(None), DBSession.workflow != "need"))
+                .group_by(DBSession.stage)
+            )).all()
+            stage_counts = {r.stage: r.cnt for r in stage_rows if r.stage}
+
+            # Order stages by the canonical journey, unknown ones appended.
+            ordered = [s for s in VOLUNTEER_STAGE_ORDER if s in stage_counts]
+            ordered += [s for s in stage_counts if s not in VOLUNTEER_STAGE_ORDER]
+
+            funnel, prev = [], None
+            for stage in ordered:
+                count = stage_counts[stage]
+                # Drop-off = share lost since the previous stage in the journey.
+                drop_off_pct = round((prev - count) / prev * 100) if prev else 0
+                funnel.append({
+                    "stage":        stage,
+                    "count":        count,
+                    "drop_off_pct": max(0, drop_off_pct),
+                })
+                prev = count
+
+            # ── Need fulfillment ──────────────────────────────────────────────
+            need_rows = (await db.execute(
+                select(NeedDraft.status, func.count().label("cnt"))
+                .group_by(NeedDraft.status)
+            )).all()
+            by_status = {r.status: r.cnt for r in need_rows}
+            total_needs = sum(by_status.values())
+            fulfilled = by_status.get("approved", 0) + by_status.get("submitted", 0)
+            conversion_pct = round(fulfilled / total_needs * 100) if total_needs else 0
+
+            # ── Agent decision insights ───────────────────────────────────────
+            # One row per (from → to, type); max(reason) gives a representative reason.
+            handoff_rows = (await db.execute(
+                select(
+                    AgentHandoffLog.from_agent,
+                    AgentHandoffLog.to_agent,
+                    AgentHandoffLog.handoff_type,
+                    func.max(AgentHandoffLog.reason).label("reason"),
+                    func.count().label("cnt"),
+                )
+                .group_by(
+                    AgentHandoffLog.from_agent,
+                    AgentHandoffLog.to_agent,
+                    AgentHandoffLog.handoff_type,
+                )
+                .order_by(desc("cnt"))
+                .limit(50)
+            )).all()
+            decisions = [
+                {
+                    "from_agent":   r.from_agent,
+                    "to_agent":     r.to_agent,
+                    "handoff_type": r.handoff_type,
+                    "reason":       r.reason,
+                    "count":        r.cnt,
+                }
+                for r in handoff_rows
+            ]
+
+            return {
+                "status": "success",
+                "funnel": funnel,
+                "fulfillment": {
+                    "by_status":      by_status,
+                    "total":          total_needs,
+                    "conversion_pct": conversion_pct,
+                },
+                "decisions": decisions,
+            }
+
+    except Exception as e:
+        logger.error(f"Analytics error: {e}")
         return {"status": "error", "error": str(e)}
 
 

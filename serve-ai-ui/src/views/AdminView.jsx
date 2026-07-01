@@ -1071,19 +1071,22 @@ export const AdminView = () => {
   const [secondsAgo, setSecondsAgo] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [sessionsPagination, setSessionsPagination] = useState(null);
+  const [analytics, setAnalytics] = useState(null);
   const timerRef = useRef(null);
 
   const load = useCallback(async (page = currentPage) => {
     setLoading(true);
     try {
-      const [stats, h] = await Promise.all([
+      const [stats, h, analyticsData] = await Promise.all([
         dashboardApi.getStats(page, 500),
         orchestratorApi.health().catch(() => null),
+        dashboardApi.getAnalytics().catch(() => null),
       ]);
       if (stats.status === 'success') {
         setData(stats);
         setSessionsPagination(stats.sessions_pagination || null);
       }
+      if (analyticsData?.status === 'success') setAnalytics(analyticsData);
       setHealth(h);
       setLastRefresh(new Date());
       setSecondsAgo(0);

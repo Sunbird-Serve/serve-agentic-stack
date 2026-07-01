@@ -152,6 +152,10 @@ export const dashboardApi = {
     });
     return response.data;
   },
+  getAnalytics: async () => {
+    const response = await apiClient.get('/mcp/dashboard/analytics', { headers: _dashboardAuthHeader() });
+    return response.data;
+  },
   getConversation: async (sessionId, limit = 50) => {
     const response = await apiClient.get(
       `/mcp/dashboard/conversation/${sessionId}`,
