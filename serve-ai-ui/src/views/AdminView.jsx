@@ -4,8 +4,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   RefreshCw, Activity, Users, MessageSquare, BookOpen,
-  CheckCircle, Wifi, WifiOff, Search, ChevronDown, Handshake, UserPlus,
+  CheckCircle, Wifi, WifiOff, Search, ChevronDown, Handshake, UserPlus, TrendingUp,
 } from 'lucide-react';
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
+} from 'recharts';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -945,6 +948,117 @@ const PaginationControls = ({ page, totalPages, onPageChange }) => {
   );
 };
 
+// ── PerformancePanel ──────────────────────────────────────────────────────────
+
+const BAR_COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316', '#ec4899'];
+
+const PerformancePanel = ({ stats, sessions }) => {
+  const byStage = stats?.sessions?.by_stage || {};
+  const stageData = Object.entries(byStage)
+    .map(([stage, count]) => ({ stage, count }))
+    .sort((a, b) => b.count - a.count);
+
+  const total = sessions.length;
+  const completed = sessions.filter(s => s.status === 'completed').length;
+  const conversionRate = total > 0 ? Math.round((completed / total) * 100) : 0;
+
+  const agentMap = {};
+  sessions.forEach(s => {
+    const agent = s.active_agent || 'unknown';
+    if (!agentMap[agent]) agentMap[agent] = { total: 0, completed: 0 };
+    agentMap[agent].total += 1;
+    if (s.status === 'completed') agentMap[agent].completed += 1;
+  });
+  const agentData = Object.entries(agentMap)
+    .map(([agent, { total: t, completed: c }]) => ({
+      agent,
+      rate: t > 0 ? Math.round((c / t) * 100) : 0,
+      total: t,
+    }))
+    .sort((a, b) => b.rate - a.rate);
+
+  return (
+    <Card className="border-none shadow-sm bg-slate-800">
+      <CardHeader className="pb-2 pt-4 px-5">
+        <CardTitle className="text-sm text-slate-300 flex items-center gap-2">
+          <TrendingUp className="w-4 h-4" /> Agent Performance
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="px-5 pb-5">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+          {/* Conversion Rate */}
+          <div>
+            <p className="text-xs text-slate-500 mb-3 uppercase tracking-wide font-medium">Conversion Rate</p>
+            <div className="flex items-end gap-3">
+              <span className={`text-5xl font-bold ${conversionRate >= 50 ? 'text-green-400' : conversionRate >= 25 ? 'text-yellow-400' : 'text-red-400'}`}>
+                {conversionRate}%
+              </span>
+              <span className="text-xs text-slate-500 pb-2">{completed} of {total} sessions completed</span>
+            </div>
+            <div className="mt-3 h-2 rounded-full bg-slate-700">
+              <div
+                className={`h-2 rounded-full transition-all ${conversionRate >= 50 ? 'bg-green-400' : conversionRate >= 25 ? 'bg-yellow-400' : 'bg-red-400'}`}
+                style={{ width: `${conversionRate}%` }}
+              />
+            </div>
+          </div>
+
+          {/* Sessions by Stage (drop-off funnel) */}
+          <div>
+            <p className="text-xs text-slate-500 mb-3 uppercase tracking-wide font-medium">Sessions by Stage</p>
+            {stageData.length === 0 ? (
+              <p className="text-xs text-slate-600">No stage data yet</p>
+            ) : (
+              <ResponsiveContainer width="100%" height={160}>
+                <BarChart data={stageData} margin={{ top: 0, right: 0, left: -20, bottom: 40 }}>
+                  <XAxis dataKey="stage" tick={{ fontSize: 9, fill: '#64748b' }} tickLine={false} axisLine={false} interval={0} angle={-35} textAnchor="end" />
+                  <YAxis tick={{ fontSize: 9, fill: '#64748b' }} tickLine={false} axisLine={false} allowDecimals={false} />
+                  <Tooltip
+                    contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 6, fontSize: 11 }}
+                    labelStyle={{ color: '#94a3b8' }}
+                    itemStyle={{ color: '#e2e8f0' }}
+                    cursor={{ fill: 'rgba(148,163,184,0.06)' }}
+                  />
+                  <Bar dataKey="count" radius={[3, 3, 0, 0]}>
+                    {stageData.map((_, i) => <Cell key={i} fill={BAR_COLORS[i % BAR_COLORS.length]} />)}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+
+          {/* Agent Success Rates */}
+          <div>
+            <p className="text-xs text-slate-500 mb-3 uppercase tracking-wide font-medium">Agent Success Rates</p>
+            {agentData.length === 0 ? (
+              <p className="text-xs text-slate-600">No agent data yet</p>
+            ) : (
+              <ResponsiveContainer width="100%" height={160}>
+                <BarChart data={agentData} margin={{ top: 0, right: 0, left: -20, bottom: 40 }}>
+                  <XAxis dataKey="agent" tick={{ fontSize: 9, fill: '#64748b' }} tickLine={false} axisLine={false} interval={0} angle={-35} textAnchor="end" />
+                  <YAxis tick={{ fontSize: 9, fill: '#64748b' }} tickLine={false} axisLine={false} domain={[0, 100]} unit="%" />
+                  <Tooltip
+                    contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 6, fontSize: 11 }}
+                    labelStyle={{ color: '#94a3b8' }}
+                    itemStyle={{ color: '#e2e8f0' }}
+                    formatter={(value) => [`${value}%`, 'Success rate']}
+                    cursor={{ fill: 'rgba(148,163,184,0.06)' }}
+                  />
+                  <Bar dataKey="rate" radius={[3, 3, 0, 0]}>
+                    {agentData.map((_, i) => <Cell key={i} fill={BAR_COLORS[i % BAR_COLORS.length]} />)}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
 // ── AdminView (main) ──────────────────────────────────────────────────────────
 
 export const AdminView = () => {
@@ -1071,6 +1185,9 @@ export const AdminView = () => {
               <StatCard icon={BookOpen}    label="Needs Raised"    value={stats?.needs?.total}        sub={`${fmt(stats?.needs?.submitted)} submitted`} />
               <StatCard icon={CheckCircle} label="This Week"       value={stats?.sessions?.this_week} sub="new sessions" color="text-blue-400" />
             </div>
+
+            {/* ── Performance Panel ── */}
+            <PerformancePanel stats={stats} sessions={sessions} />
 
             {/* ── Sessions + Detail ── */}
             <div className="grid grid-cols-1 lg:grid-cols-[35%_65%] gap-3" style={{ height: '60vh' }}>
