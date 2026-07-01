@@ -2,16 +2,17 @@
  * SERVE AI - API Service
  * Handles all communication with the backend services
  */
-import axios from 'axios';
+import axios from "axios";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL =
+  process.env.REACT_APP_BACKEND_URL || "http://localhost:8001";
 const API = `${BACKEND_URL}/api`;
 
 // Create axios instance with defaults
 const apiClient = axios.create({
   baseURL: API,
   headers: {
-    'Content-Type': 'application/json',
+    "Content-Type": "application/json",
   },
   timeout: 60000,
 });
@@ -20,9 +21,9 @@ const apiClient = axios.create({
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
-    console.error('API Error:', error.response?.data || error.message);
+    console.error("API Error:", error.response?.data || error.message);
     return Promise.reject(error);
-  }
+  },
 );
 
 /**
@@ -30,7 +31,13 @@ apiClient.interceptors.response.use(
  */
 export const orchestratorApi = {
   // Process a chat interaction
-  interact: async (sessionId, message, channel = 'web_ui', persona = 'new_volunteer', channelMetadata = null) => {
+  interact: async (
+    sessionId,
+    message,
+    channel = "web_ui",
+    persona = "new_volunteer",
+    channelMetadata = null,
+  ) => {
     const payload = {
       message,
       channel,
@@ -42,7 +49,7 @@ export const orchestratorApi = {
     if (channelMetadata) {
       payload.channel_metadata = channelMetadata;
     }
-    const response = await apiClient.post('/orchestrator/interact', payload);
+    const response = await apiClient.post("/orchestrator/interact", payload);
     return response.data;
   },
 
@@ -56,13 +63,13 @@ export const orchestratorApi = {
   listSessions: async (status = null, limit = 50) => {
     const params = { limit };
     if (status) params.status = status;
-    const response = await apiClient.get('/orchestrator/sessions', { params });
+    const response = await apiClient.get("/orchestrator/sessions", { params });
     return response.data;
   },
 
   // Health check
   health: async () => {
-    const response = await apiClient.get('/orchestrator/health');
+    const response = await apiClient.get("/orchestrator/health");
     return response.data;
   },
 };
@@ -73,24 +80,32 @@ export const orchestratorApi = {
 export const mcpApi = {
   // Get full session with profile
   getSession: async (sessionId) => {
-    const response = await apiClient.get(`/mcp/capabilities/onboarding/session/${sessionId}`);
+    const response = await apiClient.get(
+      `/mcp/capabilities/onboarding/session/${sessionId}`,
+    );
     return response.data;
   },
 
   // Get conversation history
   getConversation: async (sessionId, limit = 50) => {
-    const response = await apiClient.post('/mcp/capabilities/onboarding/get-conversation', {
-      session_id: sessionId,
-      limit,
-    });
+    const response = await apiClient.post(
+      "/mcp/capabilities/onboarding/get-conversation",
+      {
+        session_id: sessionId,
+        limit,
+      },
+    );
     return response.data;
   },
 
   // Get telemetry events
   getTelemetry: async (sessionId, limit = 100) => {
-    const response = await apiClient.get(`/mcp/capabilities/onboarding/telemetry/${sessionId}`, {
-      params: { limit },
-    });
+    const response = await apiClient.get(
+      `/mcp/capabilities/onboarding/telemetry/${sessionId}`,
+      {
+        params: { limit },
+      },
+    );
     return response.data;
   },
 
@@ -98,13 +113,16 @@ export const mcpApi = {
   listSessions: async (status = null, limit = 50) => {
     const params = { limit };
     if (status) params.status = status;
-    const response = await apiClient.get('/mcp/capabilities/onboarding/sessions', { params });
+    const response = await apiClient.get(
+      "/mcp/capabilities/onboarding/sessions",
+      { params },
+    );
     return response.data;
   },
 
   // Health check
   health: async () => {
-    const response = await apiClient.get('/mcp/health');
+    const response = await apiClient.get("/mcp/health");
     return response.data;
   },
 };
@@ -115,7 +133,7 @@ export const mcpApi = {
 export const healthApi = {
   // Check all services
   checkAll: async () => {
-    const response = await apiClient.get('/health');
+    const response = await apiClient.get("/health");
     return response.data;
   },
 };
@@ -128,7 +146,10 @@ export const dashboardApi = {
     const params = {};
     if (page !== 1) params.page = page;
     if (pageSize !== 25) params.page_size = pageSize;
-    const response = await apiClient.get('/mcp/dashboard/stats', { params, headers: _dashboardAuthHeader() });
+    const response = await apiClient.get("/mcp/dashboard/stats", {
+      params,
+      headers: _dashboardAuthHeader(),
+    });
     return response.data;
   },
   getAnalytics: async () => {
@@ -136,26 +157,32 @@ export const dashboardApi = {
     return response.data;
   },
   getConversation: async (sessionId, limit = 50) => {
-    const response = await apiClient.get(`/mcp/dashboard/conversation/${sessionId}`, {
-      params: { limit },
-      headers: _dashboardAuthHeader(),
-    });
+    const response = await apiClient.get(
+      `/mcp/dashboard/conversation/${sessionId}`,
+      {
+        params: { limit },
+        headers: _dashboardAuthHeader(),
+      },
+    );
     return response.data;
   },
   getSessionDetail: async (sessionId) => {
-    const response = await apiClient.get(`/mcp/dashboard/session/${sessionId}`, {
-      headers: _dashboardAuthHeader(),
-    });
+    const response = await apiClient.get(
+      `/mcp/dashboard/session/${sessionId}`,
+      {
+        headers: _dashboardAuthHeader(),
+      },
+    );
     return response.data;
   },
 };
 
 // ── Dashboard auth helpers ────────────────────────────────────────────────────
 
-const DASHBOARD_TOKEN_KEY = 'serve_dashboard_token';
+const DASHBOARD_TOKEN_KEY = "serve_dashboard_token";
 
 export const dashboardAuth = {
-  getToken: () => localStorage.getItem(DASHBOARD_TOKEN_KEY) || '',
+  getToken: () => localStorage.getItem(DASHBOARD_TOKEN_KEY) || "",
   setToken: (token) => localStorage.setItem(DASHBOARD_TOKEN_KEY, token),
   clearToken: () => localStorage.removeItem(DASHBOARD_TOKEN_KEY),
   isAuthenticated: () => Boolean(localStorage.getItem(DASHBOARD_TOKEN_KEY)),
