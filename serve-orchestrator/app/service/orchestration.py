@@ -911,6 +911,16 @@ class OrchestrationService:
         """List all sessions."""
         return await domain_client.list_sessions(status, limit)
 
+    async def find_active_session_by_actor(self, actor_id: str) -> Optional[dict]:
+        """
+        Find the most recent active/paused session for a given actor_id.
+        Used for session resume after page refresh.
+        """
+        result = await domain_client.find_session_by_actor(actor_id)
+        if result and result.get("status") == "success":
+            return result.get("data")
+        return None
+
 
 # Singleton instance
 orchestration_service = OrchestrationService()

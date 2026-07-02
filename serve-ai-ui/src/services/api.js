@@ -1,8 +1,10 @@
 /**
  * SERVE AI - API Service
- * Handles all communication with the backend services
+ * Handles all communication with the backend services.
+ * JWT token is attached automatically via Keycloak auth interceptor.
  */
 import axios from "axios";
+import keycloak from "../lib/keycloak";
 
 const BACKEND_URL =
   process.env.REACT_APP_BACKEND_URL || "http://localhost:8001";
@@ -17,10 +19,29 @@ const apiClient = axios.create({
   timeout: 60000,
 });
 
+// Attach JWT token to every outgoing request
+apiClient.interceptors.request.use(
+  async (config) => {
+    if (keycloak.authenticated) {
+      try {
+        await keycloak.updateToken(30);
+        config.headers.Authorization = `Bearer ${keycloak.token}`;
+      } catch {
+        keycloak.logout();
+      }
+    }
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
 // Add response interceptor for error handling
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
+    if (error.response?.status === 401) {
+      keycloak.logout();
+    }
     console.error("API Error:", error.response?.data || error.message);
     return Promise.reject(error);
   },
@@ -56,6 +77,12 @@ export const orchestratorApi = {
   // Get session state
   getSession: async (sessionId) => {
     const response = await apiClient.get(`/orchestrator/session/${sessionId}`);
+    return response.data;
+  },
+
+  // Get current user's active session (for resume after page refresh)
+  getMySession: async () => {
+    const response = await apiClient.get("/orchestrator/my-session");
     return response.data;
   },
 
@@ -140,48 +167,43 @@ export const healthApi = {
 
 /**
  * Tech Dashboard API
+ * JWT token is attached automatically by the request interceptor — no manual header needed.
  */
 export const dashboardApi = {
   getStats: async (page = 1, pageSize = 25) => {
     const params = {};
     if (page !== 1) params.page = page;
     if (pageSize !== 25) params.page_size = pageSize;
-    const response = await apiClient.get("/mcp/dashboard/stats", {
-      params,
-      headers: _dashboardAuthHeader(),
-    });
+    const response = await apiClient.get("/mcp/dashboard/stats", { params });
     return response.data;
   },
   getAnalytics: async () => {
-    const response = await apiClient.get('/mcp/dashboard/analytics', { headers: _dashboardAuthHeader() });
+    const response = await apiClient.get("/mcp/dashboard/analytics");
     return response.data;
   },
   getConversation: async (sessionId, limit = 50) => {
     const response = await apiClient.get(
       `/mcp/dashboard/conversation/${sessionId}`,
-      {
-        params: { limit },
-        headers: _dashboardAuthHeader(),
-      },
+      { params: { limit } },
     );
     return response.data;
   },
   getSessionDetail: async (sessionId) => {
     const response = await apiClient.get(
       `/mcp/dashboard/session/${sessionId}`,
-      {
-        headers: _dashboardAuthHeader(),
-      },
     );
     return response.data;
   },
 };
 
-// ── Dashboard auth helpers ────────────────────────────────────────────────────
+// ── Dashboard auth helpers (legacy — now handled by Keycloak JWT) ─────────────
+// Kept for backward compatibility during migration; can be removed once
+// all consumers are verified to use JWT exclusively.
 
 const DASHBOARD_TOKEN_KEY = "serve_dashboard_token";
 
 export const dashboardAuth = {
+  /** @deprecated Use Keycloak auth — token is attached automatically */
   getToken: () => localStorage.getItem(DASHBOARD_TOKEN_KEY) || "",
   setToken: (token) => localStorage.setItem(DASHBOARD_TOKEN_KEY, token),
   clearToken: () => localStorage.removeItem(DASHBOARD_TOKEN_KEY),
@@ -189,8 +211,8 @@ export const dashboardAuth = {
 };
 
 function _dashboardAuthHeader() {
-  const token = dashboardAuth.getToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  // No longer needed — JWT is attached by request interceptor
+  return {};
 }
 
 export default {

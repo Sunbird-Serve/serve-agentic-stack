@@ -51,7 +51,7 @@ class StartSessionInput(BaseModel):
         default=None,
         description="Channel-native identity from lookup_actor result"
     )
-    identity_type: Optional[Literal["email", "phone", "session_id", "system"]] = Field(
+    identity_type: Optional[Literal["email", "phone", "session_id", "system", "keycloak"]] = Field(
         default=None
     )
     user_type: Optional[Literal[
@@ -97,6 +97,10 @@ class ResumeSessionInput(BaseModel):
         except ValueError:
             raise ValueError(f"session_id must be a valid UUID, got: {v}")
         return v
+
+
+class FindSessionByActorInput(BaseModel):
+    actor_id: str = Field(description="Keycloak sub or other stable actor identifier")
 
 
 class AdvanceSessionStateInput(BaseModel):

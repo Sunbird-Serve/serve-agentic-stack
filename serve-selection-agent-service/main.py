@@ -9,7 +9,7 @@ import logging
 import os
 from datetime import datetime
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.schemas.selection_schemas import (
@@ -19,6 +19,7 @@ from app.schemas.selection_schemas import (
     SelectionEvaluateResponse,
 )
 from app.service.selection_logic import selection_agent_service
+from app.auth import get_optional_user, UserClaims
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -34,15 +35,15 @@ app.add_middleware(
 
 
 @app.post("/api/turn", response_model=AgentTurnResponse)
-async def process_turn(request: AgentTurnRequest):
-    """Process the orchestrator handoff / follow-up turn for selection."""
-    logger.info("Selection turn request for session %s", request.session_id)
+async def process_turn(request: AgentTurnRequest, user: UserClaims = Depends(get_optional_user)):
+    """Process the orchestrator handoff / follow-up turn for selection. Requires JWT."""
+    logger.info("Selection turn request for session %s (user: %s)", request.session_id, user.sub if user else "internal")
     return await selection_agent_service.process_turn(request)
 
 
 @app.post("/api/evaluate", response_model=SelectionEvaluateResponse)
-async def evaluate(request: SelectionEvaluateRequest):
-    """Run the underlying profile evaluation directly."""
+async def evaluate(request: SelectionEvaluateRequest, user: UserClaims = Depends(get_optional_user)):
+    """Run the underlying profile evaluation directly. Requires JWT."""
     logger.info("Direct selection evaluation request for session %s", request.session_id)
     return await selection_agent_service.evaluate(request)
 

@@ -62,7 +62,16 @@ async def health_check():
 
 @app.api_route("/api/mcp/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def mcp_proxy(path: str, request: Request):
-    """Proxy all /api/mcp/* requests to the MCP service"""
+    """Proxy all /api/mcp/* requests to the MCP service. Requires JWT."""
+    # Validate JWT before proxying — the MCP server also validates,
+    # but this prevents unauthenticated requests from reaching it.
+    from app.core.auth import get_current_user
+    try:
+        await get_current_user(request)
+    except Exception:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
     target_url = f"{MCP_SERVICE_URL}/api/{path}"
     params = dict(request.query_params)
     body = await request.body()

@@ -1,25 +1,19 @@
 /**
- * eVidyaloka - Header Component (Internal Staff Use)
- * Navigation header for internal staff views
+ * eVidyaloka - Header Component
+ * Shows user identity from Keycloak JWT and provides logout.
  */
-import { Users, Settings, MessageSquare, ChevronDown, BookOpen, School } from 'lucide-react';
+import { Users, Settings, MessageSquare, BookOpen, School, LogOut, User } from 'lucide-react';
 import { Button } from '../ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '../ui/dropdown-menu';
 
 const ROLES = {
-  volunteer: { label: 'Volunteer Preview', icon: MessageSquare, color: 'text-blue-600' },
+  volunteer: { label: 'Volunteer', icon: MessageSquare, color: 'text-blue-600' },
   need_coordinator: { label: 'Need Coordinator', icon: School, color: 'text-amber-500' },
   ops: { label: 'Operations', icon: Users, color: 'text-emerald-600' },
   admin: { label: 'Tech Admin', icon: Settings, color: 'text-slate-600' },
 };
 
-export const Header = ({ currentRole, onRoleChange, isInternal }) => {
-  const currentRoleConfig = ROLES[currentRole];
+export const Header = ({ currentRole, user, onLogout, isInternal }) => {
+  const currentRoleConfig = ROLES[currentRole] || ROLES.volunteer;
   const RoleIcon = currentRoleConfig?.icon || MessageSquare;
 
   return (
@@ -41,43 +35,41 @@ export const Header = ({ currentRole, onRoleChange, isInternal }) => {
             </div>
           </div>
 
-          {/* Role Switcher (Internal only) */}
-          {isInternal && (
-            <div className="flex items-center gap-4">
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button 
-                    variant="outline" 
-                    className="flex items-center gap-2"
-                    data-testid="role-switcher-trigger"
-                  >
-                    <RoleIcon className={`w-4 h-4 ${currentRoleConfig?.color}`} />
-                    <span className="hidden sm:inline">{currentRoleConfig?.label}</span>
-                    <ChevronDown className="w-4 h-4 text-slate-400" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-48">
-                  {Object.entries(ROLES).map(([key, config]) => {
-                    const Icon = config.icon;
-                    return (
-                      <DropdownMenuItem
-                        key={key}
-                        onClick={() => onRoleChange(key)}
-                        className="flex items-center gap-2 cursor-pointer"
-                        data-testid={`role-option-${key}`}
-                      >
-                        <Icon className={`w-4 h-4 ${config.color}`} />
-                        <span>{config.label}</span>
-                        {currentRole === key && (
-                          <span className="ml-auto text-xs text-slate-400">Active</span>
-                        )}
-                      </DropdownMenuItem>
-                    );
-                  })}
-                </DropdownMenuContent>
-              </DropdownMenu>
+          {/* User Info + Role Badge + Logout */}
+          <div className="flex items-center gap-4">
+            {/* Role Badge */}
+            <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-full">
+              <RoleIcon className={`w-4 h-4 ${currentRoleConfig?.color}`} />
+              <span className="text-sm font-medium text-slate-700">
+                {currentRoleConfig?.label}
+              </span>
             </div>
-          )}
+
+            {/* User Identity */}
+            {user && (
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-full bg-slate-200 flex items-center justify-center">
+                  <User className="w-4 h-4 text-slate-600" />
+                </div>
+                <span className="hidden md:inline text-sm text-slate-700 font-medium">
+                  {user.name || user.preferredUsername}
+                </span>
+              </div>
+            )}
+
+            {/* Logout */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onLogout}
+              className="text-slate-500 hover:text-red-600"
+              title="Sign out"
+              data-testid="logout-btn"
+            >
+              <LogOut className="w-4 h-4" />
+              <span className="hidden sm:inline ml-1">Sign out</span>
+            </Button>
+          </div>
         </div>
       </div>
     </header>

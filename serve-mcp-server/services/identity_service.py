@@ -27,7 +27,7 @@ from sqlalchemy import select, update
 
 from config import (
     ACTOR_CACHE_TTL_HOURS,
-    IDENTITY_EMAIL, IDENTITY_PHONE, IDENTITY_SESSION, IDENTITY_SYSTEM,
+    IDENTITY_EMAIL, IDENTITY_PHONE, IDENTITY_SESSION, IDENTITY_SYSTEM, IDENTITY_KEYCLOAK,
     USER_TYPE_NEW, USER_TYPE_REGISTRY_KNOWN, USER_TYPE_RETURNING,
     USER_TYPE_COORDINATOR, USER_TYPE_ANONYMOUS,
     VOLUNTEER_ROLE, COORDINATOR_ROLE,
@@ -115,7 +115,7 @@ class IdentityService:
             identity_type = self._infer_identity_type(actor_id, channel)
 
         # S5: truly anonymous (no identity at all)
-        if identity_type == IDENTITY_SESSION or not actor_id:
+        if (identity_type == IDENTITY_SESSION and not actor_id.startswith("web_")) or not actor_id:
             resolution = IdentityResolution(
                 actor_id=actor_id or "anonymous",
                 identity_type=identity_type or IDENTITY_SESSION,
@@ -167,6 +167,13 @@ class IdentityService:
 
         if identity_type == IDENTITY_EMAIL:
             serve_user = await volunteering_client.lookup_by_email(actor_id)
+        elif identity_type == IDENTITY_KEYCLOAK:
+            # Keycloak sub is not an email — look up by email from channel_metadata
+            # The email is injected by the orchestrator route from JWT claims.
+            # We check if it was passed in start_session's channel_metadata via session_id context.
+            # For now, fall through to prior session check — the Serve Registry
+            # lookup will happen via email if a session already has volunteer_id.
+            serve_user = None
         elif identity_type == IDENTITY_PHONE:
             # Phone lookup: try email field won't work; currently no phone endpoint.
             # Phone-based channels (WhatsApp) will start as anonymous and collect email.
@@ -227,6 +234,13 @@ class IdentityService:
             return IDENTITY_EMAIL
         if actor_id and actor_id.startswith("+"):
             return IDENTITY_PHONE
+        # Keycloak sub is a UUID (36 chars with hyphens)
+        if actor_id and len(actor_id) == 36 and actor_id.count("-") == 4:
+            try:
+                UUID(actor_id)
+                return IDENTITY_KEYCLOAK
+            except ValueError:
+                pass
         return IDENTITY_SESSION  # anonymous / temp session
 
     def _classify(

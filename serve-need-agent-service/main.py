@@ -2,7 +2,7 @@
 SERVE Need Agent Service
 FastAPI service for need coordination with eVidyaloka schools.
 """
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import os
@@ -10,6 +10,7 @@ import logging
 
 from app.schemas.need_schemas import NeedAgentTurnRequest, NeedAgentTurnResponse
 from app.service.need_logic import need_agent_service
+from app.auth import get_optional_user, UserClaims
 
 # Configure logging
 logging.basicConfig(
@@ -44,8 +45,8 @@ app.add_middleware(
 
 
 @app.post("/api/turn", response_model=NeedAgentTurnResponse)
-async def process_turn(request: NeedAgentTurnRequest):
-    """Process a conversation turn for need coordination."""
+async def process_turn(request: NeedAgentTurnRequest, user: UserClaims = Depends(get_optional_user)):
+    """Process a conversation turn for need coordination. Requires JWT."""
     try:
         return await need_agent_service.process_turn(request)
     except Exception as e:

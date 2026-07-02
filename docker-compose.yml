@@ -37,7 +37,8 @@ services:
       - FULFILL_API_PATH=${FULFILL_API_PATH:-/api/v1/serve-fulfill}
       - SERVE_REGISTRY_TIMEOUT=20
       - SERVE_REGISTRY_RETRIES=3
-      - FIREBASE_API_KEY=${FIREBASE_API_KEY:-}
+      - KEYCLOAK_URL=${KEYCLOAK_URL:-http://localhost:8080}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-sunbird-serve}
     ports:
       - "8004:8004"
     depends_on:
@@ -65,6 +66,8 @@ services:
       - ONBOARDING_WELCOME_VIDEO_URL=${ONBOARDING_WELCOME_VIDEO_URL:-}
       - ONBOARDING_CLASSROOM_VIDEO_URL=${ONBOARDING_CLASSROOM_VIDEO_URL:-}
       - ONBOARDING_MEDIA_BASE_URL=${ONBOARDING_MEDIA_BASE_URL:-http://localhost:8002/media}
+      - KEYCLOAK_URL=${KEYCLOAK_URL:-http://localhost:8080}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-sunbird-serve}
     ports:
       - "8002:8002"
     depends_on:
@@ -95,6 +98,8 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - NEED_START_DATE=${NEED_START_DATE:-2026-04-06}
       - APPLICABLE_GRADES=${APPLICABLE_GRADES:-6,7,8}
+      - KEYCLOAK_URL=${KEYCLOAK_URL:-http://localhost:8080}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-sunbird-serve}
     ports:
       - "8005:8005"
     depends_on:
@@ -131,6 +136,8 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - PERSONA_LLM_MODEL=${PERSONA_LLM_MODEL:-claude-haiku-4-5-20251001}
+      - KEYCLOAK_URL=${KEYCLOAK_URL:-http://localhost:8080}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-sunbird-serve}
     ports:
       - "8001:8001"
     depends_on:
@@ -162,6 +169,8 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - ENGAGEMENT_MAX_START_DELAY_DAYS=${ENGAGEMENT_MAX_START_DELAY_DAYS:-10}
+      - KEYCLOAK_URL=${KEYCLOAK_URL:-http://localhost:8080}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-sunbird-serve}
     ports:
       - "8006:8006"
     depends_on:
@@ -190,6 +199,8 @@ services:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - KEYCLOAK_URL=${KEYCLOAK_URL:-http://localhost:8080}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-sunbird-serve}
     ports:
       - "8007:8007"
     depends_on:
@@ -218,6 +229,8 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - TEACHING_LANGUAGE=${TEACHING_LANGUAGE:-English}
+      - KEYCLOAK_URL=${KEYCLOAK_URL:-http://localhost:8080}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-sunbird-serve}
     ports:
       - "8009:8009"
     depends_on:
@@ -237,9 +250,13 @@ services:
       dockerfile: Dockerfile
       args:
         - REACT_APP_BACKEND_URL=${REACT_APP_BACKEND_URL:-http://localhost:8001}
+        - REACT_APP_KEYCLOAK_URL=${KEYCLOAK_URL:-http://localhost:8080}
+        - REACT_APP_KEYCLOAK_REALM=${KEYCLOAK_REALM:-sunbird-serve}
     container_name: serve-ai-ui
     environment:
       - REACT_APP_BACKEND_URL=${REACT_APP_BACKEND_URL:-http://localhost:8001}
+      - REACT_APP_KEYCLOAK_URL=${KEYCLOAK_URL:-http://localhost:8080}
+      - REACT_APP_KEYCLOAK_REALM=${KEYCLOAK_REALM:-sunbird-serve}
     ports:
       - "3000:3000"
     depends_on:

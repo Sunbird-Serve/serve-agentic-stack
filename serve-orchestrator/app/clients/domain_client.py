@@ -232,6 +232,18 @@ class DomainClient:
             return result
         return {"status": "success", "data": result}
 
+    async def find_session_by_actor(self, actor_id: str) -> Dict:
+        """
+        Find the most recent active/paused session for a given actor_id.
+        Uses the find_session_by_actor MCP tool.
+        """
+        result = await _call_mcp_tool("find_session_by_actor", {
+            "actor_id": actor_id,
+        })
+        if result.get("status") in ("error", "not_found"):
+            return result
+        return {"status": "success", "data": result}
+
 
 # Singleton instance
 domain_client = DomainClient()

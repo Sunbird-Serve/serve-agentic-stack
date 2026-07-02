@@ -42,9 +42,9 @@ class WebUIAdapter(ChannelAdapter):
     """
     Adapter for the React/Web UI channel.
 
-    In SERVE, the user's email address is the canonical, stable identity across
-    all channels.  actor_id priority:
-      channel_metadata.email → channel_metadata.user_id → web_<session_id>
+    actor_id priority (Keycloak sub is the canonical stable identity):
+      channel_metadata.keycloak_sub → channel_metadata.email →
+      channel_metadata.user_id → web_<session_id>
 
     trigger_type is always USER_MESSAGE for the web UI.
     """
@@ -52,7 +52,8 @@ class WebUIAdapter(ChannelAdapter):
     def normalize(self, request: InteractionRequest) -> NormalizedEvent:
         meta = request.channel_metadata or {}
         actor_id = (
-            meta.get("email")
+            meta.get("keycloak_sub")
+            or meta.get("email")
             or meta.get("user_id")
             or (f"web_{request.session_id}" if request.session_id else "web_anonymous")
         )
@@ -161,11 +162,9 @@ class MobileAdapter(ChannelAdapter):
     """
     Adapter for the mobile app channel.
 
-    In SERVE, the user's email address is the canonical, stable identity across
-    all channels.  Using email (rather than device_id) ensures that a volunteer
-    who switches phones or reinstalls the app is still recognised as the same
-    person.  actor_id priority:
-      channel_metadata.email → channel_metadata.user_id → mobile_<session_id>
+    actor_id priority (Keycloak sub is the canonical stable identity):
+      channel_metadata.keycloak_sub → channel_metadata.email →
+      channel_metadata.user_id → mobile_<session_id>
 
     Device-scoped identifiers (device_id) are intentionally excluded because
     they represent the hardware, not the authenticated user.
@@ -174,7 +173,8 @@ class MobileAdapter(ChannelAdapter):
     def normalize(self, request: InteractionRequest) -> NormalizedEvent:
         meta = request.channel_metadata or {}
         actor_id = (
-            meta.get("email")
+            meta.get("keycloak_sub")
+            or meta.get("email")
             or meta.get("user_id")
             or (f"mobile_{request.session_id}" if request.session_id else "mobile_anonymous")
         )

@@ -1,12 +1,11 @@
 /**
  * eVidyaloka - Volunteer Management Platform
- * Main Application with volunteer-first routing
+ * Main Application with Keycloak JWT role-based routing
  */
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import '@/App.css';
+import { useAuth } from './context/AuthContext';
 import { Header } from './components/serve/Header';
-import { RoleSelector } from './views/RoleSelector';
-import { VolunteerLanding } from './views/VolunteerLanding';
 import { VolunteerView } from './views/VolunteerView';
 import { NeedCoordinatorView } from './views/NeedCoordinatorView';
 import { OpsView } from './views/OpsView';
@@ -15,122 +14,86 @@ import { ReturningVolunteerView } from './views/ReturningVolunteerView';
 import { RecommendedVolunteerView } from './views/RecommendedVolunteerView';
 import { Toaster } from './components/ui/sonner';
 
-// Check if we're on an internal route
-const isInternalRoute = () => {
-  const path = window.location.pathname;
-  return path === '/internal' || path === '/admin-entry' || path.startsWith('/staff');
-};
-
 function App() {
-  const [currentView, setCurrentView] = useState(null);
-  const [isInitialized, setIsInitialized] = useState(false);
+  const { authenticated, initializing, user, persona, logout } = useAuth();
 
-  // Initialize based on route
-  useEffect(() => {
-    if (isInternalRoute()) {
-      // Check for saved role preference for internal users
-      const savedRole = localStorage.getItem('serve-internal-role');
-      if (savedRole) {
-        setCurrentView(`internal-${savedRole}`);
-      } else {
-        setCurrentView('internal-selector');
-      }
-    } else {
-      // Default to volunteer landing page
-      setCurrentView('volunteer-landing');
-    }
-    setIsInitialized(true);
-  }, []);
+  // For volunteers, the agent logic determines sub-persona (new/returning/recommended)
+  // This state allows the orchestrator response to switch the volunteer view dynamically
+  const [volunteerSubView, setVolunteerSubView] = useState(null);
 
-  const handleStartVolunteerJourney = () => {
-    setCurrentView('volunteer-chat');
-  };
-
-  const handleBackToLanding = () => {
-    setCurrentView('volunteer-landing');
-  };
-
-  const handleInternalRoleChange = (role) => {
-    setCurrentView(`internal-${role}`);
-    localStorage.setItem('serve-internal-role', role);
-  };
-
-  const handleBackToInternalSelector = () => {
-    setCurrentView('internal-selector');
-    localStorage.removeItem('serve-internal-role');
-  };
-
-  // Show loading state during initialization
-  if (!isInitialized) {
+  // Show loading while Keycloak initializes
+  if (initializing) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
         <div className="text-center">
           <div className="w-12 h-12 rounded-full bg-amber-100 flex items-center justify-center mx-auto mb-4 animate-pulse">
             <span className="text-amber-600 font-bold text-xl">e</span>
           </div>
-          <p className="text-slate-500">Loading...</p>
+          <p className="text-slate-500">Signing in...</p>
         </div>
       </div>
     );
   }
 
-  // Volunteer-facing views (no header with system terminology)
-  if (currentView === 'volunteer-landing') {
+  // Should not happen with login-required, but safety net
+  if (!authenticated) {
     return (
-      <>
-        <VolunteerLanding onStartJourney={handleStartVolunteerJourney} />
-        <Toaster />
-      </>
+      <div className="min-h-screen flex items-center justify-center bg-white">
+        <p className="text-slate-500">Redirecting to login...</p>
+      </div>
     );
   }
 
-  if (currentView === 'volunteer-chat') {
+  // Volunteer persona — routed by agent logic to the right sub-view
+  if (persona === 'volunteer') {
+    const renderVolunteerView = () => {
+      switch (volunteerSubView) {
+        case 'returning':
+          return <ReturningVolunteerView onBack={() => setVolunteerSubView(null)} />;
+        case 'recommended':
+          return <RecommendedVolunteerView onBack={() => setVolunteerSubView(null)} />;
+        default:
+          // Default volunteer view — agent determines new/returning/recommended dynamically
+          return <VolunteerView onBack={null} />;
+      }
+    };
+
     return (
-      <>
-        <VolunteerView onBack={handleBackToLanding} />
+      <div className="app-container" data-testid="serve-ai-app">
+        <Header
+          currentRole="volunteer"
+          user={user}
+          onLogout={logout}
+          isInternal={false}
+        />
+        <main className="main-content">
+          {renderVolunteerView()}
+        </main>
         <Toaster />
-      </>
+      </div>
     );
   }
 
-  // Internal views (with header and role switcher)
-  if (currentView === 'internal-selector') {
-    return (
-      <>
-        <RoleSelector onSelectRole={handleInternalRoleChange} />
-        <Toaster />
-      </>
-    );
-  }
-
-  // Render internal view based on role
+  // Internal personas (ops, need_coordinator, admin)
   const renderInternalView = () => {
-    switch (currentView) {
-      case 'internal-volunteer':
-        return <VolunteerView onBack={handleBackToInternalSelector} />;
-      case 'internal-need_coordinator':
-        return <NeedCoordinatorView onBack={handleBackToInternalSelector} />;
-      case 'internal-returning_volunteer':
-        return <ReturningVolunteerView onBack={handleBackToInternalSelector} />;
-      case 'internal-recommended_volunteer':
-        return <RecommendedVolunteerView onBack={handleBackToInternalSelector} />;
-      case 'internal-ops':
+    switch (persona) {
+      case 'need_coordinator':
+        return <NeedCoordinatorView />;
+      case 'ops':
         return <OpsView />;
-      case 'internal-admin':
+      case 'admin':
         return <AdminView />;
       default:
-        return <RoleSelector onSelectRole={handleInternalRoleChange} />;
+        return <OpsView />;
     }
   };
 
-  // Get current role for header
-  const currentRole = currentView?.replace('internal-', '') || 'ops';
-
   return (
     <div className="app-container" data-testid="serve-ai-app">
-      <Header 
-        currentRole={currentRole} 
-        onRoleChange={handleInternalRoleChange}
+      <Header
+        currentRole={persona}
+        user={user}
+        onLogout={logout}
         isInternal={true}
       />
       <main className="main-content">
