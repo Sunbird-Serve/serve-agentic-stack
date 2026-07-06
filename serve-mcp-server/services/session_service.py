@@ -56,6 +56,10 @@ class SessionService:
         now = datetime.utcnow()
         meta = channel_metadata or {}
 
+        # Fall back to extracting actor_id from channel_metadata if not explicit
+        if not actor_id:
+            actor_id = meta.get("actor_id") or meta.get("keycloak_sub")
+
         # Derive workflow + agent from persona
         if persona == "need_coordinator":
             workflow     = "need_coordination"
@@ -188,6 +192,45 @@ class SessionService:
             "conversation_history": messages,
             "memory_summary": None,   # populated by MemoryService if needed
         }
+
+    async def find_active_by_actor(self, actor_id: str) -> Dict[str, Any]:
+        """
+        Find the most recent active or paused session for a given actor_id.
+        Returns the session data or {"status": "not_found"}.
+        """
+        if is_db_healthy():
+            try:
+                async with get_db() as db:
+                    query = (
+                        select(DBSession)
+                        .where(
+                            DBSession.actor_id == actor_id,
+                            DBSession.status.in_(["active", "paused"]),
+                        )
+                        .order_by(DBSession.updated_at.desc())
+                        .limit(1)
+                    )
+                    result = await db.execute(query)
+                    row = result.scalars().first()
+                    if row:
+                        return {
+                            "status": "success",
+                            "session": self._row_to_dict(row),
+                        }
+                    return {"status": "not_found"}
+            except Exception as e:
+                logger.warning(f"DB find_active_by_actor failed: {e}")
+
+        # In-memory fallback
+        matches = [
+            s for s in _mem.sessions.values()
+            if s.get("actor_id") == actor_id and s.get("status") in ("active", "paused")
+        ]
+        if matches:
+            # Sort by updated_at descending
+            matches.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
+            return {"status": "success", "session": matches[0]}
+        return {"status": "not_found"}
 
     # ── State transitions ─────────────────────────────────────────────────────
 

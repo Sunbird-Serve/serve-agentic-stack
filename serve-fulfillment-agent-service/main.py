@@ -5,7 +5,7 @@ FastAPI service for volunteer-to-need matching (L4 autonomy).
 Port: 8007
 Workflow: returning_volunteer
 """
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import os
@@ -13,6 +13,7 @@ import logging
 
 from app.schemas.fulfillment_schemas import FulfillmentAgentTurnRequest, FulfillmentAgentTurnResponse
 from app.service.fulfillment_logic import fulfillment_agent_service
+from app.auth import get_optional_user, UserClaims
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,8 +46,8 @@ app.add_middleware(
 
 
 @app.post("/api/turn", response_model=FulfillmentAgentTurnResponse)
-async def process_turn(request: FulfillmentAgentTurnRequest):
-    """Process a conversation turn for volunteer fulfillment matching."""
+async def process_turn(request: FulfillmentAgentTurnRequest, user: UserClaims = Depends(get_optional_user)):
+    """Process a conversation turn for volunteer fulfillment matching. Requires JWT."""
     try:
         return await fulfillment_agent_service.process_turn(request)
     except Exception as e:

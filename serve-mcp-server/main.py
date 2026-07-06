@@ -42,7 +42,7 @@ from services.serve_registry_client import volunteering_client
 # ── Import Pydantic input schemas ─────────────────────────────────────────────
 from schemas import (
     LookupActorInput,
-    StartSessionInput, GetSessionInput, ResumeSessionInput,
+    StartSessionInput, GetSessionInput, ResumeSessionInput, FindSessionByActorInput,
     AdvanceSessionStateInput, ListSessionsInput,
     GetMissingFieldsInput, SaveVolunteerFieldsInput, EvaluateReadinessInput,
     SaveMessageInput, GetConversationInput,
@@ -216,6 +216,21 @@ async def resume_session(params: ResumeSessionInput) -> dict:
 
 
 @mcp.tool()
+async def find_session_by_actor(params: FindSessionByActorInput) -> dict:
+    """
+    Find the most recent active or paused session for a given actor_id.
+    Used to resume sessions after page refresh when the user re-authenticates.
+
+    Args:
+        actor_id: Keycloak sub UUID or other stable identity
+
+    Returns:
+        Session data if found, or {"status": "not_found"}
+    """
+    return await session_service.find_active_by_actor(params.actor_id)
+
+
+@mcp.tool()
 async def advance_session_state(params: AdvanceSessionStateInput) -> dict:
     """
     Advance a session to a new workflow stage.
@@ -244,7 +259,6 @@ async def advance_session_state(params: AdvanceSessionStateInput) -> dict:
     if params.new_state == "onboarding_complete":
         logger.info(f"[{params.session_id}] ── REGISTRATION START ── onboarding_complete triggered")
         from services.database import get_db, Session as DBSession, is_db_healthy
-        from services.firebase_service import ensure_user as firebase_ensure_user
         from sqlalchemy import update as sa_update
         from uuid import UUID
 
@@ -259,18 +273,10 @@ async def advance_session_state(params: AdvanceSessionStateInput) -> dict:
             email = profile.get("email")
             logger.info(f"[{params.session_id}] profile for registration: name={profile.get('full_name')}, email={email}, phone={profile.get('phone')}, qualification={profile.get('qualification')}")
 
-            # ── Step 1: Firebase auth — create user + send password reset ──────
-            if email:
-                firebase_result = await firebase_ensure_user(
-                    email=email,
-                    display_name=profile.get("full_name", ""),
-                    create_if_missing=True,
-                    generate_reset_link=True,
-                )
-                logger.info(f"[{params.session_id}] Firebase result: status={firebase_result.get('status')}, uid={firebase_result.get('firebase_uid')}, reset_sent={firebase_result.get('reset_email_sent')}")
-                result["firebase"] = firebase_result
+            # NOTE: Firebase user creation removed — users are managed in Keycloak.
+            # The onboarding agent now handles profile completion only.
 
-            # ── Step 2: Serve Registry — check duplicate + create ──────────────
+            # ── Step 1: Serve Registry — check duplicate + create ──────────────
             if email:
                 existing = await volunteering_client.lookup_by_email(email)
                 logger.info(f"[{params.session_id}] lookup_by_email({email}) result: {existing}")
@@ -1501,21 +1507,40 @@ from starlette.requests import Request as _Request
 from starlette.responses import JSONResponse as _JSONResponse
 
 from config import DASHBOARD_API_KEY
-from services.dashboard_service import get_dashboard_stats, get_conversation_for_session, get_session_detail
+from services.dashboard_service import get_dashboard_stats, get_conversation_for_session, get_session_detail, get_analytics
+from services.auth import validate_token
 
 
-def _check_dashboard_auth(request: _Request) -> bool:
-    """Return True if the request carries a valid dashboard API key (or no key is configured)."""
-    if not DASHBOARD_API_KEY:
-        return True  # dev mode — no key set
-    auth = request.headers.get("Authorization", "")
-    token = auth.removeprefix("Bearer ").strip()
-    return token == DASHBOARD_API_KEY
+async def _check_dashboard_auth(request: _Request) -> bool:
+    """
+    Validate JWT and check for coordinator/admin roles.
+    Falls back to legacy API key check during migration.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return False
+
+    token = auth_header[7:]
+
+    # First try JWT validation
+    try:
+        claims = await validate_token(auth_header)
+        allowed_roles = {"vCoordinator", "nCoordinator", "sAdmin", "nAdmin", "vAdmin"}
+        if any(role in claims.roles for role in allowed_roles):
+            return True
+    except Exception:
+        pass
+
+    # Fallback: legacy static API key (remove after full migration)
+    if DASHBOARD_API_KEY and token == DASHBOARD_API_KEY:
+        return True
+
+    return False
 
 
 @mcp.custom_route("/api/dashboard/stats", methods=["GET"])
 async def dashboard_stats(request: _Request) -> _JSONResponse:
-    if not _check_dashboard_auth(request):
+    if not await _check_dashboard_auth(request):
         return _JSONResponse({"error": "Unauthorized"}, status_code=401)
     page = int(request.query_params.get("page", 1))
     page_size = int(request.query_params.get("page_size", 25))
@@ -1523,9 +1548,17 @@ async def dashboard_stats(request: _Request) -> _JSONResponse:
     return _JSONResponse(data)
 
 
+@mcp.custom_route("/api/dashboard/analytics", methods=["GET"])
+async def dashboard_analytics(request: _Request) -> _JSONResponse:
+    if not await _check_dashboard_auth(request):
+        return _JSONResponse({"error": "Unauthorized"}, status_code=401)
+    data = await get_analytics()
+    return _JSONResponse(data)
+
+
 @mcp.custom_route("/api/dashboard/conversation/{session_id}", methods=["GET"])
 async def dashboard_conversation(request: _Request) -> _JSONResponse:
-    if not _check_dashboard_auth(request):
+    if not await _check_dashboard_auth(request):
         return _JSONResponse({"error": "Unauthorized"}, status_code=401)
     session_id = request.path_params.get("session_id", "")
     limit = int(request.query_params.get("limit", 50))
@@ -1535,7 +1568,7 @@ async def dashboard_conversation(request: _Request) -> _JSONResponse:
 
 @mcp.custom_route("/api/dashboard/session/{session_id}", methods=["GET"])
 async def dashboard_session_detail(request: _Request) -> _JSONResponse:
-    if not _check_dashboard_auth(request):
+    if not await _check_dashboard_auth(request):
         return _JSONResponse({"error": "Unauthorized"}, status_code=401)
     session_id = request.path_params.get("session_id", "")
     data = await get_session_detail(session_id)

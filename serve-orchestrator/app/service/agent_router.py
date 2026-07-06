@@ -15,6 +15,7 @@ from typing import Dict, Optional
 from datetime import datetime
 from uuid import UUID
 
+from app.core.request_context import auth_token_var
 from app.schemas import (
     AgentTurnRequest, AgentTurnResponse, AgentType, WorkflowType,
     SessionState, IntentType, IntentResult,
@@ -416,6 +417,12 @@ class AgentRouter:
         
         start_time = datetime.utcnow()
         
+        # Forward JWT to downstream agent from request context
+        headers = {}
+        token = auth_token_var.get("")
+        if token:
+            headers["Authorization"] = token
+        
         async with httpx.AsyncClient() as client:
             try:
                 logger.info(f"Invoking agent {target_agent} at {url}")
@@ -423,6 +430,7 @@ class AgentRouter:
                 response = await client.post(
                     url,
                     json=request.model_dump(mode='json'),
+                    headers=headers,
                     timeout=timeout
                 )
                 response.raise_for_status()

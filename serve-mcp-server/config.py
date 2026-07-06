@@ -86,6 +86,7 @@ IDENTITY_EMAIL = "email"
 IDENTITY_PHONE = "phone"
 IDENTITY_SESSION = "session_id"
 IDENTITY_SYSTEM = "system"
+IDENTITY_KEYCLOAK = "keycloak"  # Keycloak sub (UUID) — stable authenticated identity
 
 # ─── Entity (School) User Roles ───────────────────────────────────────────────
 ENTITY_COORDINATOR_ROLE = os.environ.get("ENTITY_COORDINATOR_ROLE", "Coordinator")

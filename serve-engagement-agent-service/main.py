@@ -5,7 +5,7 @@ FastAPI service for re-engaging returning volunteers and recommended volunteers.
 Port: 8006
 Workflow: returning_volunteer, volunteer_engagement, recommended_volunteer
 """
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import os
@@ -15,6 +15,7 @@ from app.schemas.engagement_schemas import EngagementAgentTurnRequest, Engagemen
 from app.schemas.recommended_schemas import RecommendedAgentTurnRequest, RecommendedAgentTurnResponse
 from app.service.engagement_logic import engagement_agent_service
 from app.service.recommended_handler import recommended_handler
+from app.auth import get_optional_user, UserClaims
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,8 +48,8 @@ app.add_middleware(
 
 
 @app.post("/api/turn")
-async def process_turn(request: Request):
-    """Process a conversation turn — dispatches by workflow type."""
+async def process_turn(request: Request, user: UserClaims = Depends(get_optional_user)):
+    """Process a conversation turn — dispatches by workflow type. Requires JWT."""
     try:
         body = await request.json()
         session_state = body.get("session_state") or {}
