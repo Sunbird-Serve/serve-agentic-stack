@@ -17,6 +17,28 @@ def _non_empty(v: str, field_name: str = "field") -> str:
     return v.strip()
 
 
+_NAME_WORD_PATTERN = re.compile(r"^[A-Za-z]+(?:['\-][A-Za-z]+)*$")
+
+
+def _is_valid_full_name(value: str) -> bool:
+    """
+    Defense-in-depth check at the MCP boundary: a valid full name has a first
+    and last name, each 2-20 letters (hyphen/apostrophe allowed). This mirrors
+    the onboarding agent's own check, duplicated here so no caller — current
+    or future, from any service — can persist an unvalidated name by bypassing
+    the onboarding agent's client-side logic.
+    """
+    words = value.split()
+    if len(words) < 2 or len(value) > 60:
+        return False
+    for word in words:
+        if not (2 <= len(word) <= 20):
+            return False
+        if not _NAME_WORD_PATTERN.match(word):
+            return False
+    return True
+
+
 # ─── Identity ────────────────────────────────────────────────────────────────
 
 class LookupActorInput(BaseModel):
@@ -183,6 +205,9 @@ class SaveVolunteerFieldsInput(BaseModel):
         email = v.get("email")
         if email and "@" not in str(email):
             raise ValueError("email must be a valid email address")
+        full_name = v.get("full_name")
+        if full_name and not _is_valid_full_name(str(full_name).strip()):
+            raise ValueError("full_name must contain a first and last name (letters only)")
         return v
 
     @field_validator("session_id")
