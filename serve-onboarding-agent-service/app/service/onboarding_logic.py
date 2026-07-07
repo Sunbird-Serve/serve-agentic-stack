@@ -169,10 +169,17 @@ class ProfileExtractor:
                         continue
                     words.append(word)
                 if words:
-                    candidate = " ".join(words[:self.NAME_MAX_WORDS]).title()
+                    candidate = " ".join(
+                        self._normalize_name_word(w) for w in words[:self.NAME_MAX_WORDS]
+                    )
                     if self._is_valid_name(candidate):
                         return candidate
         return None
+
+    @staticmethod
+    def _normalize_name_word(word: str) -> str:
+        """Title-case uniform-case input; preserve intentional mixed case (McDonald)."""
+        return word.title() if word.islower() or word.isupper() else word
 
     def _is_valid_name(self, candidate: str) -> bool:
         """A valid full name has a first and last name, each a plausible name-shaped word."""

@@ -205,9 +205,13 @@ class SaveVolunteerFieldsInput(BaseModel):
         email = v.get("email")
         if email and "@" not in str(email):
             raise ValueError("email must be a valid email address")
-        full_name = v.get("full_name")
-        if full_name and not _is_valid_full_name(str(full_name).strip()):
-            raise ValueError("full_name must contain a first and last name (letters only)")
+        if "full_name" in v:
+            full_name = str(v["full_name"] or "").strip()
+            if not _is_valid_full_name(full_name):
+                raise ValueError(
+                    "full_name must contain a first and last name "
+                    "(letters, hyphens, and apostrophes only)"
+                )
         return v
 
     @field_validator("session_id")
