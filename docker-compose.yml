@@ -138,6 +138,7 @@ services:
       - PERSONA_LLM_MODEL=${PERSONA_LLM_MODEL:-claude-haiku-4-5-20251001}
       - KEYCLOAK_URL=${KEYCLOAK_URL:-http://localhost:8080}
       - KEYCLOAK_REALM=${KEYCLOAK_REALM:-sunbird-serve}
+      - AUTH_ENABLED=${AUTH_ENABLED:-false}
     ports:
       - "8001:8001"
     depends_on:
@@ -252,11 +253,13 @@ services:
         - REACT_APP_BACKEND_URL=${REACT_APP_BACKEND_URL:-http://localhost:8001}
         - REACT_APP_KEYCLOAK_URL=${KEYCLOAK_URL:-http://localhost:8080}
         - REACT_APP_KEYCLOAK_REALM=${KEYCLOAK_REALM:-sunbird-serve}
+        - REACT_APP_AUTH_ENABLED=${AUTH_ENABLED:-false}
     container_name: serve-ai-ui
     environment:
       - REACT_APP_BACKEND_URL=${REACT_APP_BACKEND_URL:-http://localhost:8001}
       - REACT_APP_KEYCLOAK_URL=${KEYCLOAK_URL:-http://localhost:8080}
       - REACT_APP_KEYCLOAK_REALM=${KEYCLOAK_REALM:-sunbird-serve}
+      - REACT_APP_AUTH_ENABLED=${AUTH_ENABLED:-false}
     ports:
       - "3000:3000"
     depends_on:

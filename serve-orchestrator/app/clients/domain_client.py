@@ -244,6 +244,17 @@ class DomainClient:
             return result
         return {"status": "success", "data": result}
 
+    async def update_session_actor(self, session_id: str, new_actor_id: str) -> Dict:
+        """
+        Update the actor_id of a session. Used for linking guest sessions
+        to authenticated users after sign-up.
+        """
+        result = await _call_mcp_tool("update_session_actor", {
+            "session_id": session_id,
+            "actor_id": new_actor_id,
+        })
+        return result
+
 
 # Singleton instance
 domain_client = DomainClient()

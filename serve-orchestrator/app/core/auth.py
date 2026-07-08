@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
+AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "true").lower() == "true"
+
 KEYCLOAK_URL = os.environ.get("KEYCLOAK_URL", "http://localhost:8080")
 KEYCLOAK_REALM = os.environ.get("KEYCLOAK_REALM", "sunbird-serve")
 
@@ -37,6 +39,9 @@ ISSUER = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}"
 _jwks_cache: dict = {}
 _jwks_fetched_at: float = 0
 _JWKS_CACHE_TTL = 3600  # 1 hour
+
+# Dev bypass user — returned when AUTH_ENABLED=false
+_DEV_USER_CLAIMS = None  # Lazily initialized
 
 
 # ── Models ─────────────────────────────────────────────────────────────────────
@@ -51,6 +56,23 @@ class UserClaims(BaseModel):
     agency_id: Optional[str] = None
     agency_type: Optional[str] = None
     rc_osid: Optional[str] = None
+
+
+def _get_dev_user() -> "UserClaims":
+    """Return a dev user with all roles for local development."""
+    global _DEV_USER_CLAIMS
+    if _DEV_USER_CLAIMS is None:
+        _DEV_USER_CLAIMS = UserClaims(
+            sub="dev-user-00000000-0000-0000-0000-000000000000",
+            email="dev@localhost",
+            preferred_username="dev-contributor",
+            name="Dev Contributor",
+            roles=["Volunteer", "nCoordinator", "vCoordinator", "sAdmin", "nAdmin", "vAdmin"],
+            agency_id=None,
+            agency_type=None,
+            rc_osid=None,
+        )
+    return _DEV_USER_CLAIMS
 
 
 # ── JWKS Fetching ──────────────────────────────────────────────────────────────
@@ -196,7 +218,13 @@ async def get_current_user(request: Request) -> UserClaims:
     """
     FastAPI dependency that extracts and validates the JWT from the request.
     Returns UserClaims on success, raises 401 on failure.
+
+    When AUTH_ENABLED=false (local dev), returns a dev user with all roles
+    without requiring any token.
     """
+    if not AUTH_ENABLED:
+        return _get_dev_user()
+
     token = _extract_bearer_token(request)
     payload = await _decode_token(token)
     return _extract_claims(payload)

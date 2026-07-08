@@ -103,6 +103,11 @@ class FindSessionByActorInput(BaseModel):
     actor_id: str = Field(description="Keycloak sub or other stable actor identifier")
 
 
+class UpdateSessionActorInput(BaseModel):
+    session_id: str = Field(description="UUID of the session to update")
+    actor_id: str = Field(description="New actor_id (e.g., Keycloak sub) to link to this session")
+
+
 class AdvanceSessionStateInput(BaseModel):
     session_id: str = Field(description="UUID of the session")
     new_state: str = Field(description="Target workflow stage")

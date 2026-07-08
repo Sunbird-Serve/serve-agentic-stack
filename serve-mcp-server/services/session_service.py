@@ -359,6 +359,40 @@ class SessionService:
             "error_message": f"Session {session_id} not found",
         }
 
+    async def update_actor_id(self, session_id: str, new_actor_id: str) -> Dict[str, Any]:
+        """
+        Update the actor_id of a session.
+        Used to link guest sessions to authenticated users after sign-up.
+        """
+        if is_db_healthy():
+            try:
+                async with get_db() as db:
+                    result = await db.execute(
+                        select(DBSession).where(DBSession.id == UUID(session_id))
+                    )
+                    row = result.scalar_one_or_none()
+                    if row:
+                        await db.execute(
+                            update(DBSession)
+                            .where(DBSession.id == UUID(session_id))
+                            .values(actor_id=new_actor_id, updated_at=datetime.utcnow())
+                        )
+                        return {"status": "success", "actor_id": new_actor_id}
+            except Exception as e:
+                logger.warning(f"DB update_actor_id failed: {e}")
+
+        # In-memory fallback
+        if session_id in _mem.sessions:
+            _mem.sessions[session_id]["actor_id"] = new_actor_id
+            _mem.sessions[session_id]["updated_at"] = datetime.utcnow().isoformat()
+            return {"status": "success", "actor_id": new_actor_id}
+
+        return {
+            "status": "error",
+            "error_code": "SESSION_NOT_FOUND",
+            "error_message": f"Session {session_id} not found",
+        }
+
     # ── Messages ──────────────────────────────────────────────────────────────
 
     async def save_message(

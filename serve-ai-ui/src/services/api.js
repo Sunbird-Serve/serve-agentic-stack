@@ -1,10 +1,12 @@
 /**
  * SERVE AI - API Service
  * Handles all communication with the backend services.
- * JWT token is attached automatically via Keycloak auth interceptor.
+ * JWT token is attached automatically when auth is enabled (Keycloak).
+ * In dev mode (AUTH_ENABLED=false), no token is sent.
  */
 import axios from "axios";
-import keycloak from "../lib/keycloak";
+
+const AUTH_ENABLED = process.env.REACT_APP_AUTH_ENABLED !== "false";
 
 const BACKEND_URL =
   process.env.REACT_APP_BACKEND_URL || "http://localhost:8001";
@@ -19,27 +21,32 @@ const apiClient = axios.create({
   timeout: 60000,
 });
 
-// Attach JWT token to every outgoing request
-apiClient.interceptors.request.use(
-  async (config) => {
-    if (keycloak.authenticated) {
-      try {
-        await keycloak.updateToken(30);
-        config.headers.Authorization = `Bearer ${keycloak.token}`;
-      } catch {
-        keycloak.logout();
+// Attach JWT token to every outgoing request (only when auth is enabled)
+if (AUTH_ENABLED) {
+  apiClient.interceptors.request.use(
+    async (config) => {
+      // Lazy-load keycloak to avoid import errors in dev mode
+      const keycloak = require("../lib/keycloak").default;
+      if (keycloak.authenticated) {
+        try {
+          await keycloak.updateToken(30);
+          config.headers.Authorization = `Bearer ${keycloak.token}`;
+        } catch {
+          keycloak.logout();
+        }
       }
-    }
-    return config;
-  },
-  (error) => Promise.reject(error)
-);
+      return config;
+    },
+    (error) => Promise.reject(error)
+  );
+}
 
 // Add response interceptor for error handling
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    if (AUTH_ENABLED && error.response?.status === 401) {
+      const keycloak = require("../lib/keycloak").default;
       keycloak.logout();
     }
     console.error("API Error:", error.response?.data || error.message);
@@ -51,7 +58,7 @@ apiClient.interceptors.response.use(
  * Orchestrator API
  */
 export const orchestratorApi = {
-  // Process a chat interaction
+  // Process a chat interaction (authenticated)
   interact: async (
     sessionId,
     message,
@@ -71,6 +78,36 @@ export const orchestratorApi = {
       payload.channel_metadata = channelMetadata;
     }
     const response = await apiClient.post("/orchestrator/interact", payload);
+    return response.data;
+  },
+
+  // Process a guest (unauthenticated) interaction — no JWT required
+  guestInteract: async (
+    sessionId,
+    message,
+    guestId = null,
+    channel = "web_ui",
+    persona = "new_volunteer",
+  ) => {
+    const payload = {
+      message,
+      channel,
+      persona,
+      channel_metadata: { guest_id: guestId },
+    };
+    if (sessionId) {
+      payload.session_id = sessionId;
+    }
+    const response = await apiClient.post("/orchestrator/guest-interact", payload);
+    return response.data;
+  },
+
+  // Link a guest session to an authenticated user
+  linkSession: async (sessionId, guestId) => {
+    const response = await apiClient.post("/orchestrator/link-session", {
+      session_id: sessionId,
+      guest_id: guestId,
+    });
     return response.data;
   },
 
@@ -196,24 +233,7 @@ export const dashboardApi = {
   },
 };
 
-// ── Dashboard auth helpers (legacy — now handled by Keycloak JWT) ─────────────
-// Kept for backward compatibility during migration; can be removed once
-// all consumers are verified to use JWT exclusively.
-
-const DASHBOARD_TOKEN_KEY = "serve_dashboard_token";
-
-export const dashboardAuth = {
-  /** @deprecated Use Keycloak auth — token is attached automatically */
-  getToken: () => localStorage.getItem(DASHBOARD_TOKEN_KEY) || "",
-  setToken: (token) => localStorage.setItem(DASHBOARD_TOKEN_KEY, token),
-  clearToken: () => localStorage.removeItem(DASHBOARD_TOKEN_KEY),
-  isAuthenticated: () => Boolean(localStorage.getItem(DASHBOARD_TOKEN_KEY)),
-};
-
-function _dashboardAuthHeader() {
-  // No longer needed — JWT is attached by request interceptor
-  return {};
-}
+// ── Dashboard auth (legacy — removed, Keycloak handles auth now) ──────────────
 
 export default {
   orchestrator: orchestratorApi,
