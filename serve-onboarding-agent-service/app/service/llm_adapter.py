@@ -6,6 +6,7 @@ Each turn gets a fresh system prompt with only the current stage context.
 Only the last 2 messages of history are sent to keep input tokens minimal.
 No tool calling — the LLM only generates conversational responses.
 """
+import asyncio
 import json
 import os
 import logging
@@ -26,7 +27,24 @@ _API_KEY = next((os.environ[k] for k in _PROVIDER_KEY_VARS if os.environ.get(k))
 if os.environ.get("EMERGENT_LLM_KEY") and not os.environ.get("ANTHROPIC_API_KEY"):
     os.environ["ANTHROPIC_API_KEY"] = os.environ["EMERGENT_LLM_KEY"]
 _MODEL = os.environ.get("LLM_MODEL", "claude-haiku-4-5-20251001")
-_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "15"))
+# Free-tier OpenRouter models routinely take 15-35s to respond, so the
+# per-attempt timeout must be generous enough to let a genuinely slow (but
+# working) call finish rather than aborting and retrying it needlessly.
+# The orchestrator allows 60s for the whole onboarding turn (see
+# agent_router.py AgentRegistry), so worst case here
+# (_TIMEOUT * _MAX_ATTEMPTS + backoff) must stay comfortably under that,
+# leaving headroom for the rest of process_turn's MCP/memory-service calls.
+_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "25"))
+_MAX_ATTEMPTS = int(os.environ.get("LLM_MAX_ATTEMPTS", "2"))
+_RETRY_BACKOFF_SECONDS = float(os.environ.get("LLM_RETRY_BACKOFF_SECONDS", "1"))
+
+# Shown only after every retry has been exhausted. Deliberately generic and
+# honest about the failure — never a scripted conversational line, so a
+# transient LLM outage can't be mistaken for the agent misunderstanding the
+# volunteer's answer.
+_UNAVAILABLE_RESPONSE = (
+    "I'm having a little trouble responding right now. Could you please send that again?"
+)
 
 # Video URLs — served from the onboarding agent's /media endpoint
 _MEDIA_BASE_URL = os.environ.get("ONBOARDING_MEDIA_BASE_URL", "http://localhost:8002/media")
@@ -271,33 +289,41 @@ Your task: Stay in the current step. Do not ask additional questions. If the vol
 
 async def _call_llm(system_prompt: str, messages: List[Dict[str, str]]) -> str:
     """
-    Make a single LLM call via LiteLLM (model-agnostic).
+    Make a single LLM call via LiteLLM (model-agnostic), retrying transient
+    failures before giving up.
+
     Supports any model: Claude, GPT, Gemini, Mistral, etc.
     Set LLM_MODEL env var to switch models.
     """
     if not _API_KEY:
         logger.warning("No API key configured — using fallback response")
-        return "Welcome to eVidyaloka! We are glad you are interested in volunteering."
+        return _UNAVAILABLE_RESPONSE
 
-    try:
-        import litellm
-        litellm.drop_params = True  # Ignore unsupported params for different providers
+    import litellm
+    litellm.drop_params = True  # Ignore unsupported params for different providers
 
-        # LiteLLM uses OpenAI message format with system as a message
-        llm_messages = [{"role": "system", "content": system_prompt}] + messages
+    # LiteLLM uses OpenAI message format with system as a message
+    llm_messages = [{"role": "system", "content": system_prompt}] + messages
 
-        response = await litellm.acompletion(
-            model=_MODEL,
-            messages=llm_messages,
-            max_tokens=300,
-            timeout=_TIMEOUT,
-        )
-        text = response.choices[0].message.content.strip()
-        return text or "How can I help you today?"
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            response = await litellm.acompletion(
+                model=_MODEL,
+                messages=llm_messages,
+                max_tokens=300,
+                timeout=_TIMEOUT,
+            )
+            text = response.choices[0].message.content.strip()
+            return text or "How can I help you today?"
 
-    except Exception as e:
-        logger.error(f"LLM call failed: {e}")
-        return "Welcome to eVidyaloka! We are glad you are interested in volunteering."
+        except Exception as e:
+            is_last_attempt = attempt == _MAX_ATTEMPTS
+            log = logger.error if is_last_attempt else logger.warning
+            log(f"LLM call failed (attempt {attempt}/{_MAX_ATTEMPTS}): {e}")
+            if not is_last_attempt:
+                await asyncio.sleep(_RETRY_BACKOFF_SECONDS * attempt)
+
+    return _UNAVAILABLE_RESPONSE
 
 
 # ── Main adapter class ──────────────────────────────────────────────────────────
