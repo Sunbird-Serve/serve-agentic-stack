@@ -1,41 +1,59 @@
 /**
- * eVidyaloka - Volunteer Management Platform
- * Main Application with Keycloak JWT role-based routing
+ * SERVE — Main Application
+ * Uses React Router v7 for URL-based navigation.
+ *
+ * Route structure:
+ *   /onboarding     — Public, no auth required (guest volunteer onboarding)
+ *   /conversations  — Auth required (Keycloak)
+ *   /operations/*   — Auth required (Keycloak)
  */
-import { useState } from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import '@/App.css';
 import { useAuth } from './context/AuthContext';
-import { Header } from './components/serve/Header';
-import { VolunteerView } from './views/VolunteerView';
-import { NeedCoordinatorView } from './views/NeedCoordinatorView';
-import { OpsView } from './views/OpsView';
-import { AdminView } from './views/AdminView';
-import { ReturningVolunteerView } from './views/ReturningVolunteerView';
-import { RecommendedVolunteerView } from './views/RecommendedVolunteerView';
+import { AppShell } from './components/layout/AppShell';
+import { ConversationsPage } from './pages/ConversationsPage';
+import { OnboardingPage } from './pages/OnboardingPage';
+import { OperationsLayout } from './pages/operations/OperationsLayout';
+import { OverviewTab } from './pages/operations/OverviewTab';
+import { ConversationsTab } from './pages/operations/ConversationsTab';
+import { PipelineTab } from './pages/operations/PipelineTab';
+import { AgentsTab } from './pages/operations/AgentsTab';
+import { EvaluationTab } from './pages/operations/EvaluationTab';
 import { Toaster } from './components/ui/sonner';
+import { useBranding } from './context/BrandingContext';
 
-function App() {
-  const { authenticated, initializing, user, persona, logout } = useAuth();
+/**
+ * AuthGuard — wraps routes that require authentication.
+ * In dev mode (AUTH_ENABLED=false): shows a role picker.
+ * In production: shows loading/redirect state while Keycloak initializes.
+ */
+function AuthGuard({ children }) {
+  const { authenticated, initializing, isDevMode, selectRole } = useAuth();
+  const { appName, primaryColor } = useBranding();
 
-  // For volunteers, the agent logic determines sub-persona (new/returning/recommended)
-  // This state allows the orchestrator response to switch the volunteer view dynamically
-  const [volunteerSubView, setVolunteerSubView] = useState(null);
-
-  // Show loading while Keycloak initializes
   if (initializing) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
         <div className="text-center">
-          <div className="w-12 h-12 rounded-full bg-amber-100 flex items-center justify-center mx-auto mb-4 animate-pulse">
-            <span className="text-amber-600 font-bold text-xl">e</span>
+          <div
+            className="w-12 h-12 rounded-lg flex items-center justify-center mx-auto mb-4 animate-pulse"
+            style={{ backgroundColor: primaryColor }}
+          >
+            <span className="text-white font-bold text-xl">
+              {appName?.charAt(0) || 'S'}
+            </span>
           </div>
-          <p className="text-slate-500">Signing in...</p>
+          <p className="text-slate-500 text-sm">Signing in...</p>
         </div>
       </div>
     );
   }
 
-  // Should not happen with login-required, but safety net
+  // Dev mode: show role picker instead of Keycloak redirect
+  if (!authenticated && isDevMode) {
+    return <DevRolePicker onSelectRole={selectRole} />;
+  }
+
   if (!authenticated) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
@@ -44,63 +62,89 @@ function App() {
     );
   }
 
-  // Volunteer persona — routed by agent logic to the right sub-view
-  if (persona === 'volunteer') {
-    const renderVolunteerView = () => {
-      switch (volunteerSubView) {
-        case 'returning':
-          return <ReturningVolunteerView onBack={() => setVolunteerSubView(null)} />;
-        case 'recommended':
-          return <RecommendedVolunteerView onBack={() => setVolunteerSubView(null)} />;
-        default:
-          // Default volunteer view — agent determines new/returning/recommended dynamically
-          return <VolunteerView onBack={null} />;
-      }
-    };
+  return children;
+}
 
-    return (
-      <div className="app-container" data-testid="serve-ai-app">
-        <Header
-          currentRole="volunteer"
-          user={user}
-          onLogout={logout}
-          isInternal={false}
-        />
-        <main className="main-content">
-          {renderVolunteerView()}
-        </main>
-        <Toaster />
-      </div>
-    );
-  }
-
-  // Internal personas (ops, need_coordinator, admin)
-  const renderInternalView = () => {
-    switch (persona) {
-      case 'need_coordinator':
-        return <NeedCoordinatorView />;
-      case 'ops':
-        return <OpsView />;
-      case 'admin':
-        return <AdminView />;
-      default:
-        return <OpsView />;
-    }
-  };
+/**
+ * DevRolePicker — Simplified role selector for local development.
+ * Allows contributors to test any persona without Keycloak.
+ */
+function DevRolePicker({ onSelectRole }) {
+  const roles = [
+    { id: 'volunteer', label: 'Volunteer', description: 'Onboarding & engagement flow' },
+    { id: 'need_coordinator', label: 'Need Coordinator', description: 'Need creation flow' },
+    { id: 'ops', label: 'Operations', description: 'Pipeline & dashboard views' },
+    { id: 'admin', label: 'Admin', description: 'Full system access' },
+  ];
 
   return (
-    <div className="app-container" data-testid="serve-ai-app">
-      <Header
-        currentRole={persona}
-        user={user}
-        onLogout={logout}
-        isInternal={true}
-      />
-      <main className="main-content">
-        {renderInternalView()}
-      </main>
-      <Toaster />
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-8">
+      <div className="max-w-md w-full">
+        <div className="text-center mb-8">
+          <div className="w-12 h-12 rounded-lg bg-amber-500 flex items-center justify-center mx-auto mb-4">
+            <span className="text-white font-bold text-xl">S</span>
+          </div>
+          <h1 className="text-xl font-semibold text-slate-900">Dev Mode</h1>
+          <p className="text-sm text-slate-500 mt-1">
+            Auth is disabled. Pick a role to continue.
+          </p>
+          <p className="text-xs text-amber-600 mt-2 font-medium">
+            Set REACT_APP_AUTH_ENABLED=true to use Keycloak
+          </p>
+        </div>
+        <div className="space-y-3">
+          {roles.map((role) => (
+            <button
+              key={role.id}
+              onClick={() => onSelectRole(role.id)}
+              className="w-full text-left p-4 bg-white border border-slate-200 rounded-lg hover:border-amber-400 hover:shadow-sm transition-all group"
+            >
+              <div className="font-medium text-slate-900 group-hover:text-amber-700">
+                {role.label}
+              </div>
+              <div className="text-sm text-slate-500">{role.description}</div>
+            </button>
+          ))}
+        </div>
+      </div>
     </div>
+  );
+}
+
+function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        {/* Public route — no auth required */}
+        <Route path="/onboarding" element={<OnboardingPage />} />
+
+        {/* Auth-required routes */}
+        <Route
+          path="/"
+          element={
+            <AuthGuard>
+              <AppShell />
+            </AuthGuard>
+          }
+        >
+          <Route index element={<Navigate to="/conversations" replace />} />
+          <Route path="conversations" element={<ConversationsPage />} />
+          <Route path="conversations/:sessionId" element={<ConversationsPage />} />
+
+          <Route path="operations" element={<OperationsLayout />}>
+            <Route index element={<Navigate to="/operations/overview" replace />} />
+            <Route path="overview" element={<OverviewTab />} />
+            <Route path="conversations" element={<ConversationsTab />} />
+            <Route path="pipeline" element={<PipelineTab />} />
+            <Route path="agents" element={<AgentsTab />} />
+            <Route path="evaluation" element={<EvaluationTab />} />
+          </Route>
+
+          <Route path="*" element={<Navigate to="/conversations" replace />} />
+        </Route>
+      </Routes>
+      <Toaster />
+    </BrowserRouter>
   );
 }
 

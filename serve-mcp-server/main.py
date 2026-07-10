@@ -43,6 +43,7 @@ from services.serve_registry_client import volunteering_client
 from schemas import (
     LookupActorInput,
     StartSessionInput, GetSessionInput, ResumeSessionInput, FindSessionByActorInput,
+    UpdateSessionActorInput,
     AdvanceSessionStateInput, ListSessionsInput,
     GetMissingFieldsInput, SaveVolunteerFieldsInput, EvaluateReadinessInput,
     SaveMessageInput, GetConversationInput,
@@ -228,6 +229,23 @@ async def find_session_by_actor(params: FindSessionByActorInput) -> dict:
         Session data if found, or {"status": "not_found"}
     """
     return await session_service.find_active_by_actor(params.actor_id)
+
+
+@mcp.tool()
+async def update_session_actor(params: UpdateSessionActorInput) -> dict:
+    """
+    Update the actor_id of an existing session.
+    Used to link a guest (anonymous) session to an authenticated Keycloak user
+    after they sign up.
+
+    Args:
+        session_id: UUID of the session to update
+        actor_id:   New actor_id (Keycloak sub) to link to this session
+
+    Returns:
+        {"status": "success"} or {"status": "error", "error_message": "..."}
+    """
+    return await session_service.update_actor_id(params.session_id, params.actor_id)
 
 
 @mcp.tool()

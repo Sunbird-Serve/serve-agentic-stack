@@ -921,6 +921,30 @@ class OrchestrationService:
             return result.get("data")
         return None
 
+    async def link_guest_session(self, session_id: str, guest_id: str, keycloak_sub: str) -> dict:
+        """
+        Link a guest (anonymous) session to an authenticated Keycloak user.
+        Updates the session's actor_id from the guest_id to the keycloak_sub.
+        """
+        # Verify the session exists and belongs to the guest
+        session_result = await domain_client.get_session(session_id)
+        if session_result.get("status") == "error":
+            return {"status": "error", "error": "Session not found"}
+
+        session_data = session_result.get("data", {})
+        session_actor = session_data.get("actor_id", "")
+
+        # Security check: only allow linking if the session belongs to the guest
+        if session_actor != guest_id:
+            return {"status": "error", "error": "Session does not belong to this guest"}
+
+        # Update the actor_id to the authenticated user's keycloak_sub
+        update_result = await domain_client.update_session_actor(session_id, keycloak_sub)
+        if update_result.get("status") == "error":
+            return {"status": "error", "error": "Failed to update session actor"}
+
+        return {"status": "success", "previous_actor": guest_id, "new_actor": keycloak_sub}
+
 
 # Singleton instance
 orchestration_service = OrchestrationService()

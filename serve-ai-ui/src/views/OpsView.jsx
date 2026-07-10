@@ -1,18 +1,18 @@
 /**
- * eVidyaloka — Volunteer Management Dashboard
+ * SERVE — Volunteer Pipeline Dashboard
  * Unified ops view: KPIs → Funnel → Per-Agent Detail → Action Queue
  */
 import { useState, useEffect, useCallback } from 'react';
 import {
   RefreshCw, Users, UserCheck, Clock, CheckCircle2, AlertTriangle,
   ArrowRight, ChevronLeft, ChevronRight, TrendingUp,
-  XCircle, Lock, Handshake, Timer, BarChart3,
+  XCircle, Handshake, Timer, BarChart3,
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Input } from '../components/ui/input';
-import { dashboardApi, dashboardAuth } from '../services/api';
+import { dashboardApi } from '../services/api';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -266,62 +266,6 @@ const PaginatedTable = ({ rows, columns }) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Section 1: Login gate
-// ═══════════════════════════════════════════════════════════════════════════════
-
-const OpsLogin = ({ onAuthenticated }) => {
-  const [token, setToken] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
-    dashboardAuth.setToken(token.trim());
-    try {
-      const result = await dashboardApi.getStats();
-      if (result?.error === 'Unauthorized') {
-        dashboardAuth.clearToken();
-        setError('Invalid token. Please try again.');
-      } else {
-        onAuthenticated();
-      }
-    } catch (err) {
-      if (err.response?.status === 401) {
-        dashboardAuth.clearToken();
-        setError('Invalid token. Please try again.');
-      } else {
-        onAuthenticated();
-      }
-    }
-    setLoading(false);
-  };
-
-  return (
-    <div className="bg-slate-50 min-h-[calc(100vh-64px)] flex items-center justify-center">
-      <div className="bg-white rounded-xl p-8 w-full max-w-sm shadow-lg border border-slate-200">
-        <div className="flex justify-center mb-4">
-          <div className="w-12 h-12 rounded-xl bg-emerald-100 flex items-center justify-center">
-            <Lock className="w-6 h-6 text-emerald-600" />
-          </div>
-        </div>
-        <h2 className="text-lg font-semibold text-slate-900 text-center mb-1">Volunteer Dashboard</h2>
-        <p className="text-xs text-slate-500 text-center mb-6">Enter your access token to continue</p>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <Input type="password" placeholder="Access token" value={token} onChange={e => setToken(e.target.value)} className="border-slate-300" autoFocus />
-          {error && <p className="text-xs text-red-500">{error}</p>}
-          <Button type="submit" disabled={!token.trim() || loading} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white">
-            {loading ? <RefreshCw className="w-4 h-4 animate-spin mr-2" /> : null}
-            Sign in
-          </Button>
-        </form>
-      </div>
-    </div>
-  );
-};
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // Section 2: Overall Pipeline Funnel
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -565,7 +509,6 @@ const ActionQueue = ({ items }) => (
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export const OpsView = () => {
-  const [authed, setAuthed] = useState(dashboardAuth.isAuthenticated());
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState(null);
@@ -608,18 +551,12 @@ export const OpsView = () => {
   }, []);
 
   useEffect(() => {
-    if (authed) {
-      load(false); // use cache on mount
-    }
-  }, [authed, load]);
-
-  if (!authed) return <OpsLogin onAuthenticated={() => setAuthed(true)} />;
+    load(false);
+  }, [load]);
 
   const sessions = data?.recent_sessions || [];
   const stats = data?.stats || {};
   const classified = classifyAll(sessions);
-
-  const handleSignOut = () => { dashboardAuth.clearToken(); setAuthed(false); };
 
   return (
     <div className="bg-slate-50 min-h-[calc(100vh-64px)]" data-testid="ops-view">
@@ -628,9 +565,9 @@ export const OpsView = () => {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-semibold text-slate-900">Volunteer Dashboard</h1>
+            <h1 className="text-xl font-semibold text-slate-900">Volunteer Pipeline</h1>
             <p className="text-sm text-slate-500">
-              eVidyaloka volunteer pipeline
+              Volunteer journey funnel
               {lastRefresh && <span className="ml-2 text-slate-400">· updated {timeAgo(lastRefresh)}</span>}
             </p>
           </div>
@@ -638,9 +575,6 @@ export const OpsView = () => {
             <Button variant="outline" size="sm" onClick={() => load(true)} disabled={loading}>
               <RefreshCw className={`w-4 h-4 mr-1.5 ${loading ? 'animate-spin' : ''}`} />
               Refresh
-            </Button>
-            <Button variant="outline" size="sm" onClick={handleSignOut} className="text-slate-500 hover:text-slate-700">
-              Sign out
             </Button>
           </div>
         </div>
