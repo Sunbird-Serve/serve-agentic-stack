@@ -52,3 +52,8 @@ issues.md
 # Environment files
 *.env
 *.env.*
+
+CONTRIBUTING.md
+issues.md
+solved_issues.md
+PROJECT_OVERVIEW.md

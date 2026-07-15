@@ -87,15 +87,17 @@ class ProfileExtractor:
     """Extract profile information from free-form volunteer messages."""
 
     NAME_SIGNALS = [
-        r"(?:my name is|i'm|i am|call me|this is|naam hai|mera naam)\s+([A-Za-z][a-z]+(?:\s+[A-Za-z][a-z]+)*)",
-        r"^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)(?:\s+here|,)",
-        r"(?:name[:\s]+)([A-Za-z][a-z]+(?:\s+[A-Za-z][a-z]+)*)",
-        r"^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})$",
+        r"(?:my name is|i'm|i am|call me|this is|naam hai|mera naam)\s+([A-Za-z][a-zA-Z'\-]*(?:\s+[A-Za-z][a-zA-Z'\-]*)*)",
+        r"^([A-Z][a-zA-Z'\-]*(?:\s+[A-Z][a-zA-Z'\-]*)*)(?:\s+here|,)",
+        r"(?:name[:\s]+)([A-Za-z][a-zA-Z'\-]*(?:\s+[A-Za-z][a-zA-Z'\-]*)*)",
+        r"^([A-Z][a-zA-Z'\-]*(?:\s+[A-Z][a-zA-Z'\-]*){0,4})$",
     ]
     NAME_STOPWORDS = {
         "and", "or", "but", "hello", "hi", "hey", "want", "would", "like",
         "interested", "back", "ready", "looking", "excited", "happy", "new",
-        "available", "sure", "yes", "yeah", "okay", "fine", "good", "great",
+        "available", "sure", "yes", "yeah", "yep", "yup", "ok", "okay", "fine",
+        "good", "great", "no", "nope", "nah", "never", "none", "na",
+        "cannot", "unable",
         "thanks", "thank", "please", "sorry", "not", "very", "really",
         "just", "also", "here", "there", "from", "with", "about", "that",
         "this", "have", "been", "done", "teaching", "volunteering", "joining",
@@ -146,24 +148,50 @@ class ProfileExtractor:
 
         return extracted
 
+    NAME_WORD_PATTERN = re.compile(r"^[A-Za-z]+(?:['\-][A-Za-z]+)*$")
+    NAME_TITLES = {"mr", "mrs", "ms", "miss", "dr", "shri", "smt", "er"}
+    NAME_WORD_MIN_LEN = 2
+    NAME_WORD_MAX_LEN = 20
+    NAME_MAX_WORDS = 5
+
     def _extract_name(self, message: str) -> Optional[str]:
-        candidates_to_try = [message, message.strip()]
-        for text in candidates_to_try:
-            for pattern in self.NAME_SIGNALS:
-                match = re.search(pattern, text, re.IGNORECASE)
-                if match:
-                    value = match.group(1).strip()
-                    words = []
-                    for word in value.split():
-                        lower = word.lower()
-                        if lower in self.NAME_STOPWORDS:
-                            break
-                        words.append(word)
-                    if words:
-                        candidate = " ".join(words[:3]).title()
-                        if len(candidate) >= 2 and not candidate.isdigit():
-                            return candidate
+        text = message.strip()
+        for pattern in self.NAME_SIGNALS:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                value = match.group(1).strip()
+                words = []
+                for word in value.split():
+                    lower = word.lower()
+                    if lower in self.NAME_STOPWORDS:
+                        break
+                    if lower in self.NAME_TITLES:
+                        continue
+                    words.append(word)
+                if words:
+                    candidate = " ".join(
+                        self._normalize_name_word(w) for w in words[:self.NAME_MAX_WORDS]
+                    )
+                    if self._is_valid_name(candidate):
+                        return candidate
         return None
+
+    @staticmethod
+    def _normalize_name_word(word: str) -> str:
+        """Title-case uniform-case input; preserve intentional mixed case (McDonald)."""
+        return word.title() if word.islower() or word.isupper() else word
+
+    def _is_valid_name(self, candidate: str) -> bool:
+        """A valid full name has a first and last name, each a plausible name-shaped word."""
+        words = candidate.split()
+        if len(words) < 2 or len(candidate) > 60:
+            return False
+        for word in words:
+            if not (self.NAME_WORD_MIN_LEN <= len(word) <= self.NAME_WORD_MAX_LEN):
+                return False
+            if not self.NAME_WORD_PATTERN.match(word):
+                return False
+        return True
 
     def _extract_email(self, message: str) -> Optional[str]:
         match = re.search(self.EMAIL_PATTERN, message)
