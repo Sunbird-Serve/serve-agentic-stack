@@ -87,15 +87,17 @@ class ProfileExtractor:
     """Extract profile information from free-form volunteer messages."""
 
     NAME_SIGNALS = [
-        r"(?:my name is|i'm|i am|call me|this is|naam hai|mera naam)\s+([A-Za-z][a-z]+(?:\s+[A-Za-z][a-z]+)*)",
-        r"^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)(?:\s+here|,)",
-        r"(?:name[:\s]+)([A-Za-z][a-z]+(?:\s+[A-Za-z][a-z]+)*)",
-        r"^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})$",
+        r"(?:my name is|i'm|i am|call me|this is|naam hai|mera naam)\s+([A-Za-z][a-zA-Z'\-]*(?:\s+[A-Za-z][a-zA-Z'\-]*)*)",
+        r"^([A-Z][a-zA-Z'\-]*(?:\s+[A-Z][a-zA-Z'\-]*)*)(?:\s+here|,)",
+        r"(?:name[:\s]+)([A-Za-z][a-zA-Z'\-]*(?:\s+[A-Za-z][a-zA-Z'\-]*)*)",
+        r"^([A-Z][a-zA-Z'\-]*(?:\s+[A-Z][a-zA-Z'\-]*){0,4})$",
     ]
     NAME_STOPWORDS = {
         "and", "or", "but", "hello", "hi", "hey", "want", "would", "like",
         "interested", "back", "ready", "looking", "excited", "happy", "new",
-        "available", "sure", "yes", "yeah", "okay", "fine", "good", "great",
+        "available", "sure", "yes", "yeah", "yep", "yup", "ok", "okay", "fine",
+        "good", "great", "no", "nope", "nah", "never", "none", "na",
+        "cannot", "unable",
         "thanks", "thank", "please", "sorry", "not", "very", "really",
         "just", "also", "here", "there", "from", "with", "about", "that",
         "this", "have", "been", "done", "teaching", "volunteering", "joining",
@@ -107,6 +109,17 @@ class ProfileExtractor:
         r"\b(\d{10})\b",
         r"\b(\d{3}[-.\s]\d{3}[-.\s]\d{4})\b",
     ]
+    # Free-text qualification answers that don't match a known pattern are only
+    # accepted if they aren't made up entirely of filler/non-answer words —
+    # checked word-by-word so multi-word non-answers ("no idea", "not sure")
+    # are caught too, not just single words ("banana").
+    QUALIFICATION_FILLER_WORDS = {
+        "yes", "no", "not", "maybe", "ok", "okay", "sure", "fine", "good",
+        "great", "hi", "hello", "hey", "test", "idk", "dunno", "dont", "do",
+        "know", "idea", "sorry", "nothing", "whatever", "please", "thanks",
+        "thank", "skip", "later", "um", "uh", "hmm", "i", "im", "we", "you",
+        "it", "am", "have", "none",
+    }
 
     def extract_all(self, message: str, existing_fields: Optional[Dict[str, Any]] = None, current_stage: Optional[str] = None) -> Dict[str, Any]:
         existing_fields = existing_fields or {}
@@ -137,33 +150,61 @@ class ProfileExtractor:
                     extracted["qualification"] = qual
                 else:
                     # Fallback: if we're asking for qualification and the message is short,
-                    # treat it as the qualification answer
+                    # treat it as the qualification answer — but only if it plausibly
+                    # looks like one. Otherwise leave it unset so the agent re-asks,
+                    # the same way it does for an unmatched eligibility answer.
                     missing_contact = [f for f in ["full_name", "email", "qualification"] if not existing_fields.get(f)]
                     if missing_contact == ["qualification"]:
-                        stripped = message.strip()
-                        if 1 < len(stripped) < 50 and not re.search(self.EMAIL_PATTERN, stripped) and not re.search(r"\d{10}", stripped):
-                            extracted["qualification"] = stripped
+                        candidate = self._plausible_qualification_freetext(message)
+                        if candidate:
+                            extracted["qualification"] = candidate
 
         return extracted
 
+    NAME_WORD_PATTERN = re.compile(r"^[A-Za-z]+(?:['\-][A-Za-z]+)*$")
+    NAME_TITLES = {"mr", "mrs", "ms", "miss", "dr", "shri", "smt", "er"}
+    NAME_WORD_MIN_LEN = 2
+    NAME_WORD_MAX_LEN = 20
+    NAME_MAX_WORDS = 5
+
     def _extract_name(self, message: str) -> Optional[str]:
-        candidates_to_try = [message, message.strip()]
-        for text in candidates_to_try:
-            for pattern in self.NAME_SIGNALS:
-                match = re.search(pattern, text, re.IGNORECASE)
-                if match:
-                    value = match.group(1).strip()
-                    words = []
-                    for word in value.split():
-                        lower = word.lower()
-                        if lower in self.NAME_STOPWORDS:
-                            break
-                        words.append(word)
-                    if words:
-                        candidate = " ".join(words[:3]).title()
-                        if len(candidate) >= 2 and not candidate.isdigit():
-                            return candidate
+        text = message.strip()
+        for pattern in self.NAME_SIGNALS:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                value = match.group(1).strip()
+                words = []
+                for word in value.split():
+                    lower = word.lower()
+                    if lower in self.NAME_STOPWORDS:
+                        break
+                    if lower in self.NAME_TITLES:
+                        continue
+                    words.append(word)
+                if words:
+                    candidate = " ".join(
+                        self._normalize_name_word(w) for w in words[:self.NAME_MAX_WORDS]
+                    )
+                    if self._is_valid_name(candidate):
+                        return candidate
         return None
+
+    @staticmethod
+    def _normalize_name_word(word: str) -> str:
+        """Title-case uniform-case input; preserve intentional mixed case (McDonald)."""
+        return word.title() if word.islower() or word.isupper() else word
+
+    def _is_valid_name(self, candidate: str) -> bool:
+        """A valid full name has a first and last name, each a plausible name-shaped word."""
+        words = candidate.split()
+        if len(words) < 2 or len(candidate) > 60:
+            return False
+        for word in words:
+            if not (self.NAME_WORD_MIN_LEN <= len(word) <= self.NAME_WORD_MAX_LEN):
+                return False
+            if not self.NAME_WORD_PATTERN.match(word):
+                return False
+        return True
 
     def _extract_email(self, message: str) -> Optional[str]:
         match = re.search(self.EMAIL_PATTERN, message)
@@ -173,8 +214,23 @@ class ProfileExtractor:
         for pattern in self.PHONE_PATTERNS:
             match = re.search(pattern, message)
             if match:
-                return re.sub(r"[^\d+]", "", match.group(1))
+                digits = re.sub(r"[^\d+]", "", match.group(1))
+                if self._is_plausible_phone(digits):
+                    return digits
         return None
+
+    def _is_plausible_phone(self, digits: str) -> bool:
+        """Reject obviously fake numbers (all-same-digit, ascending/descending runs)."""
+        core = digits[-10:]
+        if len(core) < 10:
+            return False
+        if len(set(core)) == 1:
+            return False
+        ascending = all(int(core[i + 1]) == (int(core[i]) + 1) % 10 for i in range(len(core) - 1))
+        descending = all(int(core[i + 1]) == (int(core[i]) - 1) % 10 for i in range(len(core) - 1))
+        if ascending or descending:
+            return False
+        return True
 
     def _extract_qualification(self, message: str) -> Optional[str]:
         """Extract educational qualification from known patterns only."""
@@ -182,6 +238,31 @@ class ProfileExtractor:
             match = re.search(pattern, message, re.IGNORECASE)
             if match:
                 return match.group(0).strip()
+        return None
+
+    def _plausible_qualification_freetext(self, message: str) -> Optional[str]:
+        """
+        Accept a free-text qualification answer that doesn't match a known
+        pattern only if it plausibly describes one — a multi-word phrase
+        (e.g. "some college", "trade certificate") or one containing a digit
+        (e.g. "10th"). Reject it if every word is filler/non-answer noise
+        ("banana", "no idea", "not sure") — a single unrecognized word or an
+        all-filler phrase is far more likely to be noise than a real answer.
+        """
+        stripped = message.strip()
+        if not (1 < len(stripped) < 60):
+            return None
+        if re.search(self.EMAIL_PATTERN, stripped) or re.search(r"\d{10}", stripped):
+            return None
+
+        normalized_words = [w for w in (re.sub(r"[^a-z]", "", w.lower()) for w in stripped.split()) if w]
+        if not normalized_words:
+            return None
+        if all(w in self.QUALIFICATION_FILLER_WORDS for w in normalized_words):
+            return None
+
+        if any(ch.isdigit() for ch in stripped) or len(normalized_words) >= 2:
+            return stripped
         return None
 
 
