@@ -255,6 +255,59 @@ class DomainClient:
         })
         return result
 
+    # ── Volunteer Fact-Store Methods ─────────────────────────────────────────
+
+    async def find_volunteer(
+        self,
+        email: str = None,
+        phone: str = None,
+        serve_registry_id: str = None,
+    ) -> Dict:
+        """Find a volunteer by any identifier."""
+        args = {}
+        if email:
+            args["email"] = email
+        if phone:
+            args["phone"] = phone
+        if serve_registry_id:
+            args["serve_registry_id"] = serve_registry_id
+        return await _call_mcp_tool("find_volunteer", args)
+
+    async def create_volunteer_record(
+        self,
+        full_name: str = None,
+        phone: str = None,
+        email: str = None,
+        serve_registry_id: str = None,
+        facts: Dict = None,
+    ) -> Dict:
+        """Create a new volunteer in the fact-store."""
+        args: Dict[str, Any] = {}
+        if full_name:
+            args["full_name"] = full_name
+        if phone:
+            args["phone"] = phone
+        if email:
+            args["email"] = email
+        if serve_registry_id:
+            args["serve_registry_id"] = serve_registry_id
+        if facts:
+            args["facts"] = facts
+        return await _call_mcp_tool("create_volunteer_record", args)
+
+    async def get_volunteer_facts(self, volunteer_id: str) -> Dict:
+        """Get the full fact-set for a volunteer."""
+        return await _call_mcp_tool("get_volunteer_facts", {
+            "volunteer_id": volunteer_id,
+        })
+
+    async def merge_volunteer_facts(self, volunteer_id: str, facts: Dict) -> Dict:
+        """Merge new facts into a volunteer's fact-set."""
+        return await _call_mcp_tool("merge_volunteer_facts", {
+            "volunteer_id": volunteer_id,
+            "facts": facts,
+        })
+
 
 # Singleton instance
 domain_client = DomainClient()

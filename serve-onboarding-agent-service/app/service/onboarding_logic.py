@@ -1,11 +1,23 @@
 """
-SERVE Onboarding Agent Service - Onboarding Logic
+SERVE Onboarding Agent Service - Onboarding Logic (v2)
 
-New volunteer onboarding flow:
-1. Welcome → Orientation (videos)
-2. Eligibility screening (3 questions)
-3. Contact + qualification capture (name, email, qualification)
-4. Registration review → Register → Handoff to selection
+Improved onboarding flow:
+1. Welcome (1 turn) — warm intro + what brings you here
+2. Orientation video (non-blocking — shows video + starts eligibility)
+3. Quick eligibility (bundled — all 3 checks in one turn where possible)
+4. Contact capture (name, email, phone, qualification)
+5. Registration review → Complete → Handoff to selection
+
+Key improvements over v1:
+- Welcome collapsed from 3 turns to 1-2 turns
+- Video is non-blocking (acknowledged implicitly on next reply)
+- Eligibility asked as a bundle first, falls back to individual on ambiguity
+- Email typo detection (gmal.com → gmail.com?)
+- Hindi/Hinglish name extraction support
+- Reluctance handling (why do you need my email/phone?)
+- Transparent eligibility failure messaging
+- Progress hints in prompts
+- Motivation captured and used for personalization
 
 Phone is auto-populated from WhatsApp channel_metadata, not asked.
 All transition decisions are deterministic in Python; the LLM only generates
@@ -35,7 +47,6 @@ from app.service.llm_adapter import llm_adapter
 logger = logging.getLogger(__name__)
 
 # ── Required fields ─────────────────────────────────────────────────────────────
-# These gate state transitions. The flow cannot advance until all are captured.
 CONTACT_FIELDS = ["full_name", "email", "phone", "qualification"]
 ELIGIBILITY_FIELDS = ["age_18_plus", "has_internet_and_device", "accepts_unpaid_role"]
 
@@ -45,6 +56,7 @@ DEFAULT_SUB_STATE: Dict[str, Any] = {
     "welcome_shown": False,
     "consent_given": False,
     "welcome_response": None,
+    "eligibility_bundled_asked": False,
     "eligibility": {
         "age_18_plus": None,
         "has_internet_and_device": None,
@@ -52,6 +64,7 @@ DEFAULT_SUB_STATE: Dict[str, Any] = {
     },
     "eligibility_pending_negative": {},
     "review_reason": None,
+    "email_typo_warned": False,
 }
 
 # ── Pattern tables ──────────────────────────────────────────────────────────────
@@ -60,6 +73,7 @@ YES_PATTERNS = [
     r"\bsure\b", r"\bi do\b", r"\bi have\b", r"\bcan do\b", r"\bagree\b",
     r"\bunderstand\b", r"\bcontinue\b", r"\bdone\b", r"\bwatched\b", r"\bready\b",
     r"\bhaan\b", r"\bhaan ji\b", r"\bji\b", r"\bof course\b",
+    r"\ball good\b", r"\ball three\b", r"\bconfirm\b", r"\bthat's? right\b",
 ]
 NO_PATTERNS = [
     r"\bno\b", r"\bnope\b", r"\bnot really\b", r"\bdon't\b", r"\bdo not\b",
@@ -67,8 +81,20 @@ NO_PATTERNS = [
 ]
 PAUSE_PATTERNS = [r"\bpause\b", r"\blater\b", r"\bnot now\b", r"\bbusy\b", r"\bstop\b"]
 RESUME_PATTERNS = [r"\bresume\b", r"\bcontinue\b", r"\bstart\b", r"\bready\b", r"\bback\b"]
-CONFIRM_PATTERNS = [r"\byes\b", r"\bcorrect\b", r"\bconfirm\b", r"\blooks good\b", r"\bright\b", r"\bok\b", r"\bokay\b"]
+CONFIRM_PATTERNS = [
+    r"\byes\b", r"\bcorrect\b", r"\bconfirm\b", r"\blooks good\b",
+    r"\bright\b", r"\bok\b", r"\bokay\b", r"\ball good\b",
+]
 EDIT_CONTACT_PATTERNS = [r"\bname\b", r"\bemail\b", r"\bcontact\b", r"\bqualification\b"]
+
+# Reluctance patterns — volunteer hesitates about sharing personal info
+RELUCTANCE_PATTERNS = [
+    r"\bwhy do you need\b", r"\bwhy is (this|that|it) needed\b",
+    r"\bi('d| would) rather not\b", r"\bdon't want to share\b",
+    r"\bis (this|it) (safe|secure|private)\b", r"\bprivacy\b",
+    r"\bwho (will |can )?(see|access)\b", r"\bwill you share\b",
+    r"\bspam\b", r"\bdata\b.*\b(safe|secure)\b",
+]
 
 # ── Qualification keywords ──────────────────────────────────────────────────────
 QUALIFICATION_PATTERNS = [
@@ -76,20 +102,52 @@ QUALIFICATION_PATTERNS = [
     r"\b(B\.?E\.?|B\.?Tech|B\.?Sc|B\.?A\.?|B\.?Com|B\.?C\.?A\.?|BBA|BDS|MBBS)\b",
     r"\b(M\.?E\.?|M\.?Tech|M\.?Sc|M\.?A\.?|M\.?Com|M\.?C\.?A\.?|MBA|MDS|MD)\b",
     r"\b(Ph\.?D|Doctorate|Post.?Graduate|Post.?Graduation)\b",
-    # Common terms
+    # Common terms (English)
     r"\b(graduate|graduation|under.?graduate|diploma|engineering|medical|law)\b",
     r"\b(12th|10th|12th pass|10th pass|intermediate|higher secondary|HSC|SSC)\b",
     r"\b(CA|CS|CMA|LLB|LLM|BAMS|BHMS)\b",
+    # Hindi/Hinglish terms
+    r"\b(snatak|snaatak|dasvi|barahvi|dasvin|barahvin)\b",
+    r"\b(graduation complete|degree complete|padhai puri)\b",
 ]
+
+# ── Email typo detection ────────────────────────────────────────────────────────
+COMMON_EMAIL_TYPOS = {
+    "gmal.com": "gmail.com", "gmial.com": "gmail.com", "gmaill.com": "gmail.com",
+    "gamil.com": "gmail.com", "gnail.com": "gmail.com", "gmail.co": "gmail.com",
+    "gmail.con": "gmail.com", "gmail.cm": "gmail.com",
+    "yaho.com": "yahoo.com", "yahho.com": "yahoo.com", "yahooo.com": "yahoo.com",
+    "yahoo.co": "yahoo.com", "yahoo.con": "yahoo.com",
+    "hotmal.com": "hotmail.com", "hotmial.com": "hotmail.com",
+    "outloo.com": "outlook.com", "outlok.com": "outlook.com",
+    "rediffmal.com": "rediffmail.com", "redifmail.com": "rediffmail.com",
+}
+
+
+def _check_email_typo(email: str) -> Optional[str]:
+    """Check if email domain looks like a typo. Returns suggested correction or None."""
+    if not email or "@" not in email:
+        return None
+    domain = email.split("@")[1].lower()
+    suggestion = COMMON_EMAIL_TYPOS.get(domain)
+    if suggestion:
+        return email.split("@")[0] + "@" + suggestion
+    return None
 
 
 class ProfileExtractor:
     """Extract profile information from free-form volunteer messages."""
 
     NAME_SIGNALS = [
-        r"(?:my name is|i'm|i am|call me|this is|naam hai|mera naam)\s+([A-Za-z][a-zA-Z'\-]*(?:\s+[A-Za-z][a-zA-Z'\-]*)*)",
-        r"^([A-Z][a-zA-Z'\-]*(?:\s+[A-Z][a-zA-Z'\-]*)*)(?:\s+here|,)",
+        # English signals
+        r"(?:my name is|i'm|i am|call me|this is)\s+([A-Za-z][a-zA-Z'\-]*(?:\s+[A-Za-z][a-zA-Z'\-]*)*)",
+        # Hindi/Hinglish signals
+        r"(?:naam hai|mera naam|mera naam hai)\s+([A-Za-z][a-zA-Z'\-]*(?:\s+[A-Za-z][a-zA-Z'\-]*)*)",
+        # "Name: X" format
         r"(?:name[:\s]+)([A-Za-z][a-zA-Z'\-]*(?:\s+[A-Za-z][a-zA-Z'\-]*)*)",
+        # Starts with capital, has comma or "here"
+        r"^([A-Z][a-zA-Z'\-]*(?:\s+[A-Z][a-zA-Z'\-]*)*)(?:\s+here|,)",
+        # Bare capitalized words (last resort — only for short messages)
         r"^([A-Z][a-zA-Z'\-]*(?:\s+[A-Z][a-zA-Z'\-]*){0,4})$",
     ]
     NAME_STOPWORDS = {
@@ -102,6 +160,7 @@ class ProfileExtractor:
         "just", "also", "here", "there", "from", "with", "about", "that",
         "this", "have", "been", "done", "teaching", "volunteering", "joining",
         "starting", "continuing", "returning", "recommended",
+        "main", "mera", "naam", "hai", "ji",
     }
     EMAIL_PATTERN = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
     PHONE_PATTERNS = [
@@ -109,10 +168,6 @@ class ProfileExtractor:
         r"\b(\d{10})\b",
         r"\b(\d{3}[-.\s]\d{3}[-.\s]\d{4})\b",
     ]
-    # Free-text qualification answers that don't match a known pattern are only
-    # accepted if they aren't made up entirely of filler/non-answer words —
-    # checked word-by-word so multi-word non-answers ("no idea", "not sure")
-    # are caught too, not just single words ("banana").
     QUALIFICATION_FILLER_WORDS = {
         "yes", "no", "not", "maybe", "ok", "okay", "sure", "fine", "good",
         "great", "hi", "hello", "hey", "test", "idk", "dunno", "dont", "do",
@@ -131,8 +186,8 @@ class ProfileExtractor:
             if phone:
                 extracted["phone"] = phone
 
-        # Name, email, qualification are only extracted during contact_capture
-        # to prevent premature field population from skipping stages
+        # During contact_capture: extract ALL missing fields from any message
+        # (supports batched responses like "I'm Sowmya, sowmya@gmail.com, 7760131253, B.Tech")
         if current_stage == "contact_capture":
             if "full_name" not in existing_fields:
                 name = self._extract_name(message)
@@ -144,20 +199,34 @@ class ProfileExtractor:
                 if email:
                     extracted["email"] = email
 
+            if "phone" not in existing_fields and "phone" not in extracted:
+                phone = self._extract_phone(message)
+                if phone:
+                    extracted["phone"] = phone
+
             if "qualification" not in existing_fields:
                 qual = self._extract_qualification(message)
                 if qual:
                     extracted["qualification"] = qual
                 else:
-                    # Fallback: if we're asking for qualification and the message is short,
-                    # treat it as the qualification answer — but only if it plausibly
-                    # looks like one. Otherwise leave it unset so the agent re-asks,
-                    # the same way it does for an unmatched eligibility answer.
-                    missing_contact = [f for f in ["full_name", "email", "qualification"] if not existing_fields.get(f)]
+                    # Only try free-text fallback if qualification is the ONLY remaining field
+                    missing_contact = [f for f in ["full_name", "email", "qualification"] if not existing_fields.get(f) and f not in extracted]
                     if missing_contact == ["qualification"]:
                         candidate = self._plausible_qualification_freetext(message)
                         if candidate:
                             extracted["qualification"] = candidate
+
+        # During orientation_video stage: also extract name + email if offered
+        # (bundled prompt asks eligibility + name + email together)
+        if current_stage == "orientation_video" or current_stage == "eligibility_screening":
+            if "full_name" not in existing_fields:
+                name = self._extract_name(message)
+                if name:
+                    extracted["full_name"] = name
+            if "email" not in existing_fields:
+                email = self._extract_email(message)
+                if email:
+                    extracted["email"] = email
 
         return extracted
 
@@ -191,11 +260,9 @@ class ProfileExtractor:
 
     @staticmethod
     def _normalize_name_word(word: str) -> str:
-        """Title-case uniform-case input; preserve intentional mixed case (McDonald)."""
         return word.title() if word.islower() or word.isupper() else word
 
     def _is_valid_name(self, candidate: str) -> bool:
-        """A valid full name has a first and last name, each a plausible name-shaped word."""
         words = candidate.split()
         if len(words) < 2 or len(candidate) > 60:
             return False
@@ -220,7 +287,6 @@ class ProfileExtractor:
         return None
 
     def _is_plausible_phone(self, digits: str) -> bool:
-        """Reject obviously fake numbers (all-same-digit, ascending/descending runs)."""
         core = digits[-10:]
         if len(core) < 10:
             return False
@@ -233,7 +299,6 @@ class ProfileExtractor:
         return True
 
     def _extract_qualification(self, message: str) -> Optional[str]:
-        """Extract educational qualification from known patterns only."""
         for pattern in QUALIFICATION_PATTERNS:
             match = re.search(pattern, message, re.IGNORECASE)
             if match:
@@ -241,27 +306,22 @@ class ProfileExtractor:
         return None
 
     def _plausible_qualification_freetext(self, message: str) -> Optional[str]:
-        """
-        Accept a free-text qualification answer that doesn't match a known
-        pattern only if it plausibly describes one — a multi-word phrase
-        (e.g. "some college", "trade certificate") or one containing a digit
-        (e.g. "10th"). Reject it if every word is filler/non-answer noise
-        ("banana", "no idea", "not sure") — a single unrecognized word or an
-        all-filler phrase is far more likely to be noise than a real answer.
-        """
         stripped = message.strip()
         if not (1 < len(stripped) < 60):
             return None
         if re.search(self.EMAIL_PATTERN, stripped) or re.search(r"\d{10}", stripped):
             return None
-
         normalized_words = [w for w in (re.sub(r"[^a-z]", "", w.lower()) for w in stripped.split()) if w]
         if not normalized_words:
             return None
         if all(w in self.QUALIFICATION_FILLER_WORDS for w in normalized_words):
             return None
-
+        # Accept if multi-word or contains a digit
         if any(ch.isdigit() for ch in stripped) or len(normalized_words) >= 2:
+            return stripped
+        # v2: Also accept single recognized education words
+        edu_words = {"graduate", "diploma", "degree", "engineering", "medical", "commerce", "arts", "science"}
+        if any(w in edu_words for w in normalized_words):
             return stripped
         return None
 
@@ -287,6 +347,8 @@ def _load_sub_state(raw: Optional[str]) -> Dict[str, Any]:
         merged["welcome_response"] = data.get("welcome_response")
         merged["welcome_shown"] = data.get("welcome_shown", False)
         merged["consent_given"] = data.get("consent_given", False)
+        merged["eligibility_bundled_asked"] = data.get("eligibility_bundled_asked", False)
+        merged["email_typo_warned"] = data.get("email_typo_warned", False)
         return merged
     except (json.JSONDecodeError, ValueError):
         return json.loads(json.dumps(DEFAULT_SUB_STATE))
@@ -299,9 +361,11 @@ def _dump_sub_state(sub_state: Dict[str, Any]) -> str:
         "welcome_shown": sub_state.get("welcome_shown", False),
         "consent_given": sub_state.get("consent_given", False),
         "welcome_response": sub_state.get("welcome_response"),
+        "eligibility_bundled_asked": sub_state.get("eligibility_bundled_asked", False),
         "eligibility": sub_state.get("eligibility", {}),
         "eligibility_pending_negative": sub_state.get("eligibility_pending_negative", {}),
         "review_reason": sub_state.get("review_reason"),
+        "email_typo_warned": sub_state.get("email_typo_warned", False),
     })
 
 
@@ -336,8 +400,8 @@ def _extract_age_eligibility(message: str) -> Optional[bool]:
 
 
 def _extract_video_ack(message: str) -> bool:
+    """Accept any positive/engaged response as video acknowledgement."""
     lower = message.lower()
-    # Accept any positive/engaged response as video acknowledgement
     return _matches_any(lower, [
         r"\bdone\b", r"\bwatched\b", r"\bcontinue\b", r"\bready\b",
         r"\bok\b", r"\bokay\b", r"\byes\b", r"\byeah\b", r"\byep\b",
@@ -346,7 +410,14 @@ def _extract_video_ack(message: str) -> bool:
         r"\bthanks\b", r"\bthank\b", r"\bgot it\b", r"\bnoted\b",
         r"\bseen\b", r"\bsaw\b", r"\bsure\b", r"\bhaan\b", r"\bji\b",
         r"\baccha\b", r"\bbadhiya\b", r"\bsahi\b", r"\btheek\b",
+        r"\bnext\b", r"\bgo ahead\b", r"\blet's go\b", r"\bchalo\b",
     ])
+
+
+def _is_reluctant(message: str) -> bool:
+    """Detect if volunteer is hesitant about sharing personal info."""
+    lower = message.lower()
+    return _matches_any(lower, RELUCTANCE_PATTERNS)
 
 
 # ── Eligibility logic ──────────────────────────────────────────────────────────
@@ -360,8 +431,28 @@ def _next_eligibility_question(sub_state: Dict[str, Any]) -> Optional[str]:
 
 
 def _apply_eligibility_answers(sub_state: Dict[str, Any], message: str) -> None:
+    """Parse eligibility answers — supports both bundled and individual responses."""
     eligibility = dict(sub_state.get("eligibility") or {})
     pending_neg = dict(sub_state.get("eligibility_pending_negative") or {})
+    lower = message.lower()
+
+    # If bundled question was asked and volunteer says "yes/all good/sure"
+    # → mark all unanswered fields as True
+    if sub_state.get("eligibility_bundled_asked"):
+        bundled_yes = _extract_binary_response(message)
+        if bundled_yes is True:
+            for field in ELIGIBILITY_FIELDS:
+                if eligibility.get(field) is None:
+                    eligibility[field] = True
+            sub_state["eligibility"] = eligibility
+            sub_state["eligibility_pending_negative"] = pending_neg
+            return
+        elif bundled_yes is False:
+            # They said "no" to the bundle — we need to ask individually
+            # Don't mark anything, fall through to individual handling
+            sub_state["eligibility_bundled_asked"] = False
+
+    # Individual question handling
     current_question = _next_eligibility_question(sub_state)
 
     if current_question == "age_18_plus":
@@ -381,8 +472,7 @@ def _apply_eligibility_answers(sub_state: Dict[str, Any], message: str) -> None:
             eligibility[current_question] = True
             pending_neg.pop(current_question, None)
 
-    # Keyword-based detection for the merged internet+device field
-    lower = message.lower()
+    # Keyword-based detection for internet+device
     if any(t in lower for t in ["internet", "wifi", "data", "laptop", "tablet", "device", "computer"]):
         kw_answer = _extract_binary_response(message)
         if kw_answer is not None:
@@ -468,9 +558,11 @@ def _determine_next_state(
 ) -> Tuple[str, Optional[str]]:
     lower = (user_message or "").lower()
 
+    # Resume from paused
     if current_state == OnboardingState.PAUSED.value and _matches_any(lower, RESUME_PATTERNS):
         return sub_state.get("resume_stage") or OnboardingState.ORIENTATION_VIDEO.value, "Volunteer resumed"
 
+    # Pause from any active state
     if current_state not in (
         OnboardingState.WELCOME.value,
         OnboardingState.ONBOARDING_COMPLETE.value,
@@ -478,41 +570,45 @@ def _determine_next_state(
     ) and _matches_any(lower, PAUSE_PATTERNS):
         return OnboardingState.PAUSED.value, "Volunteer asked to pause"
 
+    # WELCOME: v2 — collapsed to 1-2 turns
     if current_state == OnboardingState.WELCOME.value:
         if not sub_state.get("welcome_shown"):
-            # Turn 1: show welcome + steps + "shall we begin?"
+            # Turn 1: show welcome + ask what brings them here (combined)
             sub_state["welcome_shown"] = True
-            return current_state, "Showing welcome message"
-        if not sub_state.get("consent_given"):
-            # Turn 2: volunteer said yes → ask intent
-            sub_state["consent_given"] = True
-            return current_state, "Consent given — asking intent"
-        # Turn 3: volunteer responded with intent → transition
+            sub_state["consent_given"] = True  # implicit — they messaged us
+            return current_state, "Showing welcome + asking intent"
+        # Turn 2: they responded → capture intent, move to orientation
         return OnboardingState.ORIENTATION_VIDEO.value, "Welcome response received — proceeding to orientation"
 
+    # ORIENTATION VIDEO: v2 — non-blocking
+    # Video is shown but ANY response moves forward
     if current_state == OnboardingState.ORIENTATION_VIDEO.value:
-        if sub_state.get("video_acknowledged"):
-            return OnboardingState.ELIGIBILITY_SCREENING.value, "Orientation acknowledged"
-        return current_state, "Waiting for video acknowledgement"
+        # Always acknowledge — video is informational, not a gate
+        sub_state["video_acknowledged"] = True
+        return OnboardingState.ELIGIBILITY_SCREENING.value, "Orientation shown — proceeding to eligibility"
 
+    # ELIGIBILITY: v2 — bundled first, individual fallback
     if current_state == OnboardingState.ELIGIBILITY_SCREENING.value:
         failed = _eligibility_failed(sub_state)
         if failed:
             sub_state["review_reason"] = failed
-            return OnboardingState.HUMAN_REVIEW.value, f"Eligibility needs review: {failed}"
+            return OnboardingState.HUMAN_REVIEW.value, f"Eligibility not met: {failed}"
         if _all_eligibility_passed(sub_state):
             return OnboardingState.CONTACT_CAPTURE.value, "Eligibility passed"
         return current_state, "Collecting eligibility checks"
 
+    # CONTACT CAPTURE
     if current_state == OnboardingState.CONTACT_CAPTURE.value:
         missing = _stage_missing_fields(current_state, confirmed_fields, sub_state)
         if not missing:
             return OnboardingState.REGISTRATION_REVIEW.value, "Contact details captured"
         return current_state, "Collecting contact details"
 
+    # Legacy redirect
     if current_state == OnboardingState.TEACHING_PROFILE.value:
         return OnboardingState.REGISTRATION_REVIEW.value, "Legacy stage redirected"
 
+    # REGISTRATION REVIEW
     if current_state == OnboardingState.REGISTRATION_REVIEW.value:
         if _matches_any(lower, CONFIRM_PATTERNS):
             ready, _ = _evaluate_registration_readiness(confirmed_fields, sub_state)
@@ -539,6 +635,8 @@ def _build_prompt_fields(confirmed_fields: Dict[str, Any], sub_state: Dict[str, 
     merged["welcome_response"] = sub_state.get("welcome_response")
     merged["welcome_shown"] = sub_state.get("welcome_shown", False)
     merged["consent_given"] = sub_state.get("consent_given", False)
+    merged["eligibility_bundled_asked"] = sub_state.get("eligibility_bundled_asked", False)
+    merged["email_typo_warned"] = sub_state.get("email_typo_warned", False)
     return merged
 
 
@@ -557,7 +655,7 @@ class OnboardingAgentService:
         logger.info(f"[{request.session_id}] ── TURN START ── stage={current_state} user_msg={request.user_message[:80]!r}")
 
         sub_state = _load_sub_state(session_state.sub_state)
-        logger.info(f"[{request.session_id}] sub_state loaded: welcome_shown={sub_state.get('welcome_shown')}, video_ack={sub_state.get('video_acknowledged')}, eligibility={sub_state.get('eligibility')}")
+        logger.info(f"[{request.session_id}] sub_state: welcome_shown={sub_state.get('welcome_shown')}, video_ack={sub_state.get('video_acknowledged')}, elig={sub_state.get('eligibility')}")
 
         if current_state not in (
             OnboardingState.PAUSED.value,
@@ -575,14 +673,14 @@ class OnboardingAgentService:
             )
         )
 
+        # Fetch confirmed fields from MCP
         missing_result = await domain_client.get_missing_fields(request.session_id)
         _, confirmed_fields = _unwrap_missing_fields(missing_result)
-        logger.info(f"[{request.session_id}] confirmed_fields from MCP: {list(confirmed_fields.keys())}")
+        logger.info(f"[{request.session_id}] confirmed_fields: {list(confirmed_fields.keys())}")
 
-        # Auto-populate phone from WhatsApp channel_metadata if not already set
+        # Auto-populate phone from WhatsApp channel_metadata
         if "phone" not in confirmed_fields:
             ch_meta = (session_state.channel_metadata or {})
-            # Also try request-level channel_metadata (if orchestrator sends it)
             if not ch_meta:
                 ch_meta = getattr(request, "channel_metadata", None) or {}
             phone_from_channel = (
@@ -601,12 +699,24 @@ class OnboardingAgentService:
             domain_client=domain_client,
         )
 
+        # Extract profile fields from user message
         extracted_fields = profile_extractor.extract_all(
             request.user_message,
             existing_fields=confirmed_fields,
             current_stage=current_state,
         )
-        logger.info(f"[{request.session_id}] extractor result (stage={current_state}): {extracted_fields}")
+        logger.info(f"[{request.session_id}] extracted (stage={current_state}): {extracted_fields}")
+
+        # Email typo detection — check before saving
+        email_typo_suggestion = None
+        if "email" in extracted_fields and not sub_state.get("email_typo_warned"):
+            suggestion = _check_email_typo(extracted_fields["email"])
+            if suggestion:
+                email_typo_suggestion = suggestion
+                sub_state["email_typo_warned"] = True
+                # Don't save the typo email yet — let the LLM ask for confirmation
+                del extracted_fields["email"]
+
         new_fields = {k: v for k, v in extracted_fields.items() if confirmed_fields.get(k) != v}
         if new_fields:
             logger.info(f"[{request.session_id}] saving new fields: {list(new_fields.keys())}")
@@ -621,19 +731,19 @@ class OnboardingAgentService:
                 )
             )
 
+        # Update stage-specific sub_state
         self._update_stage_specific_sub_state(current_state, request.user_message, sub_state)
 
+        # Determine next state (deterministic)
         next_state, transition_reason = _determine_next_state(
             current_state=current_state,
             user_message=request.user_message,
             confirmed_fields=confirmed_fields,
             sub_state=sub_state,
         )
-
-        logger.info(f"[{request.session_id}] state decision: {current_state} → {next_state} ({transition_reason})")
+        logger.info(f"[{request.session_id}] state: {current_state} → {next_state} ({transition_reason})")
 
         if next_state != current_state:
-            logger.info("Onboarding transition: %s -> %s (%s)", current_state, next_state, transition_reason)
             telemetry_events.append(
                 TelemetryEvent(
                     session_id=request.session_id,
@@ -645,21 +755,31 @@ class OnboardingAgentService:
 
         await self._persist_profile_side_effects(request, next_state, sub_state)
 
+        # Build prompt context — include extra signals for the LLM
+        prompt_fields = _build_prompt_fields(confirmed_fields, sub_state)
+        if email_typo_suggestion:
+            prompt_fields["email_typo_suggestion"] = email_typo_suggestion
+        if _is_reluctant(request.user_message):
+            prompt_fields["volunteer_reluctant"] = True
+
         next_missing_fields = _stage_missing_fields(next_state, confirmed_fields, sub_state)
-        logger.info(f"[{request.session_id}] LLM prompt stage={next_state}, missing_fields={next_missing_fields}")
+        logger.info(f"[{request.session_id}] LLM: stage={next_state}, missing={next_missing_fields}")
+
         assistant_message = await llm_adapter.generate_response(
             stage=next_state,
             messages=request.conversation_history,
             user_message=request.user_message,
             missing_fields=next_missing_fields,
-            confirmed_fields=_build_prompt_fields(confirmed_fields, sub_state),
+            confirmed_fields=prompt_fields,
             memory_context=memory_context,
         )
 
+        # Persist sub_state
         updated_sub_state = _dump_sub_state(sub_state)
         if next_state == current_state:
             await domain_client.advance_state(request.session_id, new_state=current_state, sub_state=updated_sub_state)
 
+        # Memory update
         conversation_with_new = request.conversation_history + [
             {"role": "user", "content": request.user_message},
             {"role": "assistant", "content": assistant_message},
@@ -670,17 +790,42 @@ class OnboardingAgentService:
             domain_client=domain_client,
         )
 
+        # Build response
         handoff_event = None
         completion_status = "in_progress"
         response_missing_fields = next_missing_fields
+        response_new_facts = {}  # Facts for v2 orchestrator to merge into volunteer record
 
-        logger.info(f"[{request.session_id}] ── TURN END ── final_state={next_state} has_handoff={next_state == OnboardingState.ONBOARDING_COMPLETE.value}")
+        logger.info(f"[{request.session_id}] ── TURN END ── state={next_state}")
 
         if next_state == OnboardingState.ONBOARDING_COMPLETE.value:
             completion_status = "complete"
             final_summary = await self.memory_service.process_conversation_update(
                 session_id=str(request.session_id), conversation=conversation_with_new, domain_client=domain_client,
             )
+
+            # ── Create volunteer record in the persistent fact-store ──────────
+            onboarding_facts = {
+                "identity_verified": True,
+                "adult_eligibility": True,
+                "internet_device": True,
+                "unpaid_consent": True,
+                "registered": True,
+                "platform_status": "active",
+            }
+
+            volunteer_record = await domain_client.create_volunteer_record(
+                full_name=confirmed_fields.get("full_name"),
+                phone=confirmed_fields.get("phone"),
+                email=confirmed_fields.get("email"),
+                facts=onboarding_facts,
+            )
+            if volunteer_record.get("status") == "success":
+                logger.info(f"[{request.session_id}] Volunteer record created: {volunteer_record.get('volunteer', {}).get('id', 'unknown')}")
+            else:
+                logger.warning(f"[{request.session_id}] Failed to create volunteer record: {volunteer_record}")
+
+            # Keep handoff for backward compat (legacy path still uses it)
             handoff_event = HandoffEvent(
                 session_id=request.session_id,
                 from_agent=AgentType.ONBOARDING,
@@ -703,6 +848,10 @@ class OnboardingAgentService:
                 },
                 reason="Onboarding completed - eligible volunteer ready for selection",
             )
+
+            # new_facts for v2 orchestrator (fact-based routing)
+            response_new_facts = onboarding_facts
+
         elif next_state == OnboardingState.HUMAN_REVIEW.value:
             completion_status = "review_pending"
             response_missing_fields = []
@@ -730,6 +879,7 @@ class OnboardingAgentService:
             completion_status=completion_status,
             confirmed_fields=_build_prompt_fields(confirmed_fields, sub_state),
             missing_fields=response_missing_fields,
+            new_facts=response_new_facts,
             handoff_event=handoff_event,
             telemetry_events=telemetry_events,
         )
@@ -747,12 +897,21 @@ class OnboardingAgentService:
 
     def _update_stage_specific_sub_state(self, current_state: str, user_message: str, sub_state: Dict[str, Any]) -> None:
         if current_state == OnboardingState.WELCOME.value:
-            # Capture the volunteer's response on the third turn (consent already given, now capturing intent)
-            if sub_state.get("welcome_shown") and sub_state.get("consent_given") and user_message and user_message not in ("__handoff__", "__auto_continue__"):
+            # Capture the volunteer's motivation/intent response
+            if sub_state.get("welcome_shown") and user_message and user_message not in ("__handoff__", "__auto_continue__"):
                 sub_state["welcome_response"] = user_message.strip()[:500]
-        if current_state == OnboardingState.ORIENTATION_VIDEO.value and _extract_video_ack(user_message):
+        if current_state == OnboardingState.ORIENTATION_VIDEO.value:
             sub_state["video_acknowledged"] = True
         if current_state == OnboardingState.ELIGIBILITY_SCREENING.value:
+            # Mark bundled as asked after first entry (so next turn processes the answer)
+            if not sub_state.get("eligibility_bundled_asked"):
+                eligibility = sub_state.get("eligibility") or {}
+                all_unanswered = all(eligibility.get(f) is None for f in ELIGIBILITY_FIELDS)
+                if all_unanswered:
+                    # First time here — bundled prompt will be shown. Set the flag
+                    # so the NEXT turn's _apply_eligibility_answers knows to accept a bundled "yes"
+                    sub_state["eligibility_bundled_asked"] = True
+                    return  # Don't try to parse the user message as an eligibility answer yet
             _apply_eligibility_answers(sub_state, user_message)
 
     async def _persist_profile_side_effects(self, request: AgentTurnRequest, next_state: str, sub_state: Dict[str, Any]) -> None:

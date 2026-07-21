@@ -38,6 +38,7 @@ from services.school_service      import school_service
 from services.need_service        import need_service
 from services.identity_service    import identity_service
 from services.serve_registry_client import volunteering_client
+from services.volunteer_service   import volunteer_service
 
 # ── Import Pydantic input schemas ─────────────────────────────────────────────
 from schemas import (
@@ -1514,6 +1515,133 @@ async def get_recommended_volunteers(params: GetRecommendedVolunteersInput) -> d
         volunteers = await nomination_client.get_recommended_not_nominated()
 
     return {"status": "success", "volunteers": volunteers, "total": len(volunteers)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VOLUNTEER FACT-STORE TOOLS
+# ─────────────────────────────────────────────────────────────────────────────
+
+from schemas import (
+    FindVolunteerInput, CreateVolunteerInput,
+    MergeVolunteerFactsInput, GetVolunteerFactsInput,
+    CheckVolunteerCredentialInput,
+)
+
+
+@mcp.tool()
+async def find_volunteer(params: FindVolunteerInput) -> dict:
+    """
+    Find a volunteer in the platform fact-store by email, phone, or Serve Registry ID.
+    Returns the volunteer record with all facts, or {"status": "not_found"}.
+
+    Args:
+        email: Email address to search
+        phone: Phone number to search
+        serve_registry_id: Serve Registry osid to search
+    """
+    result = await volunteer_service.find_volunteer(
+        email=params.email,
+        phone=params.phone,
+        serve_registry_id=params.serve_registry_id,
+    )
+    if result:
+        return {"status": "success", "volunteer": result}
+    return {"status": "not_found"}
+
+
+@mcp.tool()
+async def create_volunteer_record(params: CreateVolunteerInput) -> dict:
+    """
+    Create a new volunteer in the platform fact-store.
+    Called when onboarding completes and the volunteer is registered.
+
+    Args:
+        full_name: Volunteer's full name
+        phone: Phone number
+        email: Email address
+        serve_registry_id: Serve Registry osid (if already registered)
+        facts: Initial facts dict (eligibility, platform_status, etc.)
+    """
+    result = await volunteer_service.create_volunteer(
+        full_name=params.full_name,
+        phone=params.phone,
+        email=params.email,
+        serve_registry_id=params.serve_registry_id,
+        facts=params.facts,
+    )
+    if result:
+        return {"status": "success", "volunteer": result}
+    return {"status": "error", "error": "Failed to create volunteer record"}
+
+
+@mcp.tool()
+async def merge_volunteer_facts(params: MergeVolunteerFactsInput) -> dict:
+    """
+    Merge new facts into a volunteer's existing fact-set.
+    Used by agents to persist their outputs (credentials, preferences, commitments).
+
+    Merge behavior:
+    - Top-level keys: overwrite
+    - credentials: merge per-category (add/update category, don't remove others)
+    - preferences: overwrite entirely (latest wins)
+    - commitments: append to list
+
+    Args:
+        volunteer_id: Platform volunteer UUID
+        facts: Facts to merge
+    """
+    result = await volunteer_service.merge_facts(
+        volunteer_id=params.volunteer_id,
+        new_facts=params.facts,
+    )
+    if result is not None:
+        return {"status": "success", "facts": result}
+    return {"status": "error", "error": "Failed to merge facts"}
+
+
+@mcp.tool()
+async def get_volunteer_facts(params: GetVolunteerFactsInput) -> dict:
+    """
+    Get the full fact-set for a volunteer.
+    Used by the orchestrator for gap analysis before routing.
+
+    Args:
+        volunteer_id: Platform volunteer UUID
+
+    Returns:
+        All stored facts (eligibility, credentials, preferences, commitments)
+    """
+    result = await volunteer_service.get_facts(params.volunteer_id)
+    if result is not None:
+        return {"status": "success", "facts": result}
+    return {"status": "not_found"}
+
+
+@mcp.tool()
+async def check_volunteer_credential(params: CheckVolunteerCredentialInput) -> dict:
+    """
+    Check if a volunteer has a specific credential at the required status.
+    Used by fulfillment agent to verify eligibility before nomination.
+
+    Args:
+        volunteer_id: Platform volunteer UUID
+        category: Credential category (english_teaching, hindi_teaching, etc.)
+        required_status: Status to check for (default: recommended)
+
+    Returns:
+        has_credential (bool), credential details if found
+    """
+    has_it = await volunteer_service.has_credential(
+        volunteer_id=params.volunteer_id,
+        category=params.category,
+        required_status=params.required_status,
+    )
+    credential = await volunteer_service.get_credential(params.volunteer_id, params.category)
+    return {
+        "status": "success",
+        "has_credential": has_it,
+        "credential": credential,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────

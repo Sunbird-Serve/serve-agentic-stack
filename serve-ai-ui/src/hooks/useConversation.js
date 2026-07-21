@@ -29,10 +29,10 @@ export function useConversation(sessionId, onSessionCreated) {
    */
   const getOrchestratorPersona = useCallback(() => {
     const map = {
-      Super_Admin: 'admin',
-      Need_Admin: 'admin',
-      Volunteer_Admin: 'admin',
-      Volunteer_Coordinator: 'ops',
+      Super_Admin: 'new_volunteer',
+      Need_Admin: 'new_volunteer',
+      Volunteer_Admin: 'new_volunteer',
+      Volunteer_Coordinator: 'new_volunteer',
       Need_Coordinator: 'need_coordinator',
       Volunteer: 'new_volunteer',
     };

@@ -663,3 +663,39 @@ class GetRecommendedVolunteersInput(BaseModel):
         default=False,
         description="False → recommendedNotNominated, True → recommendedNominated"
     )
+
+
+# ─── Volunteer Fact-Store ──────────────────────────────────────────────────────
+
+class FindVolunteerInput(BaseModel):
+    """Find a volunteer by any known identifier."""
+    email: Optional[str] = Field(None, description="Email address")
+    phone: Optional[str] = Field(None, description="Phone number")
+    serve_registry_id: Optional[str] = Field(None, description="Serve Registry osid")
+
+
+class CreateVolunteerInput(BaseModel):
+    """Create a new volunteer in the fact-store."""
+    full_name: Optional[str] = Field(None, description="Volunteer's full name")
+    phone: Optional[str] = Field(None, description="Phone number")
+    email: Optional[str] = Field(None, description="Email address")
+    serve_registry_id: Optional[str] = Field(None, description="Serve Registry osid")
+    facts: Optional[Dict[str, Any]] = Field(None, description="Initial facts to store")
+
+
+class MergeVolunteerFactsInput(BaseModel):
+    """Merge new facts into a volunteer's existing fact-set."""
+    volunteer_id: str = Field(description="Platform volunteer UUID")
+    facts: Dict[str, Any] = Field(description="Facts to merge (shallow at top, deep for credentials/preferences/commitments)")
+
+
+class GetVolunteerFactsInput(BaseModel):
+    """Get the full fact-set for a volunteer."""
+    volunteer_id: str = Field(description="Platform volunteer UUID")
+
+
+class CheckVolunteerCredentialInput(BaseModel):
+    """Check if a volunteer has a specific credential."""
+    volunteer_id: str = Field(description="Platform volunteer UUID")
+    category: str = Field(description="Credential category (e.g., english_teaching, hindi_teaching)")
+    required_status: str = Field(default="recommended", description="Required status to pass the check")

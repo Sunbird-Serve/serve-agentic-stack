@@ -86,6 +86,8 @@ class Session(Base):
     channel_metadata = Column(JSONB,       nullable=True)
     idempotency_key  = Column(String(255), nullable=True)   # deduplication (WhatsApp wamid)
     last_message_at  = Column(DateTime,    nullable=True)
+    # Link to persistent volunteer record (populated once volunteer is identified)
+    platform_volunteer_id = Column(PGUUID(as_uuid=True), ForeignKey("volunteers.id"), nullable=True)
     created_at       = Column(DateTime,    default=datetime.utcnow, nullable=False)
     updated_at       = Column(DateTime,    default=datetime.utcnow, nullable=False)
 
@@ -186,6 +188,7 @@ class TelemetryEvent(Base):
 
     id              = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     session_id      = Column(PGUUID(as_uuid=True), ForeignKey("sessions.id"), nullable=False)
+    volunteer_id    = Column(PGUUID(as_uuid=True), ForeignKey("volunteers.id"), nullable=True)
     event_type      = Column(String(100), nullable=False)
     agent           = Column(String(50),  nullable=True)
     domain          = Column(String(20),  nullable=True)    # volunteer | need | system
@@ -197,6 +200,7 @@ class TelemetryEvent(Base):
     __table_args__ = (
         sqlalchemy.Index("ix_telemetry_session_type", "session_id", "event_type"),
         sqlalchemy.Index("ix_telemetry_timestamp",    "timestamp"),
+        sqlalchemy.Index("ix_telemetry_volunteer",    "volunteer_id", postgresql_where=text("volunteer_id IS NOT NULL")),
     )
 
 
@@ -262,6 +266,36 @@ class AgentHandoffLog(Base):
 
     __table_args__ = (
         sqlalchemy.Index("ix_handoff_session_time", "session_id", "created_at"),
+    )
+
+
+class Volunteer(Base):
+    """
+    Persistent volunteer identity and fact-set.
+    One row per volunteer — persists across all sessions.
+    The `facts` JSONB column holds all accumulated AI platform knowledge:
+      - Platform eligibility (adult, internet, unpaid consent)
+      - Selection credentials (per-category: english_teaching, hindi, etc.)
+      - Engagement preferences (intent, schedule, commitment)
+      - Active commitments (current need assignments)
+    Profile data (name, phone, email) is denormalized here for dashboard display;
+    source of truth remains Serve Registry.
+    """
+    __tablename__ = "volunteers"
+
+    id                = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    serve_registry_id = Column(String(255), nullable=True)   # Serve Registry osid
+    full_name         = Column(String(255), nullable=True)   # denormalized for dashboard
+    phone             = Column(String(50),  nullable=True)   # denormalized for dashboard
+    email             = Column(String(255), nullable=True)   # for lookup/dedup
+    facts             = Column(JSONB,       nullable=False, default=dict)
+    created_at        = Column(DateTime,    default=datetime.utcnow, nullable=False)
+    updated_at        = Column(DateTime,    default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        sqlalchemy.Index("ix_volunteers_email", "email", unique=True, postgresql_where=text("email IS NOT NULL")),
+        sqlalchemy.Index("ix_volunteers_phone", "phone", postgresql_where=text("phone IS NOT NULL")),
+        sqlalchemy.Index("ix_volunteers_serve_id", "serve_registry_id", postgresql_where=text("serve_registry_id IS NOT NULL")),
     )
 
 
@@ -341,6 +375,34 @@ async def init_db():
         logger.info("Migration applied: need_drafts.skipped_grades TEXT[] column added")
     except Exception as e:
         logger.info(f"Migration skipped_grades skipped: {e}")
+
+    # ── v2 migrations: volunteer fact-store ─────────────────────────────────
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS platform_volunteer_id UUID REFERENCES volunteers(id)"
+            ))
+        logger.info("Migration applied: sessions.platform_volunteer_id column added")
+    except Exception as e:
+        logger.info(f"Migration platform_volunteer_id skipped: {e}")
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE telemetry_events ADD COLUMN IF NOT EXISTS volunteer_id UUID REFERENCES volunteers(id)"
+            ))
+        logger.info("Migration applied: telemetry_events.volunteer_id column added")
+    except Exception as e:
+        logger.info(f"Migration telemetry_events.volunteer_id skipped: {e}")
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_telemetry_volunteer ON telemetry_events(volunteer_id) WHERE volunteer_id IS NOT NULL"
+            ))
+        logger.info("Migration applied: ix_telemetry_volunteer index created")
+    except Exception as e:
+        logger.info(f"Migration ix_telemetry_volunteer skipped: {e}")
 
     logger.info("Database tables initialised")
 
