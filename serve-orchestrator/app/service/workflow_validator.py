@@ -413,12 +413,104 @@ RECOMMENDED_VOLUNTEER_WORKFLOW = WorkflowDefinition(
 )
 
 
+# Define the Delivery Support workflow (post-handshake delivery journey)
+DELIVERY_SUPPORT_WORKFLOW = WorkflowDefinition(
+    workflow_id='delivery_support',
+    display_name='Delivery Support',
+    description='Activates a matched volunteer and runs daily session operations (reminders, completion checks, outcomes) through programme completion',
+    initial_stage='activation_started',
+    terminal_stages=['delivery_complete', 'human_review'],
+    stages={
+        'activation_started': WorkflowStageDefinition(
+            stage_id='activation_started',
+            display_name='Getting Ready',
+            responsible_agent='delivery_assistant',
+            valid_next_stages=['volunteer_acknowledged', 'first_session_ready',
+                               'activation_completed', 'delivery_operations',
+                               'activation_blocked', 'paused', 'human_review'],
+            required_fields=[],
+            can_pause=True,
+        ),
+        'volunteer_acknowledged': WorkflowStageDefinition(
+            stage_id='volunteer_acknowledged',
+            display_name='Assignment Acknowledged',
+            responsible_agent='delivery_assistant',
+            valid_next_stages=['first_session_ready', 'activation_completed',
+                               'delivery_operations', 'activation_blocked', 'paused', 'human_review'],
+            required_fields=[],
+            can_pause=True,
+        ),
+        'first_session_ready': WorkflowStageDefinition(
+            stage_id='first_session_ready',
+            display_name='Ready For First Session',
+            responsible_agent='delivery_assistant',
+            valid_next_stages=['activation_completed', 'delivery_operations',
+                               'activation_blocked', 'paused', 'human_review'],
+            required_fields=[],
+            can_pause=True,
+        ),
+        'activation_completed': WorkflowStageDefinition(
+            stage_id='activation_completed',
+            display_name='Activated',
+            responsible_agent='delivery_assistant',
+            valid_next_stages=['delivery_operations', 'paused', 'human_review'],
+            required_fields=[],
+            can_pause=True,
+        ),
+        'activation_blocked': WorkflowStageDefinition(
+            stage_id='activation_blocked',
+            display_name='Activation Blocked',
+            responsible_agent='delivery_assistant',
+            valid_next_stages=['activation_started', 'volunteer_acknowledged',
+                               'human_review', 'paused'],
+            required_fields=[],
+            can_pause=True,
+        ),
+        'delivery_operations': WorkflowStageDefinition(
+            stage_id='delivery_operations',
+            display_name='Delivery In Progress',
+            responsible_agent='delivery_assistant',
+            valid_next_stages=['delivery_operations', 'delivery_complete', 'paused', 'human_review'],
+            required_fields=[],
+            can_pause=True,
+        ),
+        'delivery_complete': WorkflowStageDefinition(
+            stage_id='delivery_complete',
+            display_name='Delivery Complete',
+            responsible_agent='delivery_assistant',
+            valid_next_stages=[],
+            required_fields=[],
+            can_pause=False,
+        ),
+        'human_review': WorkflowStageDefinition(
+            stage_id='human_review',
+            display_name='Escalated For Review',
+            responsible_agent='delivery_assistant',
+            valid_next_stages=['delivery_operations', 'activation_started', 'paused'],
+            required_fields=[],
+            can_pause=False,
+        ),
+        'paused': WorkflowStageDefinition(
+            stage_id='paused',
+            display_name='Paused',
+            responsible_agent='delivery_assistant',
+            valid_next_stages=['activation_started', 'volunteer_acknowledged',
+                               'first_session_ready', 'activation_completed',
+                               'delivery_operations', 'human_review'],
+            required_fields=[],
+            can_pause=False,
+        ),
+    }
+)
+
+
 # Registry of all workflows
 WORKFLOW_REGISTRY: Dict[str, WorkflowDefinition] = {
     'new_volunteer_onboarding': NEW_VOLUNTEER_ONBOARDING_WORKFLOW,
     'need_coordination': NEED_COORDINATION_WORKFLOW,
     'returning_volunteer': RETURNING_VOLUNTEER_WORKFLOW,
     'recommended_volunteer': RECOMMENDED_VOLUNTEER_WORKFLOW,
+    'delivery_support': DELIVERY_SUPPORT_WORKFLOW,
 }
 
 
@@ -596,6 +688,10 @@ class WorkflowValidator:
             ],
             'recommended_volunteer': [
                 'verifying_identity', 'gathering_preferences', 'active', 'complete'
+            ],
+            'delivery_support': [
+                'activation_started', 'volunteer_acknowledged', 'first_session_ready',
+                'activation_completed', 'delivery_operations', 'delivery_complete'
             ],
         }
         

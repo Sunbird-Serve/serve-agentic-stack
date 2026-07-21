@@ -64,7 +64,35 @@ from schemas import (
     NominateVolunteerInput, ConfirmNominationInput,
     GetNominationsForNeedInput, GetRecommendedVolunteersInput,
     GetNeedsForEntityInput, GetNeedDetailsInput,
+    # Delivery assistant tools
+    DeliveryStartActivationInput, DeliveryGetContextInput,
+    DeliveryConfirmAcknowledgementInput, DeliveryConfirmFirstSessionReadinessInput,
+    DeliveryCompleteActivationInput, DeliveryCreateScheduledSessionInput,
+    DeliveryGetScheduledSessionsInput, DeliveryGetDueRemindersInput,
+    DeliveryMarkReminderInput, DeliveryRecordSessionOutcomeInput,
+    DeliveryLogBlockerInput, DeliveryCaptureRescheduleInput,
+    DeliveryUpdateStatusInput, DeliveryEvaluateEscalationInput,
+    # Delivery assistant — full-spec expansion
+    DeliveryReadAssignmentContextInput, DeliveryReadActivationContextInput,
+    DeliveryReadScheduleContextInput, DeliveryReadSessionContextInput,
+    DeliveryReadDeliveryHistoryInput, DeliveryExtractSignalsInput,
+    DeliveryDetectBlockersInput, DeliveryGetMissingSignalsInput,
+    DeliveryEvaluateActivationInput, DeliveryEvaluateReadinessInput,
+    DeliverySetReadinessDimensionInput, DeliveryEvaluateDeliveryHealthInput,
+    DeliveryEvaluateNextActionInput, DeliveryGetActivationContentInput,
+    DeliveryNotifyStakeholderInput, DeliverySetCoordinatorPhoneInput,
+    DeliverySendSessionDayReminderInput,
+    DeliverySendPreSessionReminderInput, DeliverySendCompletionCheckInput,
+    DeliverySendFollowupNudgeInput, DeliveryReadReminderHistoryInput,
+    DeliverySuppressReminderInput, DeliveryStartCheckinInput,
+    DeliveryCloseCheckinInput, DeliveryUpdateBlockerInput,
+    DeliveryGetSupportGuidanceInput, DeliveryCreateOpsSupportRequestInput,
+    DeliverySubmitRescheduleInput, DeliveryReadRescheduleStatusInput,
+    DeliveryResolveRescheduleInput, DeliveryRaiseRiskInput,
+    DeliveryPrepareOpsHandoffInput, DeliveryWriteSessionSummaryInput,
+    DeliveryWriteDeliverySummaryInput,
 )
+from services.delivery_service import delivery_service
 session_service = SessionService()
 profile_service = ProfileService()
 memory_service  = MemoryService()
@@ -272,6 +300,7 @@ async def advance_session_state(params: AdvanceSessionStateInput) -> dict:
         new_state=params.new_state,
         sub_state=params.sub_state,
         active_agent=params.active_agent,
+        workflow=params.workflow,
     )
 
     # Write-back to Serve Registry on onboarding completion
@@ -1518,6 +1547,387 @@ async def get_recommended_volunteers(params: GetRecommendedVolunteersInput) -> d
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# DELIVERY ASSISTANT TOOLS — post-handshake delivery journey
+# Used by: Delivery Agent (serve-delivery-agent-service)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+async def delivery_start_activation(params: DeliveryStartActivationInput) -> dict:
+    """
+    Create a post-handshake delivery record for an approved volunteer↔need.
+    Reuses an existing active delivery for the same volunteer+need if present.
+
+    Used by: Delivery Agent / ops trigger when a nomination is approved.
+    """
+    return await delivery_service.start_activation(**params.model_dump())
+
+
+@mcp.tool()
+async def delivery_get_context(params: DeliveryGetContextInput) -> dict:
+    """
+    Fetch full delivery context (assignment + activation + scheduled sessions +
+    blockers + reschedule requests) by delivery_id or session_id.
+    """
+    return await delivery_service.get_delivery_context(
+        delivery_id=params.delivery_id, session_id=params.session_id
+    )
+
+
+@mcp.tool()
+async def delivery_confirm_acknowledgement(params: DeliveryConfirmAcknowledgementInput) -> dict:
+    """Record that the volunteer or coordinator acknowledged the assignment."""
+    return await delivery_service.confirm_acknowledgement(params.delivery_id, params.party)
+
+
+@mcp.tool()
+async def delivery_confirm_first_session_readiness(params: DeliveryConfirmFirstSessionReadinessInput) -> dict:
+    """Record that the volunteer is ready for the first scheduled session."""
+    return await delivery_service.confirm_first_session_readiness(params.delivery_id)
+
+
+@mcp.tool()
+async def delivery_complete_activation(params: DeliveryCompleteActivationInput) -> dict:
+    """
+    Mark activation complete. GATED — refuses unless the volunteer has
+    acknowledged AND first-session readiness is confirmed.
+    """
+    return await delivery_service.complete_activation(params.delivery_id)
+
+
+@mcp.tool()
+async def delivery_create_scheduled_session(params: DeliveryCreateScheduledSessionInput) -> dict:
+    """Create a scheduled teaching session within a delivery."""
+    return await delivery_service.create_scheduled_session(**params.model_dump())
+
+
+@mcp.tool()
+async def delivery_get_scheduled_sessions(params: DeliveryGetScheduledSessionsInput) -> dict:
+    """List a delivery's scheduled sessions (optionally today's only)."""
+    return await delivery_service.get_scheduled_sessions(params.delivery_id, params.today_only)
+
+
+@mcp.tool()
+async def delivery_get_due_reminders(params: DeliveryGetDueRemindersInput) -> dict:
+    """
+    Return candidate reminder state for active deliveries: each non-terminal
+    session plus which reminder types were already recorded. The delivery agent's
+    policy engine decides which reminders are actually due.
+    """
+    return await delivery_service.get_due_reminders(delivery_id=params.delivery_id, now=params.now)
+
+
+@mcp.tool()
+async def delivery_mark_reminder(params: DeliveryMarkReminderInput) -> dict:
+    """
+    Record a reminder as sent/suppressed/responded. Idempotent — the
+    (session, reminder_type) unique constraint makes duplicates a no-op.
+    """
+    return await delivery_service.mark_reminder(
+        scheduled_session_id=params.scheduled_session_id,
+        reminder_type=params.reminder_type,
+        status=params.status,
+        suppressed_reason=params.suppressed_reason,
+    )
+
+
+@mcp.tool()
+async def delivery_record_session_outcome(params: DeliveryRecordSessionOutcomeInput) -> dict:
+    """
+    Record a verified session outcome (completed | partially_completed | missed |
+    disrupted | unverified | cancelled | reschedule_requested | support_needed).
+    Updates completed_sessions. Optional structured evidence (attendance_count,
+    duration_minutes, disruption_type) may be included.
+    """
+    return await delivery_service.record_session_outcome(
+        scheduled_session_id=params.scheduled_session_id,
+        outcome=params.outcome, reason=params.reason, reported_by=params.reported_by,
+        attendance_count=params.attendance_count, duration_minutes=params.duration_minutes,
+        disruption_type=params.disruption_type,
+    )
+
+
+@mcp.tool()
+async def delivery_log_blocker(params: DeliveryLogBlockerInput) -> dict:
+    """Record a structured operational blocker on a delivery or session."""
+    return await delivery_service.log_blocker(**params.model_dump())
+
+
+@mcp.tool()
+async def delivery_capture_reschedule(params: DeliveryCaptureRescheduleInput) -> dict:
+    """Capture a reschedule request as PENDING — never auto-approved."""
+    return await delivery_service.capture_reschedule_request(**params.model_dump())
+
+
+@mcp.tool()
+async def delivery_update_status(params: DeliveryUpdateStatusInput) -> dict:
+    """Update the delivery-level status (active | at_risk | paused | escalated | ...)."""
+    return await delivery_service.update_delivery_status(
+        params.delivery_id, params.delivery_status, params.status_reason
+    )
+
+
+@mcp.tool()
+async def delivery_evaluate_escalation(params: DeliveryEvaluateEscalationInput) -> dict:
+    """
+    Return deterministic continuity signals (consecutive missed/unverified, open
+    blockers, reschedule count) plus a convenience escalate verdict from thresholds.
+    """
+    return await delivery_service.evaluate_escalation(params.delivery_id)
+
+
+# ── Full-spec expansion: granular reads ────────────────────────────────────────
+
+@mcp.tool()
+async def delivery_read_assignment_context(params: DeliveryReadAssignmentContextInput) -> dict:
+    """Focused read: volunteer/need/entity/coordinator/programme assignment details only."""
+    return await delivery_service.read_assignment_context(params.delivery_id)
+
+
+@mcp.tool()
+async def delivery_read_activation_context(params: DeliveryReadActivationContextInput) -> dict:
+    """Focused read: acknowledgement, readiness, and activation progress only."""
+    return await delivery_service.read_activation_context(params.delivery_id)
+
+
+@mcp.tool()
+async def delivery_read_schedule_context(params: DeliveryReadScheduleContextInput) -> dict:
+    """Focused read: upcoming/today/missed sessions."""
+    return await delivery_service.read_schedule_context(params.delivery_id)
+
+
+@mcp.tool()
+async def delivery_read_session_context(params: DeliveryReadSessionContextInput) -> dict:
+    """Focused read: one scheduled session plus its reminder history."""
+    return await delivery_service.read_session_context(params.scheduled_session_id)
+
+
+@mcp.tool()
+async def delivery_read_delivery_history(params: DeliveryReadDeliveryHistoryInput) -> dict:
+    """Focused read: outcome history, blockers, reschedules, cancelled sessions."""
+    return await delivery_service.read_delivery_history(params.delivery_id)
+
+
+# ── Full-spec expansion: signal processing & evaluation ────────────────────────
+
+@mcp.tool()
+async def delivery_extract_signals(params: DeliveryExtractSignalsInput) -> dict:
+    """
+    Deterministic, keyword-based structured guess at what a free-form message
+    signals (completion/reschedule/blocker/readiness/availability/disengagement/
+    support-request). Advisory only — never the authoritative recording path.
+    """
+    return delivery_service.extract_delivery_signals(params.text)
+
+
+@mcp.tool()
+async def delivery_detect_blockers(params: DeliveryDetectBlockersInput) -> dict:
+    """Deterministic keyword classifier for blocker type. Advisory pre-check only."""
+    return delivery_service.detect_blockers(params.text)
+
+
+@mcp.tool()
+async def delivery_get_missing_signals(params: DeliveryGetMissingSignalsInput) -> dict:
+    """What evidence is still required before a given target can be recorded."""
+    return await delivery_service.get_missing_signals(params.delivery_id, params.target)
+
+
+@mcp.tool()
+async def delivery_evaluate_activation(params: DeliveryEvaluateActivationInput) -> dict:
+    """Dry-run of the complete_activation gate — reports readiness without committing."""
+    return await delivery_service.evaluate_activation(params.delivery_id)
+
+
+@mcp.tool()
+async def delivery_evaluate_readiness(params: DeliveryEvaluateReadinessInput) -> dict:
+    """Evaluate the multi-dimension readiness checklist (volunteer/coordinator/session/classroom/material/meeting_link/infrastructure)."""
+    return await delivery_service.evaluate_readiness(params.delivery_id)
+
+
+@mcp.tool()
+async def delivery_set_readiness_dimension(params: DeliverySetReadinessDimensionInput) -> dict:
+    """Set one dimension of the readiness checklist."""
+    return await delivery_service.set_readiness_dimension(params.delivery_id, params.dimension, params.value)
+
+
+@mcp.tool()
+async def delivery_evaluate_delivery_health(params: DeliveryEvaluateDeliveryHealthInput) -> dict:
+    """
+    Richer than delivery_evaluate_escalation — adds blocker-age and
+    reschedule-pattern signals on top of consecutive-miss/unverified counts.
+    """
+    return await delivery_service.evaluate_delivery_health(params.delivery_id)
+
+
+@mcp.tool()
+async def delivery_evaluate_next_action(params: DeliveryEvaluateNextActionInput) -> dict:
+    """
+    Read-only advisory: what the deterministic flow would do next. Reporting
+    only — never grants tool-call authority to change state directly.
+    """
+    return await delivery_service.evaluate_next_action(params.delivery_id)
+
+
+# ── Full-spec expansion: activation content & coordinator notification ─────────
+
+@mcp.tool()
+async def delivery_get_activation_content(params: DeliveryGetActivationContentInput) -> dict:
+    """Fixed, deterministic template text (intro | instructions | resources) — never LLM-authored."""
+    return await delivery_service.get_activation_content(params.delivery_id, params.content_type)
+
+
+@mcp.tool()
+async def delivery_notify_linked_stakeholder(params: DeliveryNotifyStakeholderInput) -> dict:
+    """
+    Notify the coordinator via WhatsApp using fixed template text. Honest about
+    outcome — status reflects sent / failed / no_contact_on_file, never a
+    false confirmation.
+    """
+    return await delivery_service.notify_linked_stakeholder(
+        params.delivery_id, params.stakeholder, params.reason
+    )
+
+
+@mcp.tool()
+async def delivery_set_coordinator_phone(params: DeliverySetCoordinatorPhoneInput) -> dict:
+    """
+    Self-healing capture: cache a coordinator's phone the first time they
+    message in on their own, since there is no reliable coordinator_id -> phone
+    directory anywhere in this stack.
+    """
+    return await delivery_service.set_coordinator_phone(params.delivery_id, params.phone)
+
+
+# ── Full-spec expansion: reminder wrappers, history, suppression ───────────────
+
+@mcp.tool()
+async def delivery_send_session_day_reminder(params: DeliverySendSessionDayReminderInput) -> dict:
+    """Named wrapper for the session-day reminder type."""
+    return await delivery_service.send_session_day_reminder(params.scheduled_session_id, params.now)
+
+
+@mcp.tool()
+async def delivery_send_pre_session_reminder(params: DeliverySendPreSessionReminderInput) -> dict:
+    """Named wrapper for the pre-session reminder type."""
+    return await delivery_service.send_pre_session_reminder(params.scheduled_session_id, params.now)
+
+
+@mcp.tool()
+async def delivery_send_completion_check(params: DeliverySendCompletionCheckInput) -> dict:
+    """Named wrapper for the completion-check reminder type."""
+    return await delivery_service.send_completion_check(params.scheduled_session_id, params.now)
+
+
+@mcp.tool()
+async def delivery_send_followup_nudge(params: DeliverySendFollowupNudgeInput) -> dict:
+    """Named wrapper for the follow-up nudge reminder type."""
+    return await delivery_service.send_followup_nudge(params.scheduled_session_id, params.now)
+
+
+@mcp.tool()
+async def delivery_read_reminder_history(params: DeliveryReadReminderHistoryInput) -> dict:
+    """Full reminder history for a delivery (all sessions, all types, all statuses)."""
+    return await delivery_service.read_reminder_history(params.delivery_id)
+
+
+@mcp.tool()
+async def delivery_suppress_reminder(params: DeliverySuppressReminderInput) -> dict:
+    """Explicit ops override — suppress one reminder type for one session, distinct from automatic policy suppression."""
+    return await delivery_service.suppress_reminder(
+        params.scheduled_session_id, params.reminder_type, params.reason
+    )
+
+
+# ── Full-spec expansion: session check-in ───────────────────────────────────────
+
+@mcp.tool()
+async def delivery_start_session_checkin(params: DeliveryStartCheckinInput) -> dict:
+    """Mark a session's check-in window as active."""
+    return await delivery_service.start_session_checkin(params.scheduled_session_id)
+
+
+@mcp.tool()
+async def delivery_close_checkin(params: DeliveryCloseCheckinInput) -> dict:
+    """Close a session's operational check-in without closing the whole delivery."""
+    return await delivery_service.close_checkin(params.scheduled_session_id)
+
+
+# ── Full-spec expansion: blocker resolution & support ───────────────────────────
+
+@mcp.tool()
+async def delivery_update_blocker(params: DeliveryUpdateBlockerInput) -> dict:
+    """Update a blocker's status/owner/resolution — closes the write-only-sink gap."""
+    return await delivery_service.update_blocker(
+        params.blocker_id, params.status, params.owner, params.resolution_notes
+    )
+
+
+@mcp.tool()
+async def delivery_get_support_guidance(params: DeliveryGetSupportGuidanceInput) -> dict:
+    """Static, deterministic guidance lookup for a given blocker type."""
+    return delivery_service.get_support_guidance(params.blocker_type)
+
+
+@mcp.tool()
+async def delivery_create_ops_support_request(params: DeliveryCreateOpsSupportRequestInput) -> dict:
+    """Lighter-weight than full escalation — flags something for ops without treating it as an emergency."""
+    return await delivery_service.create_ops_support_request(
+        params.delivery_id, params.reason, params.urgency
+    )
+
+
+# ── Full-spec expansion: reschedule resolution ──────────────────────────────────
+
+@mcp.tool()
+async def delivery_submit_reschedule(params: DeliverySubmitRescheduleInput) -> dict:
+    """Move a captured reschedule request from pending to submitted (ops review)."""
+    return await delivery_service.submit_reschedule_request(params.reschedule_request_id)
+
+
+@mcp.tool()
+async def delivery_read_reschedule_status(params: DeliveryReadRescheduleStatusInput) -> dict:
+    """Read reschedule request(s) — by delivery_id (all) or a specific reschedule_request_id."""
+    return await delivery_service.read_reschedule_status(params.delivery_id, params.reschedule_request_id)
+
+
+@mcp.tool()
+async def delivery_resolve_reschedule(params: DeliveryResolveRescheduleInput) -> dict:
+    """
+    Ops-only: move a reschedule request to approved/rejected — the piece that
+    lets a request finally reach a real outcome. Not exposed to the
+    volunteer-facing conversational agent.
+    """
+    return await delivery_service.resolve_reschedule_request(
+        params.reschedule_request_id, params.status, params.resolution_notes
+    )
+
+
+# ── Full-spec expansion: risk, handoff enrichment, summaries ───────────────────
+
+@mcp.tool()
+async def delivery_raise_risk(params: DeliveryRaiseRiskInput) -> dict:
+    """Set a delivery's risk_level, distinct from full escalation."""
+    return await delivery_service.raise_delivery_risk(params.delivery_id, params.risk_level, params.reason)
+
+
+@mcp.tool()
+async def delivery_prepare_ops_handoff(params: DeliveryPrepareOpsHandoffInput) -> dict:
+    """Build the fuller handoff bundle (recent outcomes, open blockers, pending reschedules) for use as emit_handoff_event's payload."""
+    return await delivery_service.prepare_ops_handoff(params.delivery_id, params.reason)
+
+
+@mcp.tool()
+async def delivery_write_session_summary(params: DeliveryWriteSessionSummaryInput) -> dict:
+    """Generate and store a deterministic, template-based session-level summary. Never LLM-generated."""
+    return await delivery_service.write_session_summary(params.scheduled_session_id)
+
+
+@mcp.tool()
+async def delivery_write_delivery_summary(params: DeliveryWriteDeliverySummaryInput) -> dict:
+    """Generate and store a deterministic, template-based delivery-level summary. Never LLM-generated."""
+    return await delivery_service.write_delivery_summary(params.delivery_id)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # VOLUNTEER FACT-STORE TOOLS
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1729,4 +2139,24 @@ if __name__ == "__main__":
     import sys
     transport = "sse" if "--http" in sys.argv else "stdio"
     logger.info(f"Starting SERVE AI MCP Server (transport={transport}, port={MCP_PORT})")
+
+    # The FastMCP SSE transport does NOT invoke the `lifespan` passed to the
+    # FastMCP() constructor (confirmed with mcp 1.28.1) — so the _lifespan hook
+    # above never fires and init_db() (create_all + column migrations) would
+    # never run, leaving the schema uncreated on a fresh deploy. Run it
+    # explicitly here so the DB is always initialised regardless of transport,
+    # then dispose the engine so its connection pool is rebuilt inside
+    # mcp.run()'s own event loop (avoids asyncpg "attached to a different loop"
+    # errors). init_db is idempotent, so if a future mcp version does fire the
+    # lifespan, the double-run is harmless.
+    async def _startup_init():
+        from services.database import init_db, engine
+        try:
+            await init_db()
+        except Exception as e:
+            logger.warning(f"init_db at startup failed (in-memory fallback active): {e}")
+        finally:
+            await engine.dispose()
+    asyncio.run(_startup_init())
+
     mcp.run(transport=transport)

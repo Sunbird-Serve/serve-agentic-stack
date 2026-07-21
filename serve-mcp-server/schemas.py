@@ -138,6 +138,10 @@ class AdvanceSessionStateInput(BaseModel):
         "onboarding", "selection", "engagement",
         "need", "fulfillment", "delivery_assistant"
     ]] = Field(default=None)
+    workflow: Optional[str] = Field(
+        default=None,
+        description="Optionally switch the session's workflow (e.g. on a cross-workflow handoff)"
+    )
 
     @field_validator("session_id")
     @classmethod
@@ -663,6 +667,484 @@ class GetRecommendedVolunteersInput(BaseModel):
         default=False,
         description="False → recommendedNotNominated, True → recommendedNominated"
     )
+
+
+# ─── Delivery Assistant tool inputs ───────────────────────────────────────────
+# Post-handshake delivery journey: activation + daily session operations.
+# Used by the delivery_assistant agent (serve-delivery-agent-service).
+
+def _validate_uuid(v: str, field_name: str = "id") -> str:
+    import uuid as _uuid
+    try:
+        _uuid.UUID(v)
+    except (ValueError, AttributeError):
+        raise ValueError(f"{field_name} must be a valid UUID, got: {v}")
+    return v
+
+
+class DeliveryStartActivationInput(BaseModel):
+    """Create a post-handshake delivery record for an approved volunteer↔need."""
+    session_id: Optional[str] = Field(default=None, description="MCP session UUID to link this delivery to")
+    volunteer_id: str = Field(min_length=1, description="Serve Registry volunteer osid")
+    volunteer_name: Optional[str] = Field(default=None)
+    need_id: str = Field(min_length=1, description="Serve Need Service need id")
+    nomination_id: Optional[str] = Field(default=None)
+    entity_id: Optional[str] = Field(default=None, description="School / institution id")
+    coordinator_id: Optional[str] = Field(default=None)
+    programme: Optional[str] = Field(default=None)
+    start_date: Optional[str] = Field(default=None)
+    end_date: Optional[str] = Field(default=None)
+    expected_sessions: int = Field(default=0, ge=0)
+
+
+class DeliveryGetContextInput(BaseModel):
+    """Fetch full delivery context by delivery_id or session_id (one required)."""
+    delivery_id: Optional[str] = Field(default=None)
+    session_id: Optional[str] = Field(default=None)
+
+    @model_validator(mode="after")
+    def _one_required(self):
+        if not self.delivery_id and not self.session_id:
+            raise ValueError("Provide either delivery_id or session_id")
+        return self
+
+
+class DeliveryConfirmAcknowledgementInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+    party: Literal["volunteer", "coordinator"] = Field(description="Whose acknowledgement to record")
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliveryConfirmFirstSessionReadinessInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliveryCompleteActivationInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliveryCreateScheduledSessionInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+    session_number: Optional[int] = Field(default=None, ge=1)
+    scheduled_date: str = Field(min_length=1, description="ISO date, e.g. 2026-07-20")
+    start_time: Optional[str] = Field(default=None, description="HH:MM")
+    end_time: Optional[str] = Field(default=None, description="HH:MM")
+    subject: Optional[str] = Field(default=None)
+    meeting_link: Optional[str] = Field(default=None)
+    delivery_mode: Optional[str] = Field(default="online")
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliveryGetScheduledSessionsInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+    today_only: bool = Field(default=False)
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliveryGetDueRemindersInput(BaseModel):
+    """Compute due reminders across active deliveries (policy-driven)."""
+    delivery_id: Optional[str] = Field(default=None, description="Limit to one delivery; omit for all active")
+    now: Optional[str] = Field(default=None, description="ISO datetime override for testing")
+
+
+class DeliveryMarkReminderInput(BaseModel):
+    scheduled_session_id: str = Field(min_length=1)
+    reminder_type: Literal["session_day", "pre_session", "completion_check", "followup_nudge"]
+    status: Literal["sent", "suppressed", "responded"] = Field(default="sent")
+    suppressed_reason: Optional[str] = Field(default=None)
+
+    @field_validator("scheduled_session_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "scheduled_session_id")
+
+
+class DeliveryRecordSessionOutcomeInput(BaseModel):
+    scheduled_session_id: str = Field(min_length=1)
+    outcome: Literal[
+        "completed", "partially_completed", "missed", "disrupted",
+        "unverified", "cancelled", "reschedule_requested", "support_needed",
+    ]
+    reason: Optional[str] = Field(default=None)
+    reported_by: Literal["volunteer", "coordinator", "system"] = Field(default="volunteer")
+    attendance_count: Optional[int] = Field(default=None, ge=0)
+    duration_minutes: Optional[int] = Field(default=None, ge=0)
+    disruption_type: Optional[str] = Field(default=None)
+
+    @field_validator("scheduled_session_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "scheduled_session_id")
+
+
+class DeliveryLogBlockerInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+    scheduled_session_id: Optional[str] = Field(default=None)
+    blocker_type: str = Field(min_length=1, description="e.g. technical, meeting_link, institution_unavailable")
+    description: Optional[str] = Field(default=None)
+    raised_by: Literal["volunteer", "coordinator", "system"] = Field(default="volunteer")
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliveryCaptureRescheduleInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+    scheduled_session_id: Optional[str] = Field(default=None)
+    reason: Optional[str] = Field(default=None)
+    preferred_date: Optional[str] = Field(default=None)
+    preferred_time: Optional[str] = Field(default=None)
+    requested_by: Literal["volunteer", "coordinator"] = Field(default="volunteer")
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliveryUpdateStatusInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+    delivery_status: Literal[
+        "activating", "active", "on_track", "at_risk", "interrupted", "resumed",
+        "nearing_completion", "paused", "completed", "discontinued", "escalated",
+    ]
+    status_reason: Optional[str] = Field(default=None)
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliveryEvaluateEscalationInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+# ─── Full-spec expansion: granular reads ──────────────────────────────────────
+
+class DeliveryReadAssignmentContextInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliveryReadActivationContextInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliveryReadScheduleContextInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliveryReadSessionContextInput(BaseModel):
+    scheduled_session_id: str = Field(min_length=1)
+
+    @field_validator("scheduled_session_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "scheduled_session_id")
+
+
+class DeliveryReadDeliveryHistoryInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+# ─── Full-spec expansion: signal processing & evaluation ──────────────────────
+
+class DeliveryExtractSignalsInput(BaseModel):
+    text: str = Field(min_length=1, description="Free-form volunteer/coordinator message to classify")
+
+
+class DeliveryDetectBlockersInput(BaseModel):
+    text: str = Field(min_length=1, description="Free-form message to scan for blocker signals")
+
+
+class DeliveryGetMissingSignalsInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+    target: Literal[
+        "activation_complete", "readiness_confirmed", "session_completed",
+        "session_missed", "partial_completion", "reschedule",
+        "delivery_completed", "escalation",
+    ]
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliveryEvaluateActivationInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliveryEvaluateReadinessInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliverySetReadinessDimensionInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+    dimension: Literal[
+        "volunteer", "coordinator", "session", "classroom",
+        "material", "meeting_link", "infrastructure",
+    ]
+    value: bool
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliveryEvaluateDeliveryHealthInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliveryEvaluateNextActionInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+# ─── Full-spec expansion: activation content & coordinator notification ───────
+
+class DeliveryGetActivationContentInput(BaseModel):
+    content_type: Literal["intro", "instructions", "resources"]
+    delivery_id: str = Field(min_length=1)
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliveryNotifyStakeholderInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+    stakeholder: Literal["coordinator"] = Field(default="coordinator")
+    reason: str = Field(min_length=1, description="Why the coordinator is being notified")
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliverySetCoordinatorPhoneInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+    phone: str = Field(min_length=1)
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+# ─── Full-spec expansion: reminder wrappers, history, suppression ─────────────
+
+class DeliverySendSessionDayReminderInput(BaseModel):
+    scheduled_session_id: str = Field(min_length=1)
+    now: Optional[str] = Field(default=None, description="ISO datetime override for testing")
+
+    @field_validator("scheduled_session_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "scheduled_session_id")
+
+
+class DeliverySendPreSessionReminderInput(BaseModel):
+    scheduled_session_id: str = Field(min_length=1)
+    now: Optional[str] = Field(default=None)
+
+    @field_validator("scheduled_session_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "scheduled_session_id")
+
+
+class DeliverySendCompletionCheckInput(BaseModel):
+    scheduled_session_id: str = Field(min_length=1)
+    now: Optional[str] = Field(default=None)
+
+    @field_validator("scheduled_session_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "scheduled_session_id")
+
+
+class DeliverySendFollowupNudgeInput(BaseModel):
+    scheduled_session_id: str = Field(min_length=1)
+    now: Optional[str] = Field(default=None)
+
+    @field_validator("scheduled_session_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "scheduled_session_id")
+
+
+class DeliveryReadReminderHistoryInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliverySuppressReminderInput(BaseModel):
+    scheduled_session_id: str = Field(min_length=1)
+    reminder_type: Literal["session_day", "pre_session", "completion_check", "followup_nudge"]
+    reason: str = Field(min_length=1)
+
+    @field_validator("scheduled_session_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "scheduled_session_id")
+
+
+# ─── Full-spec expansion: session check-in ─────────────────────────────────────
+
+class DeliveryStartCheckinInput(BaseModel):
+    scheduled_session_id: str = Field(min_length=1)
+
+    @field_validator("scheduled_session_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "scheduled_session_id")
+
+
+class DeliveryCloseCheckinInput(BaseModel):
+    scheduled_session_id: str = Field(min_length=1)
+
+    @field_validator("scheduled_session_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "scheduled_session_id")
+
+
+# ─── Full-spec expansion: blocker resolution & support ─────────────────────────
+
+class DeliveryUpdateBlockerInput(BaseModel):
+    blocker_id: str = Field(min_length=1)
+    status: Literal["open", "resolved", "escalated"]
+    owner: Optional[str] = Field(default=None)
+    resolution_notes: Optional[str] = Field(default=None)
+
+    @field_validator("blocker_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "blocker_id")
+
+
+class DeliveryGetSupportGuidanceInput(BaseModel):
+    blocker_type: str = Field(min_length=1)
+
+
+class DeliveryCreateOpsSupportRequestInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    urgency: Literal["low", "medium", "high"] = Field(default="medium")
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+# ─── Full-spec expansion: reschedule resolution ────────────────────────────────
+
+class DeliverySubmitRescheduleInput(BaseModel):
+    reschedule_request_id: str = Field(min_length=1)
+
+    @field_validator("reschedule_request_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "reschedule_request_id")
+
+
+class DeliveryReadRescheduleStatusInput(BaseModel):
+    delivery_id: Optional[str] = Field(default=None)
+    reschedule_request_id: Optional[str] = Field(default=None)
+
+    @model_validator(mode="after")
+    def _one_required(self):
+        if not self.delivery_id and not self.reschedule_request_id:
+            raise ValueError("Provide either delivery_id or reschedule_request_id")
+        return self
+
+
+class DeliveryResolveRescheduleInput(BaseModel):
+    reschedule_request_id: str = Field(min_length=1)
+    status: Literal["approved", "rejected"]
+    resolution_notes: Optional[str] = Field(default=None)
+
+    @field_validator("reschedule_request_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "reschedule_request_id")
+
+
+# ─── Full-spec expansion: risk, handoff, summaries ─────────────────────────────
+
+class DeliveryRaiseRiskInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+    risk_level: Literal["none", "low", "medium", "high"]
+    reason: str = Field(min_length=1)
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliveryPrepareOpsHandoffInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
+
+
+class DeliveryWriteSessionSummaryInput(BaseModel):
+    scheduled_session_id: str = Field(min_length=1)
+
+    @field_validator("scheduled_session_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "scheduled_session_id")
+
+
+class DeliveryWriteDeliverySummaryInput(BaseModel):
+    delivery_id: str = Field(min_length=1)
+
+    @field_validator("delivery_id")
+    @classmethod
+    def _v(cls, v): return _validate_uuid(v, "delivery_id")
 
 
 # ─── Volunteer Fact-Store ──────────────────────────────────────────────────────

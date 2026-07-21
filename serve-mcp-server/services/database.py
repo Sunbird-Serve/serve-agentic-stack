@@ -338,6 +338,189 @@ class NeedDraft(Base):
     )
 
 
+# ─── Delivery Assistant tables (post-handshake delivery journey) ──────────────
+# Owned by the delivery_assistant agent. One Delivery per volunteer↔need
+# assignment; scheduled sessions, policy-driven reminders, blockers, and
+# reschedule requests hang off it. See serve-delivery-agent-service.
+
+class Delivery(Base):
+    """
+    One volunteer↔need delivery journey, from post-handshake activation
+    through programme completion / pause / escalation.
+    """
+    __tablename__ = "deliveries"
+
+    id                = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id        = Column(PGUUID(as_uuid=True), ForeignKey("sessions.id"), nullable=True)
+    # Assignment context (external Serve references)
+    volunteer_id      = Column(String(255), nullable=True)   # Serve Registry osid
+    volunteer_name    = Column(String(255), nullable=True)
+    need_id           = Column(String(255), nullable=True)   # Serve Need Service need id
+    nomination_id     = Column(String(255), nullable=True)
+    entity_id         = Column(String(255), nullable=True)   # school / institution
+    coordinator_id    = Column(String(255), nullable=True)
+    programme         = Column(String(255), nullable=True)
+    start_date        = Column(String(50),  nullable=True)
+    end_date          = Column(String(50),  nullable=True)
+    expected_sessions = Column(Integer,     nullable=True, default=0)
+    completed_sessions = Column(Integer,    nullable=False, default=0)
+    # Activation gates
+    volunteer_acknowledged   = Column(Boolean, nullable=False, default=False)
+    coordinator_acknowledged = Column(Boolean, nullable=False, default=False)
+    coordinator_phone        = Column(String(50), nullable=True)  # cached at activation, avoids a live lookup per notify
+    first_session_ready      = Column(Boolean, nullable=False, default=False)
+    activation_completed_at  = Column(DateTime, nullable=True)
+    # Readiness across dimensions (volunteer/coordinator/session/classroom/material/
+    # meeting_link/infrastructure), each a bool — see policy_engine.evaluate_readiness
+    readiness_checklist = Column(JSONB, nullable=True)
+    # Deterministic, template-generated delivery-level summary (see write_delivery_summary)
+    last_summary      = Column(Text,       nullable=True)
+    risk_level        = Column(String(50), nullable=True)  # none | low | medium | high
+    # Delivery-level state machine
+    delivery_status   = Column(String(50), nullable=False, default="activating")
+    # activating | active | on_track | at_risk | interrupted | resumed |
+    # nearing_completion | paused | completed | discontinued | escalated
+    status_reason     = Column(Text,       nullable=True)
+    created_at        = Column(DateTime,   default=datetime.utcnow, nullable=False)
+    updated_at        = Column(DateTime,   default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        sqlalchemy.Index("ix_deliveries_session",   "session_id"),
+        sqlalchemy.Index("ix_deliveries_volunteer", "volunteer_id"),
+        sqlalchemy.Index("ix_deliveries_status",    "delivery_status"),
+    )
+
+
+class DeliveryScheduledSession(Base):
+    """A single scheduled teaching session within a delivery."""
+    __tablename__ = "delivery_scheduled_sessions"
+
+    id                = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    delivery_id       = Column(PGUUID(as_uuid=True), ForeignKey("deliveries.id"), nullable=False)
+    session_number    = Column(Integer,     nullable=True)
+    scheduled_date    = Column(String(50),  nullable=True)   # ISO date (school-local)
+    start_time        = Column(String(20),  nullable=True)   # HH:MM
+    end_time          = Column(String(20),  nullable=True)   # HH:MM
+    subject           = Column(String(255), nullable=True)
+    meeting_link      = Column(Text,        nullable=True)
+    delivery_mode     = Column(String(50),  nullable=True)   # online | offline
+    session_state     = Column(String(50),  nullable=False, default="upcoming")
+    # upcoming | day_reminder_sent | pre_session_reminder_sent |
+    # completion_check_sent | completed | partially_completed | missed |
+    # unverified | cancelled | reschedule_requested
+    outcome           = Column(String(50),  nullable=True)
+    # completed | partially_completed | missed | disrupted | unverified |
+    # reschedule_requested | support_needed | cancelled
+    outcome_reason    = Column(Text,        nullable=True)
+    outcome_reported_by = Column(String(50), nullable=True)  # volunteer | coordinator | system
+    # Optional structured evidence (see delivery_record_session_outcome)
+    attendance_count  = Column(Integer,     nullable=True)
+    duration_minutes  = Column(Integer,     nullable=True)
+    disruption_type   = Column(String(100), nullable=True)
+    # Deterministic, template-generated session-level summary
+    last_summary      = Column(Text,        nullable=True)
+    created_at        = Column(DateTime,   default=datetime.utcnow, nullable=False)
+    updated_at        = Column(DateTime,   default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        sqlalchemy.Index("ix_delivery_sessions_delivery", "delivery_id"),
+        sqlalchemy.Index("ix_delivery_sessions_date",     "scheduled_date"),
+    )
+
+
+class DeliveryReminder(Base):
+    """
+    Record of a policy-driven reminder for a scheduled session.
+    The unique constraint (scheduled_session_id, reminder_type) makes
+    duplicate reminders structurally impossible — the audit trail the
+    delivery spec mandates.
+    """
+    __tablename__ = "delivery_reminders"
+
+    id                  = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    delivery_id         = Column(PGUUID(as_uuid=True), ForeignKey("deliveries.id"), nullable=False)
+    scheduled_session_id = Column(PGUUID(as_uuid=True), ForeignKey("delivery_scheduled_sessions.id"), nullable=False)
+    reminder_type       = Column(String(50), nullable=False)
+    # session_day | pre_session | completion_check | followup_nudge
+    status              = Column(String(50), nullable=False, default="sent")
+    # sent | suppressed | responded
+    suppressed_reason   = Column(Text,       nullable=True)
+    sent_at             = Column(DateTime,   default=datetime.utcnow, nullable=False)
+    responded_at        = Column(DateTime,   nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("scheduled_session_id", "reminder_type", name="uq_delivery_reminder_type"),
+        sqlalchemy.Index("ix_delivery_reminders_delivery", "delivery_id"),
+    )
+
+
+class DeliveryBlocker(Base):
+    """A structured operational blocker on a delivery or a specific session."""
+    __tablename__ = "delivery_blockers"
+
+    id                   = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    delivery_id          = Column(PGUUID(as_uuid=True), ForeignKey("deliveries.id"), nullable=False)
+    scheduled_session_id = Column(PGUUID(as_uuid=True), ForeignKey("delivery_scheduled_sessions.id"), nullable=True)
+    blocker_type         = Column(String(50), nullable=False)
+    description          = Column(Text,       nullable=True)
+    status               = Column(String(50), nullable=False, default="open")
+    # open | resolved | escalated
+    owner                = Column(String(100), nullable=True)
+    resolution_notes     = Column(Text,       nullable=True)
+    resolved_at          = Column(DateTime,   nullable=True)
+    raised_by            = Column(String(50), nullable=True)  # volunteer | coordinator | system
+    created_at           = Column(DateTime,   default=datetime.utcnow, nullable=False)
+    updated_at           = Column(DateTime,   default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        sqlalchemy.Index("ix_delivery_blockers_delivery", "delivery_id"),
+        sqlalchemy.Index("ix_delivery_blockers_status",   "status"),
+    )
+
+
+class DeliveryRescheduleRequest(Base):
+    """A reschedule request — always captured as pending; never auto-approved."""
+    __tablename__ = "delivery_reschedule_requests"
+
+    id                   = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    delivery_id          = Column(PGUUID(as_uuid=True), ForeignKey("deliveries.id"), nullable=False)
+    scheduled_session_id = Column(PGUUID(as_uuid=True), ForeignKey("delivery_scheduled_sessions.id"), nullable=True)
+    reason               = Column(Text,       nullable=True)
+    preferred_date       = Column(String(50), nullable=True)
+    preferred_time       = Column(String(20), nullable=True)
+    requested_by         = Column(String(50), nullable=True)  # volunteer | coordinator
+    status               = Column(String(50), nullable=False, default="pending")
+    # pending | submitted | approved | rejected
+    resolution_notes     = Column(Text,       nullable=True)
+    resolved_at          = Column(DateTime,   nullable=True)
+    created_at           = Column(DateTime,   default=datetime.utcnow, nullable=False)
+    updated_at           = Column(DateTime,   default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        sqlalchemy.Index("ix_delivery_reschedule_delivery", "delivery_id"),
+    )
+
+
+class DeliveryNotification(Base):
+    """A request to notify a linked stakeholder (currently: coordinator). Records
+    both the intent and the real send outcome — never assume delivery succeeded."""
+    __tablename__ = "delivery_notifications"
+
+    id                = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    delivery_id       = Column(PGUUID(as_uuid=True), ForeignKey("deliveries.id"), nullable=False)
+    stakeholder_type  = Column(String(50), nullable=False)  # coordinator
+    reason            = Column(Text,       nullable=True)
+    channel           = Column(String(50), nullable=True)   # whatsapp
+    status            = Column(String(50), nullable=False, default="requested")
+    # requested | sent | failed | no_contact_on_file
+    sent_at           = Column(DateTime,   nullable=True)
+    created_at        = Column(DateTime,   default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        sqlalchemy.Index("ix_delivery_notifications_delivery", "delivery_id"),
+    )
+
+
 # ─── DB Lifecycle ─────────────────────────────────────────────────────────────
 
 async def init_db():
@@ -375,6 +558,34 @@ async def init_db():
         logger.info("Migration applied: need_drafts.skipped_grades TEXT[] column added")
     except Exception as e:
         logger.info(f"Migration skipped_grades skipped: {e}")
+
+    # Delivery Assistant full-spec expansion — additive columns on tables that
+    # already existed before this round. New tables (e.g. delivery_notifications)
+    # don't need a migration entry; create_all above already handles those.
+    _delivery_column_migrations = [
+        ("deliveries", "coordinator_phone", "VARCHAR(50)"),
+        ("deliveries", "readiness_checklist", "JSONB"),
+        ("deliveries", "last_summary", "TEXT"),
+        ("deliveries", "risk_level", "VARCHAR(50)"),
+        ("delivery_scheduled_sessions", "attendance_count", "INTEGER"),
+        ("delivery_scheduled_sessions", "duration_minutes", "INTEGER"),
+        ("delivery_scheduled_sessions", "disruption_type", "VARCHAR(100)"),
+        ("delivery_scheduled_sessions", "last_summary", "TEXT"),
+        ("delivery_blockers", "owner", "VARCHAR(100)"),
+        ("delivery_blockers", "resolution_notes", "TEXT"),
+        ("delivery_blockers", "resolved_at", "TIMESTAMP"),
+        ("delivery_reschedule_requests", "resolution_notes", "TEXT"),
+        ("delivery_reschedule_requests", "resolved_at", "TIMESTAMP"),
+    ]
+    for _table, _column, _coltype in _delivery_column_migrations:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(
+                    f"ALTER TABLE {_table} ADD COLUMN IF NOT EXISTS {_column} {_coltype}"
+                ))
+            logger.info(f"Migration applied: {_table}.{_column} {_coltype} column added")
+        except Exception as e:
+            logger.info(f"Migration {_table}.{_column} skipped: {e}")
 
     # ── v2 migrations: volunteer fact-store ─────────────────────────────────
     try:

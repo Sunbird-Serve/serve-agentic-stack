@@ -441,6 +441,12 @@ class OrchestrationService:
                     "nominated_need_id": None,
                     "human_review_reason": None,
                 })
+            elif to_agent_value == "delivery_assistant" and handoff_payload:
+                handoff_sub_state_str = json.dumps({
+                    "handoff": handoff_payload,
+                    "delivery_id": None,
+                    "mode": "activation",
+                })
             elif target_sub_state is not None:
                 handoff_sub_state_str = (
                     target_sub_state
@@ -538,6 +544,10 @@ class OrchestrationService:
                         ("recommended_handler", "fulfillment"): (
                             "Step 4/4 → Teaching Assignment\n"
                             "✅ Orientation & Registration  →  ✅ Getting to Know You  →  ✅ Schedule Preferences  →  🔵 Teaching Assignment"
+                        ),
+                        ("fulfillment", "delivery_assistant"): (
+                            "You're matched! Let's get you ready to start teaching.\n"
+                            "✅ Teaching Assignment  →  🔵 Delivery & Sessions"
                         ),
                     }
                     transition = transition_lines.get(
