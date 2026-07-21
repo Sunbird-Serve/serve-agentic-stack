@@ -47,6 +47,8 @@ from app.service.agent_router import agent_router
 from app.service.intent_resolver import intent_resolver
 from app.service.persona_resolver import persona_resolver
 from app.service.workflow_validator import workflow_validator
+from app.service.gap_analyzer import analyze_gap, GapResult
+from app.service.action_resolver import resolve_desired_action
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +174,17 @@ class OrchestrationService:
                 debug_info={"duplicate": True, "idempotency_key": event.idempotency_key},
             )
 
+        # ── TRY FACT-BASED ROUTING (v2) ─────────────────────────────────────
+        # If the volunteer has a fact-store record, use the new routing path.
+        # Falls back to legacy path if no record found or v2 returns None.
+        try:
+            v2_response = await self.process_event_v2(event)
+            if v2_response is not None:
+                return v2_response
+        except Exception as exc:
+            logger.warning(f"[fact-routing] v2 path failed, falling back to legacy: {exc}")
+
+        # ── LEGACY PATH (original workflow-based routing) ────────────────────
         start_time = datetime.utcnow()
         session_context = None
         conversation = []
@@ -954,6 +967,193 @@ class OrchestrationService:
             return {"status": "error", "error": "Failed to update session actor"}
 
         return {"status": "success", "previous_actor": guest_id, "new_actor": keycloak_sub}
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # FACT-BASED ROUTING (v2)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    async def identify_volunteer(self, event: NormalizedEvent) -> Optional[Dict]:
+        """
+        Look up the volunteer in the fact-store by available identifiers.
+        Returns the volunteer dict (id, facts, name, etc.) or None if unknown.
+        """
+        # Try by email first (from Keycloak metadata)
+        email = event.raw_metadata.get("email") or ""
+        if email and email != "dev@localhost":
+            result = await domain_client.find_volunteer(email=email)
+            if result.get("status") == "success":
+                return result.get("volunteer")
+
+        # Try by phone (from WhatsApp or channel metadata)
+        phone = (
+            event.raw_metadata.get("volunteer_phone")
+            or event.raw_metadata.get("phone_number")
+        )
+        if phone:
+            result = await domain_client.find_volunteer(phone=phone)
+            if result.get("status") == "success":
+                return result.get("volunteer")
+
+        return None
+
+    async def process_event_v2(self, event: NormalizedEvent) -> Optional[InteractionResponse]:
+        """
+        Fact-based routing path. Called when a volunteer has a fact-store record.
+        Returns InteractionResponse, or None to fall back to legacy routing.
+
+        Flow:
+          1. Load volunteer facts
+          2. Resolve/create session
+          3. Resolve intent (terminal intents short-circuit)
+          4. Resolve desired action (regex + LLM)
+          5. Gap analysis → pick one agent
+          6. Invoke agent
+          7. Merge returned facts
+          8. Return response (one agent per turn)
+        """
+        start_time = datetime.utcnow()
+
+        # Step 1: Identify volunteer and load facts
+        volunteer = await self.identify_volunteer(event)
+        if not volunteer or not volunteer.get("facts"):
+            return None  # Fall back to legacy
+
+        vol_id = volunteer["id"]
+        facts = volunteer.get("facts") or {}
+
+        logger.info(
+            f"[fact-routing] Volunteer identified: id={vol_id[:8]}, "
+            f"name={volunteer.get('full_name')}, facts_keys={list(facts.keys())}"
+        )
+
+        # Step 2: Resolve/create session
+        session_context = None
+        conversation = []
+
+        if event.session_id:
+            session_context, conversation = await self._resume_session(event)
+
+        if not session_context:
+            # Set persona from facts context for session metadata
+            if facts.get("registered"):
+                event = event.model_copy(update={"persona": PersonaType.RETURNING_VOLUNTEER})
+            session_context = await self._create_session(event)
+
+        if not session_context:
+            return self._fallback_response(
+                session_id=event.session_id,
+                message="I'm having trouble connecting right now. Please try again in a moment.",
+            )
+
+        # Step 3: Resolve intent
+        intent_result = intent_resolver.resolve(event, session_context)
+
+        if intent_result.intent == IntentType.PAUSE_SESSION:
+            return await self._handle_pause(session_context, event, intent_result)
+        if intent_result.intent == IntentType.ESCALATE:
+            return await self._handle_escalation(session_context, event, intent_result)
+        if intent_result.intent == IntentType.RESTART:
+            return await self._handle_restart(event, intent_result)
+
+        # Step 4: Save user message
+        await domain_client.save_message(
+            session_id=session_context.session_id,
+            role="user",
+            content=event.payload,
+            agent=session_context.active_agent,
+        )
+
+        # Step 5: Resolve desired action
+        desired_action = await resolve_desired_action(event.payload, facts)
+        logger.info(f"[fact-routing] desired_action={desired_action}")
+
+        # Step 6: Gap analysis
+        gap = analyze_gap(facts, desired_action)
+        logger.info(f"[fact-routing] gap: agent={gap.next_agent}, reason={gap.reason}, missing={gap.missing}")
+
+        # Step 7: Invoke the selected agent
+        session_state = SessionState(
+            id=session_context.session_id,
+            channel=session_context.channel,
+            persona=session_context.persona,
+            workflow=session_context.workflow,
+            active_agent=gap.next_agent,
+            status=session_context.status,
+            stage=session_context.current_stage,
+            sub_state=session_context.sub_state,
+            volunteer_id=_safe_uuid(session_context.volunteer_id),
+            volunteer_name=volunteer.get("full_name"),
+            volunteer_phone=volunteer.get("phone"),
+            channel_metadata=event.raw_metadata if event.raw_metadata else None,
+        )
+
+        agent_request = AgentTurnRequest(
+            session_id=session_context.session_id,
+            session_state=session_state,
+            user_message=event.payload,
+            conversation_history=conversation,
+            intent_hint=intent_result.intent.value,
+            channel_metadata=event.raw_metadata if event.raw_metadata else None,
+        )
+
+        # Use existing agent_router for invocation (it handles HTTP, timeouts, etc.)
+        from app.schemas.contracts import RoutingDecision
+        routing_decision = RoutingDecision(
+            target_agent=gap.next_agent,
+            confidence=1.0,
+            reason=gap.reason,
+            routing_context={"decision_type": "fact_based", "missing": gap.missing},
+        )
+
+        agent_response = await agent_router.invoke_agent(routing_decision, agent_request)
+
+        duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
+
+        # Step 8: Merge new facts from agent response
+        new_facts = agent_response.new_facts if hasattr(agent_response, "new_facts") else {}
+        if new_facts:
+            await domain_client.merge_volunteer_facts(vol_id, new_facts)
+            logger.info(f"[fact-routing] Merged facts: {list(new_facts.keys())}")
+
+        # Step 9: Persist agent state + save assistant message
+        if agent_response.state:
+            await domain_client.advance_state(
+                session_id=session_context.session_id,
+                new_state=agent_response.state,
+                sub_state=agent_response.sub_state,
+            )
+
+        await domain_client.save_message(
+            session_id=session_context.session_id,
+            role="assistant",
+            content=agent_response.assistant_message,
+            agent=agent_response.active_agent.value,
+        )
+
+        # Step 10: Build and return response (NO auto-invoke of next agent)
+        return InteractionResponse(
+            session_id=session_context.session_id,
+            assistant_message=agent_response.assistant_message,
+            active_agent=agent_response.active_agent,
+            workflow=agent_response.workflow,
+            state=agent_response.state,
+            sub_state=agent_response.sub_state,
+            status=SessionStatus.ACTIVE,
+            is_complete=agent_response.completion_status == "complete",
+            journey_progress={
+                "routing": "fact_based",
+                "gap_agent": gap.next_agent,
+                "gap_reason": gap.reason,
+                "desired_action": desired_action,
+            },
+            debug_info={
+                "routing_path": "fact_based_v2",
+                "volunteer_id": vol_id,
+                "desired_action": desired_action,
+                "gap": {"agent": gap.next_agent, "reason": gap.reason, "missing": gap.missing},
+                "timing_ms": duration_ms,
+            },
+        )
 
 
 # Singleton instance

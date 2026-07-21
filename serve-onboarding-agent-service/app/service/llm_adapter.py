@@ -1,18 +1,21 @@
 """
-SERVE Onboarding Agent Service - LLM Adapter
+SERVE Onboarding Agent Service - LLM Adapter (v2)
 
-Cost-effective approach: uses Haiku via direct httpx calls.
-Each turn gets a fresh system prompt with only the current stage context.
-Only the last 2 messages of history are sent to keep input tokens minimal.
-No tool calling — the LLM only generates conversational responses.
+Improvements:
+- Welcome collapsed to 1 turn (intro + ask intent together)
+- Video non-blocking (shown with eligibility transition)
+- Bundled eligibility (all 3 checks in one question)
+- Reluctance handling (why do you need my info?)
+- Email typo detection prompts
+- Motivation personalization in subsequent stages
+- Progress hints to reduce drop-off
+- Transparent eligibility failure messaging
 """
 import asyncio
-import json
 import os
 import logging
 from typing import List, Dict, Optional
 
-import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -23,48 +26,34 @@ _PROVIDER_KEY_VARS = (
     "OPENAI_API_KEY", "GEMINI_API_KEY", "EMERGENT_LLM_KEY",
 )
 _API_KEY = next((os.environ[k] for k in _PROVIDER_KEY_VARS if os.environ.get(k)), "")
-# Emergent key is Anthropic-compatible; map it so LiteLLM finds it.
 if os.environ.get("EMERGENT_LLM_KEY") and not os.environ.get("ANTHROPIC_API_KEY"):
     os.environ["ANTHROPIC_API_KEY"] = os.environ["EMERGENT_LLM_KEY"]
 _MODEL = os.environ.get("LLM_MODEL", "claude-haiku-4-5-20251001")
-# Free-tier OpenRouter models routinely take 15-35s to respond, so the
-# per-attempt timeout must be generous enough to let a genuinely slow (but
-# working) call finish rather than aborting and retrying it needlessly.
-# The orchestrator allows 60s for the whole onboarding turn (see
-# agent_router.py AgentRegistry), so worst case here
-# (_TIMEOUT * _MAX_ATTEMPTS + backoff) must stay comfortably under that,
-# leaving headroom for the rest of process_turn's MCP/memory-service calls.
 _TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "25"))
 _MAX_ATTEMPTS = int(os.environ.get("LLM_MAX_ATTEMPTS", "2"))
 _RETRY_BACKOFF_SECONDS = float(os.environ.get("LLM_RETRY_BACKOFF_SECONDS", "1"))
 
-# Shown only after every retry has been exhausted. Deliberately generic and
-# honest about the failure — never a scripted conversational line, so a
-# transient LLM outage can't be mistaken for the agent misunderstanding the
-# volunteer's answer.
 _UNAVAILABLE_RESPONSE = (
     "I'm having a little trouble responding right now. Could you please send that again?"
 )
 
-# Video URLs — served from the onboarding agent's /media endpoint
+# Video URLs
 _MEDIA_BASE_URL = os.environ.get("ONBOARDING_MEDIA_BASE_URL", "http://localhost:8002/media")
-ONBOARDING_WELCOME_VIDEO_URL = f"{_MEDIA_BASE_URL}/welcome.mp4"
 ONBOARDING_CLASSROOM_VIDEO_URL = f"{_MEDIA_BASE_URL}/serve_class_intro.mp4"
-ONBOARDING_VIDEO_URL = os.environ.get("ONBOARDING_VIDEO_URL", "").strip()
 
 # ── Base context (included in every system prompt) ──────────────────────────────
 
-_BASE_CONTEXT = """You are an onboarding assistant for eVidyaloka, helping new volunteers join our mission to bring quality education to children in rural India through Project Serve in Uttar Pradesh.
+_BASE_CONTEXT = """You are an onboarding assistant for eVidyaloka, helping new volunteers join Project Serve — bringing quality English education to government school students in grades 6-8 in Uttar Pradesh. Volunteers teach online for 2-3 hours a week.
 
 Rules you MUST follow:
 - Keep responses to 2-3 sentences maximum. Be warm but concise.
-- Ask only ONE thing per response. Never combine multiple questions.
+- Ask only ONE thing per response unless the stage says otherwise.
 - Do not use markdown formatting — no bold, no headers, no bullet points, no asterisks.
 - Do not use emojis excessively. One emoji per message at most.
-- Never mention technical terms: workflow, orchestrator, MCP, agent, system, database.
+- Never mention technical terms: workflow, orchestrator, MCP, agent, system, database, session.
 - Do not say the volunteer is ineligible, rejected, or disqualified.
 - Do not promise registration unless the stage is onboarding_complete.
-- CRITICAL: Only ask about what is specified in the CURRENT STAGE instructions below. Do not ask about anything else — no city, no subjects, no availability, no motivation, no teaching experience. Stick strictly to the current stage."""
+- CRITICAL: Only respond with what the CURRENT STAGE instructions specify. Nothing else."""
 
 
 # ── Stage-specific prompts ──────────────────────────────────────────────────────
@@ -76,164 +65,205 @@ def _build_stage_prompt(
 ) -> str:
     """Build the complete system prompt for a single turn."""
 
+    welcome_response = confirmed_fields.get("welcome_response") or ""
+    motivation_context = ""
+    if welcome_response:
+        motivation_context = f'\nThe volunteer said their motivation is: "{welcome_response[:200]}". Reference this naturally if relevant.'
+
+    # ── WELCOME (v2: single turn — intro + ask intent) ──────────────────────
     if stage == "welcome":
-        consent_given = confirmed_fields.get("consent_given") or False
-        welcome_shown = confirmed_fields.get("welcome_shown") or False
+        return f"""{_BASE_CONTEXT}
 
-        if not welcome_shown or not consent_given:
-            # Turn 1: Welcome + steps + "shall we begin?"
-            return f"""{_BASE_CONTEXT}
+CURRENT STAGE: Welcome (Step 1/4 — Orientation & Registration)
 
-CURRENT STAGE: Welcome
+Your task: Give a warm, brief welcome in 2-3 sentences. Mention that eVidyaloka connects volunteers with rural school children for online teaching through Project Serve in UP (2-3 hours/week). Then ask what brings them here.
 
-Your task: Give a warm welcome. Introduce eVidyaloka and Project Serve in Uttar Pradesh in 2-3 sentences:
-- eVidyaloka connects volunteers with children in rural India for online teaching.
-- Project Serve brings quality English education to government school students in grades 6-8 in UP.
-- Volunteers teach online for just 2-3 hours a week.
+Combine the welcome and the question in ONE message. Example:
+"Welcome to eVidyaloka! We connect volunteers with children in rural India for online English classes — just 2-3 hours a week can make a real difference. What brings you here today?"
 
-Then show the journey steps EXACTLY like this (plain text, include the emojis):
+Do NOT show journey steps. Do NOT share videos. Do NOT ask for name or details yet."""
 
-Here is what we will do together:
-1. Orientation & Registration
-2. Getting to Know You
-3. Schedule Preferences
-4. Teaching Assignment
-
-End with: "Shall we begin?" or "Ready to get started?"
-
-Do NOT ask why they are here yet. Do NOT share videos. Do NOT ask for name or email. Just welcome, show the 4 steps, and ask if they are ready to begin."""
-        else:
-            # Turn 2: Consent given → ask intent
-            return f"""{_BASE_CONTEXT}
-
-CURRENT STAGE: Welcome — Intent
-
-The volunteer has agreed to begin.
-
-Your task: Ask what brings them to eVidyaloka. Say something like: "What brings you to eVidyaloka?" or "What made you interested in volunteering with us?"
-
-Keep it to 1 sentence. Do NOT share videos. Do NOT ask for name or email."""
-
+    # ── ORIENTATION VIDEO (v2: non-blocking — show video + transition message) ──
     if stage == "orientation_video":
-        welcome_response = confirmed_fields.get("welcome_response") or ""
         classroom_vid = ONBOARDING_CLASSROOM_VIDEO_URL
 
         if classroom_vid:
             return f"""{_BASE_CONTEXT}
 
-CURRENT STAGE: Orientation
+CURRENT STAGE: Orientation + Quick Check (Step 1/4)
+{motivation_context}
 
-The volunteer said: "{welcome_response}"
+The volunteer just shared what brings them here. Your task in ONE message:
+1. Briefly acknowledge their motivation warmly (1 sentence referencing what they said).
+2. Share the video: [VIDEO:{classroom_vid}|A glimpse of an eVidyaloka online class]
+3. Ask the bundled eligibility + name + email in ONE natural paragraph:
+   "Just a few quick things — you are 18 or older, have a device with internet, and comfortable this is volunteer/unpaid? Also, what is your full name and email so I can get you set up?"
 
-Your task: Write a brief warm message (1-2 sentences) introducing the video below — it shows a glimpse of an actual online class with eVidyaloka. Then include the video tag EXACTLY as shown. End by asking the volunteer to reply "done" or "ready" when they have watched.
-
-[VIDEO:{classroom_vid}|A glimpse of an actual eVidyaloka online class]
-
-IMPORTANT: Include the [VIDEO:...] tag exactly as it appears above in your response. The system will render it as an embedded video. Do not convert it to a link or remove it."""
+This combines eligibility check + first two contact fields in one turn. Keep it natural, not list-like.
+IMPORTANT: Include the [VIDEO:...] tag exactly as shown. The system renders it as a video.
+Do NOT ask these as separate numbered questions. Weave them naturally."""
         else:
             return f"""{_BASE_CONTEXT}
 
-CURRENT STAGE: Orientation
+CURRENT STAGE: Orientation + Quick Check (Step 1/4)
+{motivation_context}
 
-The volunteer said: "{welcome_response}"
+Briefly acknowledge their motivation (1 sentence), then explain eVidyaloka (online teaching, 2-3 hrs/week), then ask bundled:
+"Quick things to confirm — you are 18+, have internet, comfortable with unpaid volunteering? And your full name and email to get you registered?"
 
-Your task: Briefly explain how eVidyaloka works — volunteers teach online for 2-3 hours a week, connecting with rural school students via video call. Then ask if they are ready to continue.
-Do NOT ask eligibility or profile questions."""
+Keep it to 3-4 sentences. Natural, not a checklist."""
 
+    # ── ELIGIBILITY (handles individual fallback only — bundled is in orientation) ─
     if stage == "eligibility_screening":
-        # Check for pending clarifications
+        eligibility = confirmed_fields
+
+        # Check for pending clarifications (negative answer needs re-confirm)
         pending_clarifications = [f for f in missing_fields if f.endswith("_clarification")]
         if pending_clarifications:
             field = pending_clarifications[0].replace("_clarification", "")
             clarifications = {
                 "age_18_plus": "Their previous answer about age was unclear. Ask gently: 'Just to confirm, are you 18 years or older?'",
-                "has_internet_and_device": "They seemed unsure about device/internet. Clarify: 'A smartphone with mobile data works too. Do you have any device with internet access?'",
-                "accepts_unpaid_role": "They seemed unsure about the unpaid role. Clarify warmly: 'Just to be clear, this is a volunteer role. Are you comfortable with that?'",
+                "has_internet_and_device": "They seemed unsure about device/internet. Clarify warmly: 'A smartphone with mobile data works perfectly. Do you have any device with internet?'",
+                "accepts_unpaid_role": "They seemed unsure about the volunteer nature. Clarify: 'This is a volunteer role — no payment, but a chance to make real impact. Are you comfortable with that?'",
             }
             return f"""{_BASE_CONTEXT}
 
-CURRENT STAGE: Eligibility — Clarification
+CURRENT STAGE: Eligibility — Clarification (Step 1/4)
+{motivation_context}
 
 {clarifications.get(field, "Ask the volunteer to clarify their previous answer.")}
 
-Be warm and non-judgmental. Do not make them feel they gave a wrong answer.
-Your ENTIRE response must be about this one clarification. Nothing else."""
+Be warm and non-judgmental. Your ENTIRE response is about this one clarification."""
 
-        # Determine which question to ask
-        elig = confirmed_fields
-        if elig.get("age_18_plus") is not True:
+        # Individual question fallback (only reached if bundled didn't cover it)
+        if eligibility.get("age_18_plus") is not True:
             question = "Are you 18 years of age or older?"
-        elif elig.get("has_internet_and_device") is not True:
-            question = "Do you have a device like a laptop, tablet, or smartphone with internet access for online classes?"
-        elif elig.get("accepts_unpaid_role") is not True:
-            question = "This is a volunteer, unpaid role. Are you comfortable with that?"
+        elif eligibility.get("has_internet_and_device") is not True:
+            question = "Do you have a device (laptop, tablet, or smartphone) with internet access?"
+        elif eligibility.get("accepts_unpaid_role") is not True:
+            question = "This is a volunteer, unpaid role — are you comfortable with that?"
         else:
-            question = "All eligibility checks are done. Acknowledge warmly and say you will now collect a few details."
+            question = "All checks done!"
 
         return f"""{_BASE_CONTEXT}
 
-CURRENT STAGE: Eligibility Screening
+CURRENT STAGE: Eligibility — Individual Check (Step 1/4)
+{motivation_context}
 
-Your task: Ask this ONE question and nothing else:
-"{question}"
+Your task: Ask this ONE question: "{question}"
+Add a brief warm lead-in (half a sentence), then ask. Do NOT ask for name or email.
+Your ENTIRE response is about this eligibility question."""
 
-Add a brief warm lead-in (one sentence max), then ask the question.
-Do NOT ask for name, email, qualification, or anything beyond this one question.
-Your ENTIRE response must be about this eligibility question."""
-
+    # ── CONTACT CAPTURE (v3: batched — ask 2 fields per turn) ──────────────────
     if stage == "contact_capture":
         name = confirmed_fields.get("full_name")
         email = confirmed_fields.get("email")
         phone = confirmed_fields.get("phone")
         qualification = confirmed_fields.get("qualification")
+        is_reluctant = confirmed_fields.get("volunteer_reluctant", False)
+        email_typo = confirmed_fields.get("email_typo_suggestion")
 
+        # Email typo detected — ask for confirmation
+        if email_typo:
+            return f"""{_BASE_CONTEXT}
+
+CURRENT STAGE: Contact Details — Email Typo Check (Step 1/4)
+{motivation_context}
+
+I noticed the email might have a typo. The volunteer typed something that looks like it should be "{email_typo}". Ask them to double-check:
+"I noticed your email might have a small typo — did you mean {email_typo}?"
+
+Your ENTIRE response is about confirming the email. Nothing else."""
+
+        # Reluctance handling
+        if is_reluctant:
+            current_field = "email" if not email and name else "phone" if not phone else "details"
+            return f"""{_BASE_CONTEXT}
+
+CURRENT STAGE: Contact Details — Privacy Assurance (Step 1/4)
+{motivation_context}
+
+The volunteer is hesitant about sharing their {current_field}. Reassure them warmly:
+- Their information is only used to coordinate class schedules
+- It stays private within the eVidyaloka team
+
+Then gently re-ask for the {current_field}. Keep it to 2-3 sentences."""
+
+        # BATCHED: Ask remaining fields together (2 per turn)
+        remaining = []
         if not name:
-            return f"""{_BASE_CONTEXT}
-
-CURRENT STAGE: Contact Details — Name
-
-Your task: Ask for the volunteer's full name. Nothing else.
-Example: "Could you share your full name?"
-Do NOT ask for email, phone, qualification, or anything else."""
-
+            remaining.append("full name")
         if not email:
-            return f"""{_BASE_CONTEXT}
-
-CURRENT STAGE: Contact Details — Email
-
-We know: Name = {name}
-
-Your task: Thank them briefly, then ask for their email address. Nothing else.
-Do NOT ask for phone, qualification, or anything else."""
-
+            remaining.append("email address")
         if not phone:
-            return f"""{_BASE_CONTEXT}
-
-CURRENT STAGE: Contact Details — Phone
-
-We know: Name = {name}, Email = {email}
-
-Your task: Ask for their phone number so the team can reach them. Nothing else.
-Example: "Could you share your phone number?"
-Do NOT ask for qualification or anything else."""
-
+            remaining.append("phone number")
         if not qualification:
+            remaining.append("educational qualification")
+
+        if len(remaining) >= 3:
+            # First batch: name + email (or whatever first 2 are missing)
+            batch = remaining[:2]
             return f"""{_BASE_CONTEXT}
 
-CURRENT STAGE: Contact Details — Qualification
+CURRENT STAGE: Contact Details — Batch 1 (Step 1/4)
+{motivation_context}
 
-We know: Name = {name}, Email = {email}, Phone = {phone}
+Your task: Acknowledge warmly that eligibility is confirmed, then ask for BOTH of these in one natural question: {' and '.join(batch)}.
+Example: "Great, you are all set! Could you share your full name and email address so I can get you registered?"
 
-Your task: Ask about their educational qualification. Nothing else.
-Example: "What is your educational qualification?"
-Accept any answer — degree name, "graduate", "12th pass", etc."""
+Ask BOTH in one sentence. Do NOT ask for {', '.join(remaining[2:])} yet.
+Keep it to 2 sentences total."""
 
+        elif len(remaining) == 2:
+            # Second batch: phone + qualification (or whatever 2 remain)
+            batch = remaining
+            known_parts = []
+            if name:
+                known_parts.append(f"Name: {name}")
+            if email:
+                known_parts.append(f"Email: {email}")
+            known = ", ".join(known_parts)
+            return f"""{_BASE_CONTEXT}
+
+CURRENT STAGE: Contact Details — Batch 2 (Step 1/4)
+{motivation_context}
+
+We have: {known}
+
+Your task: Thank them briefly, then ask for BOTH: {' and '.join(batch)} in one natural question.
+Example: "Thanks, Sowmya! Could you also share your phone number and educational qualification?"
+
+Ask BOTH in one sentence. Keep it to 2 sentences total."""
+
+        elif len(remaining) == 1:
+            # Single remaining field
+            field = remaining[0]
+            known_parts = []
+            if name:
+                known_parts.append(f"Name: {name}")
+            if email:
+                known_parts.append(f"Email: {email}")
+            if phone:
+                known_parts.append(f"Phone: {phone}")
+            known = ", ".join(known_parts)
+            return f"""{_BASE_CONTEXT}
+
+CURRENT STAGE: Contact Details — Last Field (Step 1/4)
+{motivation_context}
+
+We have: {known}
+
+Your task: Ask for the last missing detail: {field}. Keep it brief and natural.
+Just one sentence asking for it."""
+
+        # All fields captured
         return f"""{_BASE_CONTEXT}
 
-CURRENT STAGE: Contact Details — Complete
+CURRENT STAGE: Contact Details — Complete (Step 1/4)
 
-All details captured. Thank them briefly and say you will now show a quick summary for confirmation."""
+All details captured! Thank them briefly and say you will show a quick summary."""
 
+    # ── REGISTRATION REVIEW ─────────────────────────────────────────────────────
     if stage == "registration_review":
         name = confirmed_fields.get("full_name", "")
         email = confirmed_fields.get("email", "")
@@ -253,56 +283,68 @@ CURRENT STAGE: Registration Review
 Volunteer details:
 {summary}
 
-Your task: Present these details warmly and ask if everything looks correct.
-Say something like: "Here is what I have..." then list the details, then ask "Does this look correct? If you want to change anything, let me know."
-Your ENTIRE response is the summary + confirmation question. Nothing else."""
+Your task: Present these details and ask if everything looks correct. Say something like:
+"Here is what I have — [list the details]. Does this look right? Let me know if you want to change anything."
+Your ENTIRE response is the summary + confirmation question."""
 
+    # ── ONBOARDING COMPLETE ─────────────────────────────────────────────────────
     if stage == "onboarding_complete":
         name = confirmed_fields.get("full_name", "")
         return f"""{_BASE_CONTEXT}
 
 CURRENT STAGE: Registration Complete
 
-Your task: Thank {name} briefly for completing registration. Keep it to ONE short sentence like "Your registration is complete, {name}!" Do not mention next steps, matching, schools, or getting to know them. Just a brief celebration."""
+Your task: Celebrate briefly! Thank {name} for completing registration. Keep it to 1-2 short sentences like "You are all set, {name}! Your registration is complete." Do not mention next steps, matching, or schools."""
 
+    # ── HUMAN REVIEW (v2: transparent messaging) ────────────────────────────────
     if stage == "human_review":
+        review_reason = confirmed_fields.get("review_reason", "")
+        reason_messages = {
+            "age_18_plus": "We require volunteers to be 18 or older for safeguarding reasons.",
+            "has_internet_and_device": "Online teaching needs a device with internet access.",
+            "accepts_unpaid_role": "We understand — volunteering is not for everyone right now.",
+        }
+        specific_msg = reason_messages.get(review_reason, "")
+
         return f"""{_BASE_CONTEXT}
 
-CURRENT STAGE: Review Pending
+CURRENT STAGE: Cannot Continue
 
-Your task: Say warmly that the team will review the details and get back shortly. Do not say they are ineligible or rejected. Keep it to 2 sentences."""
+{f'Context: {specific_msg}' if specific_msg else ''}
 
+Your task: Be warm and honest. Do NOT say "the team will review" — be transparent:
+- If the reason is age: "We need volunteers to be 18+ for child safety. If your situation changes, you are always welcome back!"
+- If the reason is device/internet: "Online teaching needs internet access. If you get access in the future, we would love to have you!"
+- If the reason is unpaid: "We totally understand. If you ever want to give it a try, we will be here!"
+- Default: "Unfortunately we cannot proceed right now, but you are always welcome to try again in the future."
+
+Keep it to 2 sentences. Be kind, not clinical."""
+
+    # ── PAUSED ──────────────────────────────────────────────────────────────────
     if stage == "paused":
         return f"""{_BASE_CONTEXT}
 
 CURRENT STAGE: Paused
 
-Your task: Be understanding. Let them know they can return anytime and their progress is saved. Keep it to 2 sentences."""
+Your task: Be understanding. Let them know their progress is saved and they can return anytime. Keep it to 2 sentences. Example: "No worries at all! Your progress is saved — just message anytime to pick up where you left off." """
 
-    # Fallback
+    # ── Fallback ────────────────────────────────────────────────────────────────
     return f"""{_BASE_CONTEXT}
 
-Your task: Stay in the current step. Do not ask additional questions. If the volunteer said something unexpected, acknowledge briefly and redirect."""
+Your task: Stay in the current step. If the volunteer said something unexpected, acknowledge briefly and redirect to what you need from them."""
 
 
 # ── LLM call ────────────────────────────────────────────────────────────────────
 
 async def _call_llm(system_prompt: str, messages: List[Dict[str, str]]) -> str:
-    """
-    Make a single LLM call via LiteLLM (model-agnostic), retrying transient
-    failures before giving up.
-
-    Supports any model: Claude, GPT, Gemini, Mistral, etc.
-    Set LLM_MODEL env var to switch models.
-    """
+    """Make a single LLM call via LiteLLM with retry."""
     if not _API_KEY:
         logger.warning("No API key configured — using fallback response")
         return _UNAVAILABLE_RESPONSE
 
     import litellm
-    litellm.drop_params = True  # Ignore unsupported params for different providers
+    litellm.drop_params = True
 
-    # LiteLLM uses OpenAI message format with system as a message
     llm_messages = [{"role": "system", "content": system_prompt}] + messages
 
     for attempt in range(1, _MAX_ATTEMPTS + 1):
@@ -310,7 +352,7 @@ async def _call_llm(system_prompt: str, messages: List[Dict[str, str]]) -> str:
             response = await litellm.acompletion(
                 model=_MODEL,
                 messages=llm_messages,
-                max_tokens=300,
+                max_tokens=350,
                 timeout=_TIMEOUT,
             )
             text = response.choices[0].message.content.strip()
@@ -330,7 +372,7 @@ async def _call_llm(system_prompt: str, messages: List[Dict[str, str]]) -> str:
 
 class LLMAdapter:
     """
-    Onboarding LLM adapter — cost-effective, stage-focused.
+    Onboarding LLM adapter v2 — cost-effective, stage-focused.
     Each turn gets a fresh system prompt. Only last 2 messages of history sent.
     """
 
@@ -353,7 +395,7 @@ class LLMAdapter:
             confirmed_fields=confirmed_fields,
         )
 
-        # Build minimal message history — only last 2 messages + current user message
+        # Build minimal message history — only last 2 messages + current
         api_messages = []
         if messages:
             recent = messages[-2:]

@@ -287,6 +287,7 @@ class AgentTurnResponse(BaseModel):
     completion_status: Optional[str] = None
     confirmed_fields: Dict[str, Any] = {}
     missing_fields: List[str] = []
+    new_facts: Dict[str, Any] = {}     # facts to merge into volunteer fact-store
     handoff_event: Optional[HandoffEvent] = None
     telemetry_events: List[TelemetryEvent] = []
 
