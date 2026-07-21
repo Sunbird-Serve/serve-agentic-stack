@@ -117,6 +117,24 @@ class AgentRegistry:
             'stages': ['active', 'complete', 'human_review', 'paused'],
         }
 
+        # ── Delivery assistant — post-handshake delivery journey ─────────────
+        # Owns activation + daily session operations after a volunteer is
+        # approved for a need. Undeployed until the service is up.
+        self._agents['delivery_assistant'] = {
+            'url': os.environ.get('DELIVERY_AGENT_URL', 'http://serve-delivery-agent-service:8010'),
+            'health_path': '/api/health',
+            'endpoint': '/api/turn',
+            'timeout': 60.0,
+            'healthy': False,  # Conservative — undeployed; first probe may flip to True
+            'last_check': None,
+            'workflows': ['delivery_support'],
+            'stages': ['activation_started', 'volunteer_acknowledged',
+                       'first_session_ready', 'activation_completed',
+                       'activation_blocked', 'delivery_operations',
+                       'delivery_complete', 'human_review', 'paused',
+                       'activation_paused', 'activation_escalated'],
+        }
+
         # ── Selection agent — silent volunteer evaluation ────────────────────
         self._agents['selection'] = {
             'url': os.environ.get('SELECTION_AGENT_URL', 'http://serve-selection-agent-service:8009'),
@@ -269,6 +287,27 @@ class AgentRouter:
                         'workflow': workflow,
                         'intent': intent_value,
                     }
+                )
+
+        # ── Delivery assistant: route when active_agent is "delivery_assistant"
+        #    or the workflow is delivery_support.
+        if current_agent == 'delivery_assistant' or workflow == 'delivery_support':
+            if self.registry.is_agent_available('delivery_assistant'):
+                return RoutingDecision(
+                    target_agent='delivery_assistant',
+                    confidence=1.0,
+                    reason=f"Delivery support — routing to delivery assistant (stage '{current_stage}')",
+                    routing_context={
+                        'decision_type': 'delivery',
+                        'stage': current_stage,
+                        'workflow': workflow,
+                        'intent': intent_value,
+                    }
+                )
+            else:
+                logger.warning(
+                    f"Delivery assistant unavailable (stage='{current_stage}'). "
+                    f"Staying with current agent as fallback."
                 )
 
         # ── Recommended-volunteer workflow: prefer engagement agent, fall back to

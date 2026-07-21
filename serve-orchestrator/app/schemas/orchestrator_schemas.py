@@ -43,6 +43,7 @@ class WorkflowType(str, Enum):
     RECOMMENDED_VOLUNTEER = "recommended_volunteer"
     NEED_COORDINATION = "need_coordination"
     VOLUNTEER_ENGAGEMENT = "volunteer_engagement"
+    DELIVERY_SUPPORT = "delivery_support"
     SYSTEM_TRIGGERED = "system_triggered"
 
 
