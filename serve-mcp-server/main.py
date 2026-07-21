@@ -2137,7 +2137,6 @@ async def dashboard_session_detail(request: _Request) -> _JSONResponse:
 
 if __name__ == "__main__":
     import sys
-    import asyncio
     transport = "sse" if "--http" in sys.argv else "stdio"
     logger.info(f"Starting SERVE AI MCP Server (transport={transport}, port={MCP_PORT})")
 
