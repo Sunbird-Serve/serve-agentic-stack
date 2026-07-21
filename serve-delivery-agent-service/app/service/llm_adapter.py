@@ -350,8 +350,11 @@ YOUR TASK (daily operations):
         import litellm
         last_error = None
         kwargs: Dict[str, Any] = {
+            # Replies are meant to be short (mobile) per the guardrails — 400 is
+            # still generous for that, and caps the cost of a runaway/garbled
+            # generation from a weaker model.
             "model": self._model, "messages": llm_messages,
-            "max_tokens": 600, "timeout": _TIMEOUT,
+            "max_tokens": 400, "timeout": _TIMEOUT,
         }
         if litellm_tools:
             kwargs["tools"] = litellm_tools

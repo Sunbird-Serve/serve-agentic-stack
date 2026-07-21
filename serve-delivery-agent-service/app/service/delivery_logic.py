@@ -170,9 +170,12 @@ class DeliveryAgentService:
         return "activation"
 
     def _build_messages(self, request, mode) -> List[Dict[str, str]]:
+        # Delivery conversations are short, transactional check-ins, not long-running
+        # chat — a smaller window keeps input tokens (and cost) down per turn without
+        # losing context that actually matters for the current activation/session.
         messages = [
             {"role": m["role"], "content": m["content"]}
-            for m in request.conversation_history[-20:]
+            for m in request.conversation_history[-10:]
             if m.get("role") and m.get("content")
         ]
         um = request.user_message
