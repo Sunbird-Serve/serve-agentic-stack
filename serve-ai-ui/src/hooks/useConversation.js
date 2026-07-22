@@ -75,6 +75,18 @@ export function useConversation(sessionId, onSessionCreated) {
           }
         }
 
+        // Add preliminary message as a separate bubble (progress indicator)
+        if (response.preliminary_message) {
+          const prelimMsg = {
+            id: `progress-${Date.now()}`,
+            role: 'assistant',
+            content: response.preliminary_message,
+            timestamp: new Date().toISOString(),
+            metadata: { type: 'progress' },
+          };
+          setMessages((prev) => [...prev, prelimMsg]);
+        }
+
         // Add assistant response
         const assistantMsg = {
           id: `assistant-${Date.now()}`,

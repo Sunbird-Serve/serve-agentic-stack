@@ -290,10 +290,21 @@ async def advance_session_state(params: AdvanceSessionStateInput) -> dict:
             profile_result = await profile_service.get_profile(params.session_id)
             profile        = profile_result.get("profile", {})
             email = profile.get("email")
-            logger.info(f"[{params.session_id}] profile for registration: name={profile.get('full_name')}, email={email}, phone={profile.get('phone')}, qualification={profile.get('qualification')}")
+            phone = profile.get("phone")
+            full_name = profile.get("full_name", "")
+            logger.info(f"[{params.session_id}] profile for registration: name={full_name}, email={email}, phone={phone}, qualification={profile.get('qualification')}")
 
-            # NOTE: Firebase user creation removed — users are managed in Keycloak.
-            # The onboarding agent now handles profile completion only.
+            # ── Step 0: Create Keycloak account ────────────────────────────────
+            if email:
+                keycloak_user_id = await volunteering_client.create_keycloak_user(
+                    email=email,
+                    full_name=full_name,
+                    phone=phone,
+                )
+                if keycloak_user_id:
+                    logger.info(f"[{params.session_id}] Keycloak user created: {keycloak_user_id}")
+                else:
+                    logger.warning(f"[{params.session_id}] Keycloak user creation failed (continuing with Serve Registry)")
 
             # ── Step 1: Serve Registry — check duplicate + create ──────────────
             if email:
@@ -306,7 +317,7 @@ async def advance_session_state(params: AdvanceSessionStateInput) -> dict:
             if not volunteer_id:
                 logger.info(f"[{params.session_id}] Creating new volunteer in Serve Registry...")
                 new_vid = await volunteering_client.create_volunteer(
-                    full_name=profile.get("full_name", ""),
+                    full_name=full_name,
                     email=email,
                     phone=profile.get("phone"),
                     city=profile.get("location"),

@@ -47,7 +47,7 @@ from app.service.llm_adapter import llm_adapter
 logger = logging.getLogger(__name__)
 
 # ── Required fields ─────────────────────────────────────────────────────────────
-CONTACT_FIELDS = ["full_name", "email", "phone", "qualification"]
+CONTACT_FIELDS = ["full_name", "email", "phone"]
 ELIGIBILITY_FIELDS = ["age_18_plus", "has_internet_and_device", "accepts_unpaid_role"]
 
 DEFAULT_SUB_STATE: Dict[str, Any] = {
@@ -216,9 +216,9 @@ class ProfileExtractor:
                         if candidate:
                             extracted["qualification"] = candidate
 
-        # During orientation_video stage: also extract name + email if offered
-        # (bundled prompt asks eligibility + name + email together)
-        if current_stage == "orientation_video" or current_stage == "eligibility_screening":
+        # During eligibility_screening: also extract name + email if offered
+        # (user might volunteer info early)
+        if current_stage == "eligibility_screening":
             if "full_name" not in existing_fields:
                 name = self._extract_name(message)
                 if name:
@@ -436,21 +436,24 @@ def _apply_eligibility_answers(sub_state: Dict[str, Any], message: str) -> None:
     pending_neg = dict(sub_state.get("eligibility_pending_negative") or {})
     lower = message.lower()
 
-    # If bundled question was asked and volunteer says "yes/all good/sure"
-    # → mark all unanswered fields as True
+    # If bundled question was asked: ANY response that isn't explicitly negative = all pass
+    # This is intentionally permissive — the bundled question is a confirmation, not a test.
     if sub_state.get("eligibility_bundled_asked"):
-        bundled_yes = _extract_binary_response(message)
-        if bundled_yes is True:
+        explicit_no = _extract_binary_response(message)
+        if explicit_no is False:
+            # They explicitly said "no" — need to ask individually
+            sub_state["eligibility_bundled_asked"] = False
+            # Fall through to individual handling below
+        else:
+            # Anything else (yes, sure, ok, or even just "yeah") = all pass
+            # Even if _extract_binary_response returns None (ambiguous), treat as positive
+            # because the bundled question was a confirmation ("all good?")
             for field in ELIGIBILITY_FIELDS:
                 if eligibility.get(field) is None:
                     eligibility[field] = True
             sub_state["eligibility"] = eligibility
             sub_state["eligibility_pending_negative"] = pending_neg
             return
-        elif bundled_yes is False:
-            # They said "no" to the bundle — we need to ask individually
-            # Don't mark anything, fall through to individual handling
-            sub_state["eligibility_bundled_asked"] = False
 
     # Individual question handling
     current_question = _next_eligibility_question(sub_state)
@@ -580,12 +583,11 @@ def _determine_next_state(
         # Turn 2: they responded → capture intent, move to orientation
         return OnboardingState.ORIENTATION_VIDEO.value, "Welcome response received — proceeding to orientation"
 
-    # ORIENTATION VIDEO: v2 — non-blocking
-    # Video is shown but ANY response moves forward
+    # ORIENTATION VIDEO: wait for user response, then move to eligibility
     if current_state == OnboardingState.ORIENTATION_VIDEO.value:
-        # Always acknowledge — video is informational, not a gate
-        sub_state["video_acknowledged"] = True
-        return OnboardingState.ELIGIBILITY_SCREENING.value, "Orientation shown — proceeding to eligibility"
+        if sub_state.get("video_acknowledged"):
+            return OnboardingState.ELIGIBILITY_SCREENING.value, "Video acknowledged — proceeding to eligibility"
+        return current_state, "Waiting for video acknowledgement"
 
     # ELIGIBILITY: v2 — bundled first, individual fallback
     if current_state == OnboardingState.ELIGIBILITY_SCREENING.value:
@@ -901,7 +903,9 @@ class OnboardingAgentService:
             if sub_state.get("welcome_shown") and user_message and user_message not in ("__handoff__", "__auto_continue__"):
                 sub_state["welcome_response"] = user_message.strip()[:500]
         if current_state == OnboardingState.ORIENTATION_VIDEO.value:
-            sub_state["video_acknowledged"] = True
+            # Any reply to the video message = acknowledged
+            if user_message and user_message not in ("__handoff__", "__auto_continue__"):
+                sub_state["video_acknowledged"] = True
         if current_state == OnboardingState.ELIGIBILITY_SCREENING.value:
             # Mark bundled as asked after first entry (so next turn processes the answer)
             if not sub_state.get("eligibility_bundled_asked"):

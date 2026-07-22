@@ -28,17 +28,76 @@ from config import (
     ONLINE_TEACHING_NEED_TYPE_ID,
     DEFAULT_NEED_STATUS,
     ENTITY_COORDINATOR_ROLE,
+    SERVE_KEYCLOAK_URL,
+    SERVE_KEYCLOAK_REALM,
+    SERVE_KEYCLOAK_CLIENT_ID,
+    SERVE_KEYCLOAK_CLIENT_SECRET,
 )
 
 logger = logging.getLogger(__name__)
 
+# ─── Token cache ──────────────────────────────────────────────────────────────
+import time
+
+_cached_token: Optional[str] = None
+_token_expires_at: float = 0
+
+
+async def _get_keycloak_token() -> Optional[str]:
+    """
+    Fetch a fresh Keycloak access token using client_credentials grant.
+    Caches the token until 60s before expiry.
+    """
+    global _cached_token, _token_expires_at
+
+    # Return cached token if still valid
+    if _cached_token and time.time() < _token_expires_at:
+        return _cached_token
+
+    # Static token fallback (legacy)
+    if SERVE_BEARER_TOKEN:
+        return SERVE_BEARER_TOKEN
+
+    if not SERVE_KEYCLOAK_CLIENT_SECRET:
+        logger.warning("[serve_registry] No Keycloak client secret configured — API calls will be unauthenticated")
+        return None
+
+    token_url = f"{SERVE_KEYCLOAK_URL}/realms/{SERVE_KEYCLOAK_REALM}/protocol/openid-connect/token"
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                token_url,
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": SERVE_KEYCLOAK_CLIENT_ID,
+                    "client_secret": SERVE_KEYCLOAK_CLIENT_SECRET,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            response.raise_for_status()
+            body = response.json()
+            _cached_token = body["access_token"]
+            # Cache until 60s before expiry
+            expires_in = body.get("expires_in", 300)
+            _token_expires_at = time.time() + expires_in - 60
+            logger.info(f"[serve_registry] Keycloak token fetched, expires in {expires_in}s")
+            return _cached_token
+    except Exception as e:
+        logger.error(f"[serve_registry] Failed to fetch Keycloak token: {e}")
+        return None
+
 
 # ─── HTTP helper ──────────────────────────────────────────────────────────────
 
-def _build_headers() -> Dict[str, str]:
-    headers = {"Content-Type": "application/json"}
-    if SERVE_BEARER_TOKEN:
-        headers["Authorization"] = f"Bearer {SERVE_BEARER_TOKEN}"
+async def _build_headers() -> Dict[str, str]:
+    headers = {
+        "Content-Type": "application/json",
+        "X-Agency-Id": SERVE_AGENCY_ID,
+    }
+    token = await _get_keycloak_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     return headers
 
 
@@ -54,13 +113,14 @@ async def _request(
     Returns the parsed JSON body, or None on 404 / repeated failure.
     """
     last_error: Exception | None = None
+    headers = await _build_headers()
     for attempt in range(SERVE_REGISTRY_RETRIES + 1):
         try:
             async with httpx.AsyncClient(timeout=SERVE_REGISTRY_TIMEOUT) as client:
                 response = await client.request(
                     method,
                     url,
-                    headers=_build_headers(),
+                    headers=headers,
                     params=params,
                     json=json,
                 )
@@ -99,6 +159,143 @@ class VolunteeringClient:
     Calls the Serve Volunteering Service.
     Handles user lookup, creation, and profile read/write.
     """
+
+    # ── Keycloak User Registration ───────────────────────────────────────────
+
+    async def create_keycloak_user(
+        self,
+        email: str,
+        full_name: str,
+        phone: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Create a user in Keycloak via the Admin REST API.
+        Sets default password (temporary) and assigns Volunteer realm role.
+        Returns the Keycloak user ID on success, or None on failure.
+        """
+        token = await _get_keycloak_token()
+        if not token:
+            logger.error("[keycloak] Cannot create user — no admin token available")
+            return None
+
+        admin_url = f"{SERVE_KEYCLOAK_URL}/admin/realms/{SERVE_KEYCLOAK_REALM}"
+        first_name = full_name.split()[0] if full_name else ""
+        last_name = " ".join(full_name.split()[1:]) if full_name and len(full_name.split()) > 1 else ""
+
+        # Step 1: Create the user
+        user_payload = {
+            "username": email,
+            "email": email,
+            "firstName": first_name,
+            "lastName": last_name,
+            "enabled": True,
+            "emailVerified": True,
+            "credentials": [
+                {
+                    "type": "password",
+                    "value": "Serve@2026",
+                    "temporary": True,  # Forces password change on first login
+                }
+            ],
+            "attributes": {},
+        }
+        if phone:
+            user_payload["attributes"]["phoneNumber"] = [phone]
+
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                # Create user
+                resp = await client.post(
+                    f"{admin_url}/users",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
+                    json=user_payload,
+                )
+
+                if resp.status_code == 409:
+                    logger.info(f"[keycloak] User already exists: {email}")
+                    # User exists — fetch their ID
+                    lookup_resp = await client.get(
+                        f"{admin_url}/users",
+                        params={"email": email, "exact": "true"},
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                    users = lookup_resp.json() if lookup_resp.status_code == 200 else []
+                    if users:
+                        return users[0].get("id")
+                    return None
+
+                if resp.status_code not in (201, 200):
+                    logger.error(f"[keycloak] Failed to create user: {resp.status_code} {resp.text}")
+                    return None
+
+                # Extract user ID from Location header
+                location = resp.headers.get("Location", "")
+                user_id = location.split("/")[-1] if location else None
+
+                if not user_id:
+                    # Fallback: look up by email
+                    lookup_resp = await client.get(
+                        f"{admin_url}/users",
+                        params={"email": email, "exact": "true"},
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                    users = lookup_resp.json() if lookup_resp.status_code == 200 else []
+                    user_id = users[0].get("id") if users else None
+
+                if not user_id:
+                    logger.error(f"[keycloak] User created but could not retrieve ID for {email}")
+                    return None
+
+                logger.info(f"[keycloak] User created: {email} → id={user_id}")
+
+                # Step 2: Assign Volunteer realm role
+                await self._assign_keycloak_role(client, token, admin_url, user_id, "Volunteer")
+
+                return user_id
+
+        except Exception as e:
+            logger.error(f"[keycloak] create_keycloak_user failed: {e}")
+            return None
+
+    async def _assign_keycloak_role(
+        self,
+        client: httpx.AsyncClient,
+        token: str,
+        admin_url: str,
+        user_id: str,
+        role_name: str,
+    ) -> None:
+        """Assign a realm role to a Keycloak user."""
+        try:
+            # Get the role representation
+            roles_resp = await client.get(
+                f"{admin_url}/roles/{role_name}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if roles_resp.status_code != 200:
+                logger.warning(f"[keycloak] Role '{role_name}' not found: {roles_resp.status_code}")
+                return
+
+            role = roles_resp.json()
+
+            # Assign role to user
+            assign_resp = await client.post(
+                f"{admin_url}/users/{user_id}/role-mappings/realm",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json=[role],
+            )
+            if assign_resp.status_code in (200, 204):
+                logger.info(f"[keycloak] Role '{role_name}' assigned to user {user_id}")
+            else:
+                logger.warning(f"[keycloak] Role assignment failed: {assign_resp.status_code} {assign_resp.text}")
+        except Exception as e:
+            logger.warning(f"[keycloak] _assign_keycloak_role failed: {e}")
 
     # ── Identity Lookup ──────────────────────────────────────────────────────
 
@@ -159,32 +356,37 @@ class VolunteeringClient:
     ) -> Optional[str]:
         """
         POST /user/
-        Creates a volunteer stub in Serve Registry.
+        Creates a volunteer in Serve Registry.
         Returns the new volunteer osid, or None on failure.
         """
         url = f"{VOLUNTEERING_SERVICE_URL}/user/"
 
-        # Normalize phone: ensure 91 prefix for Indian numbers, use hardcoded default for web UI
+        # Normalize phone: ensure 91 prefix for Indian numbers
         normalized_phone = phone
         if not normalized_phone:
             normalized_phone = "919999999999"  # placeholder for web UI users
         elif not normalized_phone.startswith("91") and len(normalized_phone) == 10:
             normalized_phone = f"91{normalized_phone}"
+        elif not normalized_phone.startswith("+") and not normalized_phone.startswith("91"):
+            normalized_phone = f"91{normalized_phone}"
+
+        # name = first word of full_name, fullname = full name
+        first_name = full_name.split()[0] if full_name else ""
 
         payload: Dict[str, Any] = {
             "identityDetails": {
                 "fullname": full_name,
-                "name": full_name,
-                "gender": "Female",
+                "name": first_name,
+                "gender": "Male",
                 "dob": "1990-01-01",
-                "Nationality": country,
+                "Nationality": "Indian",
             },
             "contactDetails": {
                 "email": email or "",
-                "mobile": normalized_phone,
+                "mobile": f"+{normalized_phone}" if normalized_phone and not normalized_phone.startswith("+") else normalized_phone,
                 "address": {
-                    "city": city or "",
-                    "state": state or "",
+                    "city": city or "Lucknow",
+                    "state": state or "Uttar Pradesh",
                     "country": country,
                 },
             },
@@ -193,7 +395,7 @@ class VolunteeringClient:
             "role": ["Volunteer"],
         }
 
-        logger.info(f"[serve_registry] create_volunteer payload: {payload}")
+        logger.info(f"[serve_registry] create_volunteer payload: name={full_name}, email={email}, phone={normalized_phone}")
         data = await _request("POST", url, json=payload)
         if data:
             # POST /user/ → { result: { Users: { osid: "..." } }, ... }
@@ -202,6 +404,10 @@ class VolunteeringClient:
                     .get("Users", {})
                     .get("osid")
             )
+            if osid:
+                logger.info(f"[serve_registry] Volunteer created successfully: osid={osid}")
+            else:
+                logger.warning(f"[serve_registry] create_volunteer response missing osid: {data}")
             return osid
         return None
 
@@ -371,16 +577,16 @@ class VolunteeringClient:
         payload: Dict[str, Any] = {
             "skills": [],
             "genericDetails": {
-                "qualification": "Graduate",
-                "affiliation": "SERVE Volunteer",
+                "qualification": data.get("qualification", "Graduate"),
+                "affiliation": "",
                 "yearsOfExperience": "",
-                "employmentStatus": "Others",
+                "employmentStatus": "Full Time",
             },
             "userPreference": {
                 "timePreferred": [],
                 "dayPreferred": [],
-                "interestArea": [],
-                "language": [],
+                "interestArea": ["Teaching", "Mentoring"],
+                "language": ["English", "Hindi"],
             },
             "agencyId": SERVE_AGENCY_ID,
             "userId": volunteer_id,

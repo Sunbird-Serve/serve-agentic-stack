@@ -90,30 +90,26 @@ Do NOT show journey steps. Do NOT share videos. Do NOT ask for name or details y
         if classroom_vid:
             return f"""{_BASE_CONTEXT}
 
-CURRENT STAGE: Orientation + Quick Check (Step 1/4)
+CURRENT STAGE: Orientation Video (Step 1/4)
 {motivation_context}
 
-The volunteer just shared what brings them here. Your task in ONE message:
+The volunteer just shared what brings them here. Your task:
 1. Briefly acknowledge their motivation warmly (1 sentence referencing what they said).
-2. Share the video: [VIDEO:{classroom_vid}|A glimpse of an eVidyaloka online class]
-3. Ask the bundled eligibility + name + email in ONE natural paragraph:
-   "Just a few quick things — you are 18 or older, have a device with internet, and comfortable this is volunteer/unpaid? Also, what is your full name and email so I can get you set up?"
+2. Share the video with a brief intro.
+3. Include the video tag EXACTLY: [VIDEO:{classroom_vid}|A glimpse of an eVidyaloka online class]
+4. End with: "Take a look and let me know when you are ready to continue!" or similar.
 
-This combines eligibility check + first two contact fields in one turn. Keep it natural, not list-like.
 IMPORTANT: Include the [VIDEO:...] tag exactly as shown. The system renders it as a video.
-Do NOT ask these as separate numbered questions. Weave them naturally."""
+Do NOT ask eligibility or contact details here. Just show the video and wait."""
         else:
             return f"""{_BASE_CONTEXT}
 
-CURRENT STAGE: Orientation + Quick Check (Step 1/4)
+CURRENT STAGE: Orientation (Step 1/4)
 {motivation_context}
 
-Briefly acknowledge their motivation (1 sentence), then explain eVidyaloka (online teaching, 2-3 hrs/week), then ask bundled:
-"Quick things to confirm — you are 18+, have internet, comfortable with unpaid volunteering? And your full name and email to get you registered?"
+Briefly acknowledge their motivation (1 sentence), then explain how eVidyaloka works — volunteers teach online for 2-3 hours a week via video call. Ask if they are ready to continue."""
 
-Keep it to 3-4 sentences. Natural, not a checklist."""
-
-    # ── ELIGIBILITY (handles individual fallback only — bundled is in orientation) ─
+    # ── ELIGIBILITY (always bundled — video was already shown) ─────────────────
     if stage == "eligibility_screening":
         eligibility = confirmed_fields
 
@@ -135,7 +131,21 @@ CURRENT STAGE: Eligibility — Clarification (Step 1/4)
 
 Be warm and non-judgmental. Your ENTIRE response is about this one clarification."""
 
-        # Individual question fallback (only reached if bundled didn't cover it)
+        # Bundled question (all 3 checks in one)
+        all_unanswered = all(eligibility.get(f) is None for f in ["age_18_plus", "has_internet_and_device", "accepts_unpaid_role"])
+        if all_unanswered:
+            return f"""{_BASE_CONTEXT}
+
+CURRENT STAGE: Eligibility — Quick Check (Step 1/4)
+{motivation_context}
+
+Your task: Ask all three eligibility checks in ONE natural sentence:
+"Just a few quick things to confirm — you are 18 or older, have a device with internet (even a smartphone works), and you are comfortable this is a volunteer, unpaid role. All good?"
+
+Keep it to 1-2 sentences. Do NOT ask for name, email, or phone.
+Your ENTIRE response is this one bundled question."""
+
+        # Individual fallback (if bundled "no" was given or partial)
         if eligibility.get("age_18_plus") is not True:
             question = "Are you 18 years of age or older?"
         elif eligibility.get("has_internet_and_device") is not True:
@@ -151,45 +161,38 @@ CURRENT STAGE: Eligibility — Individual Check (Step 1/4)
 {motivation_context}
 
 Your task: Ask this ONE question: "{question}"
-Add a brief warm lead-in (half a sentence), then ask. Do NOT ask for name or email.
-Your ENTIRE response is about this eligibility question."""
+Be warm, brief. Your ENTIRE response is about this one question."""
 
-    # ── CONTACT CAPTURE (v3: batched — ask 2 fields per turn) ──────────────────
+    # ── CONTACT CAPTURE (v3: name + email + phone together, no qualification) ───
     if stage == "contact_capture":
         name = confirmed_fields.get("full_name")
         email = confirmed_fields.get("email")
         phone = confirmed_fields.get("phone")
-        qualification = confirmed_fields.get("qualification")
         is_reluctant = confirmed_fields.get("volunteer_reluctant", False)
         email_typo = confirmed_fields.get("email_typo_suggestion")
 
-        # Email typo detected — ask for confirmation
+        # Email typo detected
         if email_typo:
             return f"""{_BASE_CONTEXT}
 
 CURRENT STAGE: Contact Details — Email Typo Check (Step 1/4)
-{motivation_context}
 
-I noticed the email might have a typo. The volunteer typed something that looks like it should be "{email_typo}". Ask them to double-check:
-"I noticed your email might have a small typo — did you mean {email_typo}?"
-
-Your ENTIRE response is about confirming the email. Nothing else."""
+I noticed the email might have a typo. Ask: "Did you mean {email_typo}?"
+Your ENTIRE response is about confirming the email."""
 
         # Reluctance handling
         if is_reluctant:
-            current_field = "email" if not email and name else "phone" if not phone else "details"
             return f"""{_BASE_CONTEXT}
 
 CURRENT STAGE: Contact Details — Privacy Assurance (Step 1/4)
 {motivation_context}
 
-The volunteer is hesitant about sharing their {current_field}. Reassure them warmly:
-- Their information is only used to coordinate class schedules
-- It stays private within the eVidyaloka team
+The volunteer is hesitant about sharing details. Reassure briefly:
+- Info is only used to coordinate class schedules
+- Stays private within the eVidyaloka team
+Then gently re-ask. Keep to 2 sentences."""
 
-Then gently re-ask for the {current_field}. Keep it to 2-3 sentences."""
-
-        # BATCHED: Ask remaining fields together (2 per turn)
+        # All 3 missing → ask together
         remaining = []
         if not name:
             remaining.append("full name")
@@ -197,95 +200,65 @@ Then gently re-ask for the {current_field}. Keep it to 2-3 sentences."""
             remaining.append("email address")
         if not phone:
             remaining.append("phone number")
-        if not qualification:
-            remaining.append("educational qualification")
 
-        if len(remaining) >= 3:
-            # First batch: name + email (or whatever first 2 are missing)
-            batch = remaining[:2]
+        if len(remaining) >= 2:
             return f"""{_BASE_CONTEXT}
 
-CURRENT STAGE: Contact Details — Batch 1 (Step 1/4)
+CURRENT STAGE: Contact Details (Step 1/4)
 {motivation_context}
 
-Your task: Acknowledge warmly that eligibility is confirmed, then ask for BOTH of these in one natural question: {' and '.join(batch)}.
-Example: "Great, you are all set! Could you share your full name and email address so I can get you registered?"
+Your task: Ask for ALL of these in one natural sentence: {', '.join(remaining)}.
+Example: "Could you share your full name, email address, and phone number so I can get you registered?"
 
-Ask BOTH in one sentence. Do NOT ask for {', '.join(remaining[2:])} yet.
-Keep it to 2 sentences total."""
-
-        elif len(remaining) == 2:
-            # Second batch: phone + qualification (or whatever 2 remain)
-            batch = remaining
-            known_parts = []
-            if name:
-                known_parts.append(f"Name: {name}")
-            if email:
-                known_parts.append(f"Email: {email}")
-            known = ", ".join(known_parts)
-            return f"""{_BASE_CONTEXT}
-
-CURRENT STAGE: Contact Details — Batch 2 (Step 1/4)
-{motivation_context}
-
-We have: {known}
-
-Your task: Thank them briefly, then ask for BOTH: {' and '.join(batch)} in one natural question.
-Example: "Thanks, Sowmya! Could you also share your phone number and educational qualification?"
-
-Ask BOTH in one sentence. Keep it to 2 sentences total."""
+Ask all in ONE sentence. Keep it to 2 sentences total (brief lead-in + the ask).
+Do NOT ask about qualification, availability, or anything else."""
 
         elif len(remaining) == 1:
-            # Single remaining field
             field = remaining[0]
-            known_parts = []
-            if name:
-                known_parts.append(f"Name: {name}")
-            if email:
-                known_parts.append(f"Email: {email}")
-            if phone:
-                known_parts.append(f"Phone: {phone}")
-            known = ", ".join(known_parts)
             return f"""{_BASE_CONTEXT}
 
 CURRENT STAGE: Contact Details — Last Field (Step 1/4)
 {motivation_context}
 
-We have: {known}
+Your task: Ask for their {field}. One sentence, brief and natural."""
 
-Your task: Ask for the last missing detail: {field}. Keep it brief and natural.
-Just one sentence asking for it."""
-
-        # All fields captured
+        # All captured
         return f"""{_BASE_CONTEXT}
 
 CURRENT STAGE: Contact Details — Complete (Step 1/4)
 
-All details captured! Thank them briefly and say you will show a quick summary."""
+All details captured! Say something brief like "Got it, thanks!" and move to the summary."""
 
     # ── REGISTRATION REVIEW ─────────────────────────────────────────────────────
     if stage == "registration_review":
         name = confirmed_fields.get("full_name", "")
         email = confirmed_fields.get("email", "")
         phone = confirmed_fields.get("phone", "")
-        qualification = confirmed_fields.get("qualification", "")
 
-        summary_parts = []
-        if name: summary_parts.append(f"Name: {name}")
-        if email: summary_parts.append(f"Email: {email}")
-        if phone: summary_parts.append(f"Phone: {phone}")
-        if qualification: summary_parts.append(f"Qualification: {qualification}")
-        summary = "\n".join(summary_parts)
+        # Build the EXACT text the LLM must say (no improvisation allowed)
+        summary_lines = []
+        if name:
+            summary_lines.append(f"Name: {name}")
+        if email:
+            summary_lines.append(f"Email: {email}")
+        if phone:
+            summary_lines.append(f"Phone: {phone}")
+        summary_text = "\n".join(summary_lines)
+
         return f"""{_BASE_CONTEXT}
 
-CURRENT STAGE: Registration Review
+CURRENT STAGE: Registration Review (Step 1/4)
 
-Volunteer details:
-{summary}
+Your task: Present the volunteer's details and ask for confirmation.
 
-Your task: Present these details and ask if everything looks correct. Say something like:
-"Here is what I have — [list the details]. Does this look right? Let me know if you want to change anything."
-Your ENTIRE response is the summary + confirmation question."""
+You MUST say EXACTLY this (do not change the values, do not add extra fields, do not make up data):
+
+"Here is what I have:
+{summary_text}
+
+Does this look right? Let me know if you want to change anything."
+
+Copy the above text EXACTLY. Do NOT modify the name, email, or phone values. Do NOT add qualification, age, or any other fields. Just present what is shown above and ask for confirmation."""
 
     # ── ONBOARDING COMPLETE ─────────────────────────────────────────────────────
     if stage == "onboarding_complete":

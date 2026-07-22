@@ -31,9 +31,13 @@ NEED_SERVICE_URL = f"{SERVE_BASE_URL}{NEED_API_PATH}"
 FULFILL_SERVICE_URL = f"{SERVE_BASE_URL}{FULFILL_API_PATH}"
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
-# No auth required in current sandbox. Set SERVE_BEARER_TOKEN for auth-enabled
-# deployments; an empty string means the Authorization header is omitted.
-SERVE_BEARER_TOKEN = os.environ.get("SERVE_BEARER_TOKEN", "")
+# Keycloak client credentials for Serve Registry API calls.
+# The token is fetched dynamically using client_credentials grant.
+SERVE_BEARER_TOKEN = os.environ.get("SERVE_BEARER_TOKEN", "")  # Static fallback (legacy)
+SERVE_KEYCLOAK_URL = os.environ.get("SERVE_KEYCLOAK_URL", "https://auth.serve-v1.evean.net")
+SERVE_KEYCLOAK_REALM = os.environ.get("SERVE_KEYCLOAK_REALM", "sunbird-serve")
+SERVE_KEYCLOAK_CLIENT_ID = os.environ.get("SERVE_KEYCLOAK_CLIENT_ID", "serve-backend")
+SERVE_KEYCLOAK_CLIENT_SECRET = os.environ.get("SERVE_KEYCLOAK_CLIENT_SECRET", "iJ0n90871YXDrX9v0i1glNUkQ20OQgcq")
 
 # Agency ID for volunteer registration
 SERVE_AGENCY_ID = os.environ.get("SERVE_AGENCY_ID", "1-74f81200-dc16-4c65-bf7a-a3ab75952432")
