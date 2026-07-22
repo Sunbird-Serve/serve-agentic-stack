@@ -240,6 +240,7 @@ class SessionService:
         new_state: str,
         sub_state: Optional[str] = None,
         active_agent: Optional[str] = None,
+        workflow: Optional[str] = None,
     ) -> Dict[str, Any]:
         _TERMINAL = {
             "need_submitted", "fulfillment_handoff_ready", "approved", "complete",
@@ -264,6 +265,8 @@ class SessionService:
                             values["status"] = new_status
                         if active_agent:
                             values["active_agent"] = active_agent
+                        if workflow:
+                            values["workflow"] = workflow
                         await db.execute(
                             update(DBSession)
                             .where(DBSession.id == UUID(session_id))
@@ -289,6 +292,8 @@ class SessionService:
                 _mem.sessions[session_id]["status"] = new_status
             if active_agent:
                 _mem.sessions[session_id]["active_agent"] = active_agent
+            if workflow:
+                _mem.sessions[session_id]["workflow"] = workflow
             return {"status": "success", "previous_state": old_state,
                     "current_state": new_state, "active_agent": active_agent, "is_valid": True}
 

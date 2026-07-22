@@ -123,10 +123,14 @@ _WA_GRAPH_URL       = "https://graph.facebook.com/v18.0"
 _wa_sessions: dict = {}
 
 
-async def _wa_send(to: str, text: str) -> None:
+async def _wa_send(to: str, text: str) -> bool:
+    """Returns whether the send actually succeeded. Existing call sites all
+    discard the return value (fire-and-forget within the inbound reply cycle),
+    so adding this is purely additive — it only matters to internal_notify,
+    which needs to report send failures honestly rather than assuming success."""
     if not _WA_TOKEN or not _WA_PHONE_NUMBER_ID:
         logger.warning("WhatsApp not configured — skipping send")
-        return
+        return False
     url = f"{_WA_GRAPH_URL}/{_WA_PHONE_NUMBER_ID}/messages"
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
@@ -136,8 +140,10 @@ async def _wa_send(to: str, text: str) -> None:
                 json={"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": text}},
             )
             r.raise_for_status()
+            return True
         except Exception as e:
             logger.error(f"WhatsApp send failed: {e}")
+            return False
 
 
 import re as _re
@@ -340,6 +346,36 @@ async def wa_status():
         "phone_number_id_configured": bool(_WA_PHONE_NUMBER_ID),
         "token_configured": bool(_WA_TOKEN),
     }
+
+
+@app.post("/api/internal/notify")
+async def internal_notify(request: Request):
+    """
+    Internal-only: send a WhatsApp message to an arbitrary phone number, outside
+    the normal inbound-reply cycle. Used by the delivery assistant's
+    notify_linked_stakeholder to reach a coordinator who isn't the current chat
+    participant. Reuses the existing, already-tested _wa_send — does not touch
+    wa_receive, _wa_sessions, or any inbound routing logic. Trusts the internal
+    docker network the same way agent-to-agent calls already do; body is
+    {"phone": str, "message": str}, both required. Message content is expected
+    to be a fixed template built by the caller — this endpoint does not
+    generate or alter it.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    phone = (body.get("phone") or "").strip()
+    message = (body.get("message") or "").strip()
+    if not phone or not message:
+        raise HTTPException(status_code=422, detail="phone and message are both required")
+    if not _WA_TOKEN or not _WA_PHONE_NUMBER_ID:
+        logger.warning("internal_notify: WhatsApp not configured — cannot send")
+        return {"status": "not_configured"}
+    ok = await _wa_send(phone, message)
+    if not ok:
+        raise HTTPException(status_code=502, detail="WhatsApp send failed")
+    return {"status": "sent"}
 
 
 @app.on_event("startup")

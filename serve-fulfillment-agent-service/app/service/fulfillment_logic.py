@@ -253,6 +253,8 @@ class FulfillmentAgentService:
             # Track successful nomination
             if isinstance(result, dict) and result.get("status") != "error":
                 sub_state["nominated_need_id"] = tool_input["need_id"]
+                nomination = result.get("nomination") or {}
+                sub_state["nomination_id"] = nomination.get("id") or nomination.get("osid")
             return result
 
         else:
@@ -268,15 +270,43 @@ class FulfillmentAgentService:
         session_id: str,
         workflow: str = "returning_volunteer",
     ) -> FulfillmentAgentTurnResponse:
+        handoff_event = None
         if outcome == "nominated":
             need_id = signal.get("need_id") or sub_state.get("nominated_need_id")
             sub_state["nominated_need_id"] = need_id
+            volunteer_id = sub_state.get("handoff", {}).get("volunteer_id")
             await domain_client.log_event(session_id, "fulfillment_nominated", {
                 "need_id": need_id,
-                "volunteer_id": sub_state.get("handoff", {}).get("volunteer_id"),
+                "volunteer_id": volunteer_id,
             })
             new_state = FulfillmentWorkflowState.COMPLETE.value
             message = text or "Shukriya! Coordinator review karenge aur jald hi aapse contact karenge."
+
+            # Hand off to the delivery assistant so activation actually starts —
+            # a nomination alone never used to trigger anything downstream.
+            # Pull whatever the matched candidate already told us (entity_id,
+            # programme) rather than making another Serve Registry call; a
+            # coordinator_id isn't present in this flattened need shape, so
+            # notify_linked_stakeholder falls back to its documented
+            # first-contact capture for that (see delivery_service.py).
+            candidates = (sub_state.get("match_result") or {}).get("candidates") or []
+            matched = next((c for c in candidates if c.get("id") == need_id), {})
+            handoff_event = {
+                "session_id": session_id,
+                "from_agent": "fulfillment",
+                "to_agent": "delivery_assistant",
+                "handoff_type": "agent_transition",
+                "payload": {
+                    "volunteer_id": volunteer_id,
+                    "volunteer_name": sub_state.get("handoff", {}).get("volunteer_name"),
+                    "need_id": need_id,
+                    "nomination_id": sub_state.get("nomination_id"),
+                    "entity_id": matched.get("entity_id"),
+                    "programme": matched.get("name") or ", ".join(matched.get("subjects") or []) or None,
+                },
+                "reason": "Volunteer nominated for a teaching need",
+            }
+            new_state = "activation_started"
 
         elif outcome == "human_review":
             reason = signal.get("reason") or sub_state.get("human_review_reason", "unknown")
@@ -302,7 +332,8 @@ class FulfillmentAgentService:
         if message:
             await domain_client.save_message(session_id, "assistant", message)
 
-        return self._build_response(message=message, state=new_state, sub_state=updated, workflow=workflow)
+        return self._build_response(message=message, state=new_state, sub_state=updated,
+                                     workflow=workflow, handoff_event=handoff_event)
 
     def _build_response(
         self,
@@ -311,10 +342,12 @@ class FulfillmentAgentService:
         sub_state: Optional[str],
         auto_continue: bool = False,
         workflow: str = "returning_volunteer",
+        handoff_event: Optional[Dict[str, Any]] = None,
     ) -> FulfillmentAgentTurnResponse:
         return FulfillmentAgentTurnResponse(
             assistant_message=message,
             auto_continue=auto_continue,
+            handoff_event=handoff_event,
             workflow=workflow,
             state=state,
             sub_state=sub_state,
