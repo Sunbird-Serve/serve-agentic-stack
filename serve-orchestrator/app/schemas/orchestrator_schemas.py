@@ -255,6 +255,7 @@ class AgentTurnRequest(BaseModel):
     conversation_history: List[Dict[str, str]] = []
     intent_hint: Optional[str] = None  # resolved intent value, e.g. "seek_help"
     channel_metadata: Optional[Dict[str, Any]] = None  # forwarded from channel adapter
+    volunteer_facts: Dict[str, Any] = {}  # persistent facts from volunteer fact-store
 
 
 class HandoffEvent(BaseModel):

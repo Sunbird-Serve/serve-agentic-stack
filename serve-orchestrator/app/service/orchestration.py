@@ -1094,6 +1094,7 @@ class OrchestrationService:
             conversation_history=conversation,
             intent_hint=intent_result.intent.value,
             channel_metadata=event.raw_metadata if event.raw_metadata else None,
+            volunteer_facts=facts,  # Pass full fact-store so agent has complete context
         )
 
         # Use existing agent_router for invocation (it handles HTTP, timeouts, etc.)

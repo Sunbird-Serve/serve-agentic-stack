@@ -92,6 +92,9 @@ class AgentTurnRequest(BaseModel):
     session_state: SessionState
     user_message: str
     conversation_history: List[Dict[str, str]] = []
+    intent_hint: Optional[str] = None
+    channel_metadata: Optional[Dict[str, Any]] = None
+    volunteer_facts: Dict[str, Any] = {}  # persistent facts from volunteer fact-store
 
 
 class HandoffEvent(BaseModel):

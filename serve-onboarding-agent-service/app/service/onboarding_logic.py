@@ -798,6 +798,15 @@ class OnboardingAgentService:
         response_missing_fields = next_missing_fields
         response_new_facts = {}  # Facts for v2 orchestrator to merge into volunteer record
 
+        # ── Cross-domain signal extraction ────────────────────────────────────
+        # Capture preference/intent signals from ANY user message, even during
+        # onboarding. These get written to the volunteer fact-store so downstream
+        # agents (selection, engagement, fulfillment) don't re-ask.
+        cross_domain_facts = self._extract_cross_domain_signals(request.user_message)
+        if cross_domain_facts:
+            response_new_facts.update(cross_domain_facts)
+            logger.info(f"[{request.session_id}] cross-domain signals: {list(cross_domain_facts.keys())}")
+
         logger.info(f"[{request.session_id}] ── TURN END ── state={next_state}")
 
         if next_state == OnboardingState.ONBOARDING_COMPLETE.value:
@@ -926,6 +935,75 @@ class OnboardingAgentService:
             review_reason = sub_state.get("review_reason") or "eligibility_review_required"
             await domain_client.save_confirmed_fields(request.session_id, {"eligibility_status": "review_pending"})
             await domain_client.log_event(request.session_id, "onboarding_review_pending", agent=AgentType.ONBOARDING.value, data={"reason": review_reason})
+
+    def _extract_cross_domain_signals(self, message: str) -> Dict[str, Any]:
+        """
+        Extract preference/intent signals from any user message.
+        These are NOT onboarding fields — they're facts for downstream agents.
+        Captures: subject preferences, day preferences, time preferences, grade preferences.
+        """
+        if not message or message in ("__handoff__", "__auto_continue__"):
+            return {}
+
+        lower = message.lower()
+        facts: Dict[str, Any] = {}
+        preferences: Dict[str, Any] = {}
+
+        # Subject preferences
+        subjects = []
+        if re.search(r"\benglish\b", lower):
+            subjects.append("english")
+        if re.search(r"\bhindi\b", lower):
+            subjects.append("hindi")
+        if re.search(r"\b(math|maths|mathematics)\b", lower):
+            subjects.append("mathematics")
+        if re.search(r"\bscience\b", lower):
+            subjects.append("science")
+        if subjects:
+            preferences["subjects"] = subjects
+
+        # Day preferences
+        days = []
+        if re.search(r"\b(weekend|weekends|saturday|sunday)\b", lower):
+            if "saturday" in lower:
+                days.append("saturday")
+            if "sunday" in lower:
+                days.append("sunday")
+            if not days:  # "weekends" without specific day
+                days = ["saturday", "sunday"]
+        if re.search(r"\b(weekday|weekdays|monday|tuesday|wednesday|thursday|friday)\b", lower):
+            for d in ["monday", "tuesday", "wednesday", "thursday", "friday"]:
+                if d in lower:
+                    days.append(d)
+            if not days:  # "weekdays" without specific day
+                days = ["monday", "tuesday", "wednesday", "thursday", "friday"]
+        if days:
+            preferences["days"] = days
+
+        # Time preferences
+        time_match = re.search(r"\b(\d{1,2})\s*(?:am|pm)\s*(?:to|-)\s*(\d{1,2})\s*(?:am|pm)\b", lower)
+        if time_match:
+            preferences["time"] = time_match.group(0)
+        elif re.search(r"\bmorning\b", lower):
+            preferences["time"] = "morning"
+        elif re.search(r"\bevening\b", lower):
+            preferences["time"] = "evening"
+        elif re.search(r"\bafternoon\b", lower):
+            preferences["time"] = "afternoon"
+
+        # Grade preferences
+        grades = []
+        for g in re.findall(r"\bgrade\s*(\d+)\b", lower):
+            grades.append(g)
+        for g in re.findall(r"\bclass\s*(\d+)\b", lower):
+            grades.append(g)
+        if grades:
+            preferences["grades"] = grades
+
+        if preferences:
+            facts["preferences"] = preferences
+
+        return facts
 
 
 onboarding_agent_service = OnboardingAgentService()
