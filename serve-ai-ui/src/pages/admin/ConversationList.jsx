@@ -63,9 +63,9 @@ export function ConversationList() {
         </Button>
       </div>
 
-      <div className="flex-1 flex gap-4 overflow-hidden">
+      <div className="flex-1 flex flex-col md:flex-row gap-4 overflow-hidden">
         {/* Session list */}
-        <Card className="w-80 flex-shrink-0 border-none shadow-sm overflow-y-auto">
+        <Card className="w-full md:w-80 flex-shrink-0 border-none shadow-sm overflow-y-auto max-h-[40vh] md:max-h-none">
           <CardContent className="p-0">
             {sessions.map((s) => (
               <button

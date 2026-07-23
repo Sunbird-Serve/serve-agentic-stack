@@ -106,7 +106,7 @@ function VolunteerDetail({ session, onClose }) {
   };
 
   return (
-    <div className="fixed inset-y-0 right-0 w-96 bg-white shadow-xl border-l border-slate-200 z-50 overflow-y-auto">
+    <div className="fixed inset-0 md:inset-y-0 md:left-auto md:right-0 md:w-96 bg-white shadow-xl border-l border-slate-200 z-50 overflow-y-auto">
       <div className="sticky top-0 bg-white border-b border-slate-100 px-4 py-3 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-slate-900">Volunteer Detail</h2>
         <button onClick={onClose} className="p-1 rounded hover:bg-slate-100">
