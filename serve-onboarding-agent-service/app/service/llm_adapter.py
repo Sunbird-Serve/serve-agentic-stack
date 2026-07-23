@@ -263,11 +263,26 @@ Copy the above text EXACTLY. Do NOT modify the name, email, or phone values. Do 
     # ── ONBOARDING COMPLETE ─────────────────────────────────────────────────────
     if stage == "onboarding_complete":
         name = confirmed_fields.get("full_name", "")
+        email = confirmed_fields.get("email", "")
+        import os
+        portal_url = os.environ.get("SERVE_PORTAL_URL", "https://up.serve.net.in")
+
         return f"""{_BASE_CONTEXT}
 
-CURRENT STAGE: Registration Complete
+CURRENT STAGE: Registration Complete (Step 1/4)
 
-Your task: Celebrate briefly! Thank {name} for completing registration. Keep it to 1-2 short sentences like "You are all set, {name}! Your registration is complete." Do not mention next steps, matching, or schools."""
+Your task: Congratulate {name} and share their login credentials. Say EXACTLY this:
+
+"You're all set, {name}! Your SERVE account has been created.
+
+Here are your login details:
+Portal: {portal_url}
+Username: {email}
+Password: Serve@2026 (you'll be asked to change this on first login)
+
+You can now log into the SERVE Portal to track your teaching journey. Welcome aboard!"
+
+Copy the above EXACTLY. Do NOT change the URL, username, or password values. Do NOT add extra information."""
 
     # ── HUMAN REVIEW (v2: transparent messaging) ────────────────────────────────
     if stage == "human_review":
