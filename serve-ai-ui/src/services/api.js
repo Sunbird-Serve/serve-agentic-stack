@@ -1,93 +1,53 @@
 /**
- * SERVE AI - API Service
- * Handles all communication with the backend services.
- * JWT token is attached automatically when auth is enabled (Keycloak).
- * In dev mode (AUTH_ENABLED=false), no token is sent.
+ * SERVE AI — API Service (Simplified)
+ * No Keycloak. Volunteer chat uses guest-interact (no auth).
+ * Admin routes use X-Admin-Token header.
  */
 import axios from "axios";
-
-const AUTH_ENABLED = process.env.REACT_APP_AUTH_ENABLED !== "false";
 
 const BACKEND_URL =
   process.env.REACT_APP_BACKEND_URL || "http://localhost:8001";
 const API = `${BACKEND_URL}/api`;
 
-// Create axios instance with defaults
+// Create axios instance
 const apiClient = axios.create({
   baseURL: API,
-  headers: {
-    "Content-Type": "application/json",
-  },
+  headers: { "Content-Type": "application/json" },
   timeout: 60000,
 });
 
-// Attach JWT token to every outgoing request (only when auth is enabled)
-if (AUTH_ENABLED) {
-  apiClient.interceptors.request.use(
-    async (config) => {
-      // Lazy-load keycloak to avoid import errors in dev mode
-      const keycloak = require("../lib/keycloak").default;
-      if (keycloak.authenticated) {
-        try {
-          await keycloak.updateToken(30);
-          config.headers.Authorization = `Bearer ${keycloak.token}`;
-        } catch {
-          keycloak.logout();
-        }
-      }
-      return config;
-    },
-    (error) => Promise.reject(error)
-  );
-}
+// Admin token interceptor — attaches token from localStorage if available
+apiClient.interceptors.request.use((config) => {
+  // Check both admin token keys (volunteer ops + needs ops)
+  const token = localStorage.getItem("serve_admin_token") || localStorage.getItem("serve_needs_admin_token");
+  if (token) {
+    // Send as both X-Admin-Token (new) and Bearer (legacy compatibility)
+    config.headers["X-Admin-Token"] = token;
+    config.headers["Authorization"] = `Bearer ${token}`;
+  }
+  return config;
+});
 
-// Add response interceptor for error handling
+// Error handling
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (AUTH_ENABLED && error.response?.status === 401) {
-      const keycloak = require("../lib/keycloak").default;
-      keycloak.logout();
-    }
     console.error("API Error:", error.response?.data || error.message);
     return Promise.reject(error);
-  },
+  }
 );
 
 /**
  * Orchestrator API
  */
 export const orchestratorApi = {
-  // Process a chat interaction (authenticated)
-  interact: async (
-    sessionId,
-    message,
-    channel = "web_ui",
-    persona = "new_volunteer",
-    channelMetadata = null,
-  ) => {
-    const payload = {
-      message,
-      channel,
-      persona,
-    };
-    if (sessionId) {
-      payload.session_id = sessionId;
-    }
-    if (channelMetadata) {
-      payload.channel_metadata = channelMetadata;
-    }
-    const response = await apiClient.post("/orchestrator/interact", payload);
-    return response.data;
-  },
-
-  // Process a guest (unauthenticated) interaction — no JWT required
+  // Guest interaction (no auth needed — for volunteer chat)
   guestInteract: async (
     sessionId,
     message,
     guestId = null,
     channel = "web_ui",
-    persona = "new_volunteer",
+    persona = "new_volunteer"
   ) => {
     const payload = {
       message,
@@ -102,35 +62,6 @@ export const orchestratorApi = {
     return response.data;
   },
 
-  // Link a guest session to an authenticated user
-  linkSession: async (sessionId, guestId) => {
-    const response = await apiClient.post("/orchestrator/link-session", {
-      session_id: sessionId,
-      guest_id: guestId,
-    });
-    return response.data;
-  },
-
-  // Get session state
-  getSession: async (sessionId) => {
-    const response = await apiClient.get(`/orchestrator/session/${sessionId}`);
-    return response.data;
-  },
-
-  // Get current user's active session (for resume after page refresh)
-  getMySession: async () => {
-    const response = await apiClient.get("/orchestrator/my-session");
-    return response.data;
-  },
-
-  // List all sessions (for ops view)
-  listSessions: async (status = null, limit = 50) => {
-    const params = { limit };
-    if (status) params.status = status;
-    const response = await apiClient.get("/orchestrator/sessions", { params });
-    return response.data;
-  },
-
   // Health check
   health: async () => {
     const response = await apiClient.get("/orchestrator/health");
@@ -139,72 +70,7 @@ export const orchestratorApi = {
 };
 
 /**
- * MCP Service API
- */
-export const mcpApi = {
-  // Get full session with profile
-  getSession: async (sessionId) => {
-    const response = await apiClient.get(
-      `/mcp/capabilities/onboarding/session/${sessionId}`,
-    );
-    return response.data;
-  },
-
-  // Get conversation history
-  getConversation: async (sessionId, limit = 50) => {
-    const response = await apiClient.post(
-      "/mcp/capabilities/onboarding/get-conversation",
-      {
-        session_id: sessionId,
-        limit,
-      },
-    );
-    return response.data;
-  },
-
-  // Get telemetry events
-  getTelemetry: async (sessionId, limit = 100) => {
-    const response = await apiClient.get(
-      `/mcp/capabilities/onboarding/telemetry/${sessionId}`,
-      {
-        params: { limit },
-      },
-    );
-    return response.data;
-  },
-
-  // List all sessions
-  listSessions: async (status = null, limit = 50) => {
-    const params = { limit };
-    if (status) params.status = status;
-    const response = await apiClient.get(
-      "/mcp/capabilities/onboarding/sessions",
-      { params },
-    );
-    return response.data;
-  },
-
-  // Health check
-  health: async () => {
-    const response = await apiClient.get("/mcp/health");
-    return response.data;
-  },
-};
-
-/**
- * Platform Health API
- */
-export const healthApi = {
-  // Check all services
-  checkAll: async () => {
-    const response = await apiClient.get("/health");
-    return response.data;
-  },
-};
-
-/**
- * Tech Dashboard API
- * JWT token is attached automatically by the request interceptor — no manual header needed.
+ * Dashboard API (admin)
  */
 export const dashboardApi = {
   getStats: async (page = 1, pageSize = 25) => {
@@ -221,22 +87,16 @@ export const dashboardApi = {
   getConversation: async (sessionId, limit = 50) => {
     const response = await apiClient.get(
       `/mcp/dashboard/conversation/${sessionId}`,
-      { params: { limit } },
+      { params: { limit } }
     );
     return response.data;
   },
   getSessionDetail: async (sessionId) => {
     const response = await apiClient.get(
-      `/mcp/dashboard/session/${sessionId}`,
+      `/mcp/dashboard/session/${sessionId}`
     );
     return response.data;
   },
 };
 
-// ── Dashboard auth (legacy — removed, Keycloak handles auth now) ──────────────
-
-export default {
-  orchestrator: orchestratorApi,
-  mcp: mcpApi,
-  health: healthApi,
-};
+export default { orchestrator: orchestratorApi, dashboard: dashboardApi };

@@ -255,6 +255,21 @@ async def wa_receive(request: Request):
 
                 session_id = _wa_sessions.get(phone)
 
+                # ── Handle nudge responses and cancel pending nudges ──────────
+                from app.service.nudge_scheduler import (
+                    cancel_nudges_for_session, mark_do_not_disturb, is_do_not_disturb
+                )
+                # Cancel any pending nudges since volunteer has responded
+                if session_id:
+                    cancel_nudges_for_session(str(session_id) if session_id else "")
+
+                # Handle "stop" — opt out of nudges
+                if text.lower() in ("stop", "🚫 stop", "don't disturb", "no reminders"):
+                    if session_id:
+                        mark_do_not_disturb(str(session_id))
+                    await _wa_send(phone, "Got it! I won't send any more reminders. Your progress is saved — message anytime to continue. 🙏")
+                    continue
+
                 # Option 3: send instant ack on first message (no session yet)
                 # so user knows we received it while resolution runs in background
                 if not session_id:
@@ -382,9 +397,10 @@ async def internal_notify(request: Request):
 async def startup_event():
     logger.info("Starting SERVE Orchestrator Service...")
     # Launch background agent health-probe loop.
-    # Probes every AGENT_HEALTH_PROBE_INTERVAL seconds (default 30s) and
-    # updates each agent's 'healthy' flag so the router always has fresh data.
     asyncio.create_task(agent_router.registry.start_health_probing())
+    # Launch nudge scheduler for WhatsApp reminders
+    from app.service.nudge_scheduler import start_nudge_scheduler
+    asyncio.create_task(start_nudge_scheduler())
 
 
 @app.on_event("shutdown")

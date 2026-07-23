@@ -207,8 +207,15 @@ class FulfillmentAgentService:
             need_id = tool_input.get("need_id")
             if outcome == "nominated" and need_id:
                 sub_state["nominated_need_id"] = need_id
+                sub_state["teaching_consent"] = "confirmed"
+                sub_state["teaching_consent_at"] = __import__("datetime").datetime.utcnow().isoformat()
             elif outcome == "human_review":
                 sub_state["human_review_reason"] = tool_input.get("reason", "unknown")
+                sub_state["teaching_consent"] = "pending"
+            elif outcome == "declined":
+                sub_state["teaching_consent"] = "declined"
+            elif outcome == "deferred":
+                sub_state["teaching_consent"] = "pending"
             return tool_input
 
         elif tool_name == "get_more_needs":
@@ -250,11 +257,13 @@ class FulfillmentAgentService:
                 need_id=tool_input["need_id"],
                 volunteer_id=tool_input["volunteer_id"],
             )
-            # Track successful nomination
+            # Track successful nomination + teaching consent
             if isinstance(result, dict) and result.get("status") != "error":
                 sub_state["nominated_need_id"] = tool_input["need_id"]
                 nomination = result.get("nomination") or {}
                 sub_state["nomination_id"] = nomination.get("id") or nomination.get("osid")
+                sub_state["teaching_consent"] = "confirmed"
+                sub_state["teaching_consent_at"] = __import__("datetime").datetime.utcnow().isoformat()
             return result
 
         else:
@@ -332,8 +341,27 @@ class FulfillmentAgentService:
         if message:
             await domain_client.save_message(session_id, "assistant", message)
 
+        # Build new_facts for the volunteer fact-store
+        response_new_facts = {}
+        if outcome == "nominated":
+            import datetime as _dt
+            response_new_facts = {
+                "teaching_consent": "confirmed",
+                "teaching_consent_at": _dt.datetime.utcnow().isoformat(),
+                "commitments": [{
+                    "need_id": sub_state.get("nominated_need_id"),
+                    "status": "nominated",
+                    "nominated_at": _dt.datetime.utcnow().isoformat(),
+                }],
+            }
+        elif outcome in ("human_review", "deferred"):
+            response_new_facts = {"teaching_consent": "pending"}
+        elif outcome == "declined":
+            response_new_facts = {"teaching_consent": "declined"}
+
         return self._build_response(message=message, state=new_state, sub_state=updated,
-                                     workflow=workflow, handoff_event=handoff_event)
+                                     workflow=workflow, handoff_event=handoff_event,
+                                     new_facts=response_new_facts)
 
     def _build_response(
         self,
@@ -343,6 +371,7 @@ class FulfillmentAgentService:
         auto_continue: bool = False,
         workflow: str = "returning_volunteer",
         handoff_event: Optional[Dict[str, Any]] = None,
+        new_facts: Optional[Dict[str, Any]] = None,
     ) -> FulfillmentAgentTurnResponse:
         return FulfillmentAgentTurnResponse(
             assistant_message=message,
@@ -351,6 +380,7 @@ class FulfillmentAgentService:
             workflow=workflow,
             state=state,
             sub_state=sub_state,
+            new_facts=new_facts or {},
         )
 
 

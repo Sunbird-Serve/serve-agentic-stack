@@ -14,6 +14,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Teaching language — configured per deployment
+TEACHING_LANGUAGE = os.environ.get("TEACHING_LANGUAGE", "English")
+
 
 SELECTION_TOOLS = [
     {
@@ -134,7 +137,7 @@ TOOL RULE:
 QUESTION GUIDANCE:
 - If motivation is missing, ask what draws them to volunteer with eVidyaloka.
 - If continuity intent is missing, ask how volunteering fits into the next few months.
-- If language comfort is missing, ask about comfort teaching or communicating in English/Hindi.
+- If language comfort is missing, ask about their comfort speaking, reading and writing in {teaching_lang}. Frame it as: "How comfortable are you communicating in {teaching_lang}?"
 - If availability is missing, ask what time they can realistically commit.
 - If readiness is missing, ask whether they can start soon or need more time.
 - If blockers are missing, ask if anything may make consistency difficult.
@@ -182,6 +185,7 @@ class SelectionLLMAdapter:
         return _SYSTEM_PROMPT_TEMPLATE.format(
             context_block=context_block,
             signals_block=signals_block,
+            teaching_lang=TEACHING_LANGUAGE,
         )
 
     async def run_selection_loop(

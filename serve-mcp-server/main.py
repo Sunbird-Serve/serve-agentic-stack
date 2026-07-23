@@ -2080,27 +2080,42 @@ from services.auth import validate_token
 
 async def _check_dashboard_auth(request: _Request) -> bool:
     """
-    Validate JWT and check for coordinator/admin roles.
-    Falls back to legacy API key check during migration.
+    Validate access to dashboard endpoints.
+    Accepts:
+    1. X-Admin-Token header matching DASHBOARD_API_KEY or ADMIN_TOKEN env var
+    2. Bearer token matching DASHBOARD_API_KEY (legacy)
+    3. JWT with coordinator/admin roles (Keycloak, if available)
     """
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        return False
+    import os
+    admin_token = os.environ.get("ADMIN_TOKEN", "")
 
-    token = auth_header[7:]
-
-    # First try JWT validation
-    try:
-        claims = await validate_token(auth_header)
-        allowed_roles = {"vCoordinator", "nCoordinator", "sAdmin", "nAdmin", "vAdmin"}
-        if any(role in claims.roles for role in allowed_roles):
+    # Check X-Admin-Token header (new simple auth)
+    x_admin_token = request.headers.get("X-Admin-Token", "")
+    if x_admin_token:
+        if (DASHBOARD_API_KEY and x_admin_token == DASHBOARD_API_KEY):
             return True
-    except Exception:
-        pass
+        if (admin_token and x_admin_token == admin_token):
+            return True
 
-    # Fallback: legacy static API key (remove after full migration)
-    if DASHBOARD_API_KEY and token == DASHBOARD_API_KEY:
-        return True
+    # Check Bearer token
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+
+        # Static API key check
+        if DASHBOARD_API_KEY and token == DASHBOARD_API_KEY:
+            return True
+        if admin_token and token == admin_token:
+            return True
+
+        # JWT validation (Keycloak)
+        try:
+            claims = await validate_token(auth_header)
+            allowed_roles = {"vCoordinator", "nCoordinator", "sAdmin", "nAdmin", "vAdmin"}
+            if any(role in claims.roles for role in allowed_roles):
+                return True
+        except Exception:
+            pass
 
     return False
 

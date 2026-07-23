@@ -736,6 +736,12 @@ class OnboardingAgentService:
         # Update stage-specific sub_state
         self._update_stage_specific_sub_state(current_state, request.user_message, sub_state)
 
+        # Persist motivation to profile if captured this turn
+        if sub_state.get("_save_motivation"):
+            motivation = sub_state.pop("_save_motivation")
+            await domain_client.save_confirmed_fields(request.session_id, {"motivation": motivation})
+            logger.info(f"[{request.session_id}] motivation saved to profile: {motivation[:50]}...")
+
         # Determine next state (deterministic)
         next_state, transition_reason = _determine_next_state(
             current_state=current_state,
@@ -862,6 +868,9 @@ class OnboardingAgentService:
 
             # new_facts for v2 orchestrator (fact-based routing)
             response_new_facts = onboarding_facts
+            # Include motivation so selection agent can pre-score it
+            if sub_state.get("welcome_response"):
+                response_new_facts["motivation"] = sub_state["welcome_response"]
 
         elif next_state == OnboardingState.HUMAN_REVIEW.value:
             completion_status = "review_pending"
@@ -908,9 +917,12 @@ class OnboardingAgentService:
 
     def _update_stage_specific_sub_state(self, current_state: str, user_message: str, sub_state: Dict[str, Any]) -> None:
         if current_state == OnboardingState.WELCOME.value:
-            # Capture the volunteer's motivation/intent response
+            # Capture the volunteer's motivation/intent response and persist it
             if sub_state.get("welcome_shown") and user_message and user_message not in ("__handoff__", "__auto_continue__"):
-                sub_state["welcome_response"] = user_message.strip()[:500]
+                motivation_text = user_message.strip()[:500]
+                sub_state["welcome_response"] = motivation_text
+                # Persist motivation to volunteer profile so selection can pre-score it
+                sub_state["_save_motivation"] = motivation_text
         if current_state == OnboardingState.ORIENTATION_VIDEO.value:
             # Any reply to the video message = acknowledged
             if user_message and user_message not in ("__handoff__", "__auto_continue__"):

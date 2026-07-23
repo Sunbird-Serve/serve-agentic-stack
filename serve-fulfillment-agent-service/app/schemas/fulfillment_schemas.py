@@ -66,6 +66,7 @@ class FulfillmentAgentTurnResponse(BaseModel):
     workflow: str                        # echoes session workflow (returning_volunteer or recommended_volunteer)
     state: str
     sub_state: Optional[str] = None
+    new_facts: Dict[str, Any] = Field(default_factory=dict)  # facts for orchestrator to merge
     telemetry_events: List[Dict[str, Any]] = Field(default_factory=list)
     handoff_event: Optional[Dict[str, Any]] = None
 

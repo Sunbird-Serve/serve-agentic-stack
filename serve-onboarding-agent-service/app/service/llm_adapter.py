@@ -119,7 +119,7 @@ Briefly acknowledge their motivation (1 sentence), then explain how eVidyaloka w
             field = pending_clarifications[0].replace("_clarification", "")
             clarifications = {
                 "age_18_plus": "Their previous answer about age was unclear. Ask gently: 'Just to confirm, are you 18 years or older?'",
-                "has_internet_and_device": "They seemed unsure about device/internet. Clarify warmly: 'A smartphone with mobile data works perfectly. Do you have any device with internet?'",
+                "has_internet_and_device": "They seemed unsure about device/internet. Clarify warmly: 'Do you have a laptop or computer with internet access for online classes?'",
                 "accepts_unpaid_role": "They seemed unsure about the volunteer nature. Clarify: 'This is a volunteer role — no payment, but a chance to make real impact. Are you comfortable with that?'",
             }
             return f"""{_BASE_CONTEXT}
@@ -140,16 +140,16 @@ CURRENT STAGE: Eligibility — Quick Check (Step 1/4)
 {motivation_context}
 
 Your task: Ask all three eligibility checks in ONE natural sentence:
-"Just a few quick things to confirm — you are 18 or older, have a device with internet (even a smartphone works), and you are comfortable this is a volunteer, unpaid role. All good?"
+"Just a few quick things to confirm — you are 18 or older, have a laptop or computer with internet access, and you are comfortable this is a volunteer, unpaid role. All good?"
 
-Keep it to 1-2 sentences. Do NOT ask for name, email, or phone.
+Keep it to 1-2 sentences. Do NOT ask for name, email, or phone. Do NOT mention smartphones.
 Your ENTIRE response is this one bundled question."""
 
         # Individual fallback (if bundled "no" was given or partial)
         if eligibility.get("age_18_plus") is not True:
             question = "Are you 18 years of age or older?"
         elif eligibility.get("has_internet_and_device") is not True:
-            question = "Do you have a device (laptop, tablet, or smartphone) with internet access?"
+            question = "Do you have a laptop or computer with internet access for online classes?"
         elif eligibility.get("accepts_unpaid_role") is not True:
             question = "This is a volunteer, unpaid role — are you comfortable with that?"
         else:

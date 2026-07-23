@@ -99,6 +99,39 @@ export function useConversation(sessionId, onSessionCreated) {
           },
         };
         setMessages((prev) => [...prev, assistantMsg]);
+
+        // Handle auto_continue — agent wants a follow-up turn without user input
+        if (response.auto_continue) {
+          const followupResponse = await orchestratorApi.interact(
+            sessionIdRef.current,
+            '__auto_continue__',
+            'web_ui',
+            getOrchestratorPersona()
+          );
+          if (followupResponse.preliminary_message) {
+            const prelimMsg2 = {
+              id: `progress-follow-${Date.now()}`,
+              role: 'assistant',
+              content: followupResponse.preliminary_message,
+              timestamp: new Date().toISOString(),
+              metadata: { type: 'progress' },
+            };
+            setMessages((prev) => [...prev, prelimMsg2]);
+          }
+          if (followupResponse.assistant_message) {
+            const followupMsg = {
+              id: `assistant-follow-${Date.now()}`,
+              role: 'assistant',
+              content: followupResponse.assistant_message,
+              timestamp: new Date().toISOString(),
+              metadata: {
+                agent: followupResponse.active_agent,
+                state: followupResponse.state,
+              },
+            };
+            setMessages((prev) => [...prev, followupMsg]);
+          }
+        }
       } catch (error) {
         console.error('Failed to send message:', error);
         const errorMsg = {

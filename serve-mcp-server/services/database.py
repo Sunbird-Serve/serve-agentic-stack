@@ -88,6 +88,7 @@ class Session(Base):
     last_message_at  = Column(DateTime,    nullable=True)
     # Link to persistent volunteer record (populated once volunteer is identified)
     platform_volunteer_id = Column(PGUUID(as_uuid=True), ForeignKey("volunteers.id"), nullable=True)
+    do_not_disturb   = Column(Boolean,     nullable=False, default=False)  # volunteer asked for no nudges
     created_at       = Column(DateTime,    default=datetime.utcnow, nullable=False)
     updated_at       = Column(DateTime,    default=datetime.utcnow, nullable=False)
 
@@ -296,6 +297,30 @@ class Volunteer(Base):
         sqlalchemy.Index("ix_volunteers_email", "email", unique=True, postgresql_where=text("email IS NOT NULL")),
         sqlalchemy.Index("ix_volunteers_phone", "phone", postgresql_where=text("phone IS NOT NULL")),
         sqlalchemy.Index("ix_volunteers_serve_id", "serve_registry_id", postgresql_where=text("serve_registry_id IS NOT NULL")),
+    )
+
+
+class NudgeQueue(Base):
+    """
+    Scheduled nudge/reminder messages for inactive sessions.
+    Only applies to WhatsApp channel. Sent by the background scheduler.
+    """
+    __tablename__ = "nudge_queue"
+
+    id              = Column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id      = Column(PGUUID(as_uuid=True), ForeignKey("sessions.id"), nullable=False)
+    volunteer_phone = Column(String(50),  nullable=False)   # WhatsApp number to send to
+    volunteer_name  = Column(String(255), nullable=True)    # for personalizing the message
+    nudge_number    = Column(Integer,     nullable=False)   # 1, 2, or 3
+    scheduled_at    = Column(DateTime,    nullable=False)   # when to send
+    sent_at         = Column(DateTime,    nullable=True)    # null until sent
+    response        = Column(String(50),  nullable=True)    # continue | later | stop | null
+    cancelled       = Column(Boolean,     nullable=False, default=False)
+    created_at      = Column(DateTime,    default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        sqlalchemy.Index("ix_nudge_queue_scheduled", "scheduled_at", postgresql_where=text("sent_at IS NULL AND cancelled = false")),
+        sqlalchemy.Index("ix_nudge_queue_session", "session_id"),
     )
 
 
@@ -614,6 +639,15 @@ async def init_db():
         logger.info("Migration applied: ix_telemetry_volunteer index created")
     except Exception as e:
         logger.info(f"Migration ix_telemetry_volunteer skipped: {e}")
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS do_not_disturb BOOLEAN DEFAULT false"
+            ))
+        logger.info("Migration applied: sessions.do_not_disturb column added")
+    except Exception as e:
+        logger.info(f"Migration do_not_disturb skipped: {e}")
 
     logger.info("Database tables initialised")
 
