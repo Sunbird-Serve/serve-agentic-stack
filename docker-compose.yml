@@ -4,34 +4,16 @@
 version: '3.8'
 
 services:
-  # PostgreSQL Database
-  postgres:
-    image: postgres:15-alpine
-    container_name: serve-postgres
-    environment:
-      POSTGRES_USER: serve
-      POSTGRES_PASSWORD: servepassword
-      POSTGRES_DB: serve_db
-    ports:
-      - "5433:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U serve -d serve_db"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - serve-network
-
   # MCP Server (Model Context Protocol) - Port 8004
   serve-mcp-server:
     build:
       context: ./serve-mcp-server
       dockerfile: Dockerfile
     container_name: serve-mcp-server
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://serve:servepassword@postgres:5432/serve_db
+      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://serve:servepassword@host.docker.internal:5432/serve_ai_db}
       - PORT=8004
       - DASHBOARD_API_KEY=${DASHBOARD_API_KEY:-serve-dashboard-secret-2026}
       - ADMIN_TOKEN=${ADMIN_TOKEN:-serve-admin-2026}
@@ -43,9 +25,6 @@ services:
       - ORCHESTRATOR_URL=http://serve-orchestrator:8001
     ports:
       - "8004:8004"
-    depends_on:
-      postgres:
-        condition: service_healthy
     networks:
       - serve-network
 
@@ -309,10 +288,6 @@ services:
       - serve-orchestrator
     networks:
       - serve-network
-
-volumes:
-  postgres_data:
-    driver: local
 
 networks:
   serve-network:
