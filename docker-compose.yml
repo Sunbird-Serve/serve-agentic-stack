@@ -292,4 +292,4 @@ services:
 networks:
   serve-network:
     name: serve-network
-    driver: bridge
+    external: true
