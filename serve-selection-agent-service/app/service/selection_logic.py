@@ -195,12 +195,13 @@ def _merge_llm_signals(sub_state: Dict[str, Any], tool_input: Dict[str, Any]) ->
 
 def _next_question(sub_state: Dict[str, Any]) -> Optional[str]:
     signals = sub_state.get("signals") or {}
+    asked = sub_state.get("asked_questions") or []
     for key in QUESTION_ORDER:
         if key == "blockers":
-            if not signals.get("blockers") and "blockers" not in sub_state.get("asked_questions", []):
+            if not signals.get("blockers") and "blockers" not in asked:
                 return key
             continue
-        if signals.get(key) is None:
+        if signals.get(key) is None and key not in asked:
             return key
     return None
 

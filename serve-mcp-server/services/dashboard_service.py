@@ -33,19 +33,59 @@ VOLUNTEER_STAGE_ORDER = [
 
 async def _get_registry_status_counts() -> Dict[str, int]:
     """
-    Fetch volunteer counts by status from the Serve Registry.
-    Returns counts for Registered, Recommended, and OnHold.
-    Falls back to zeros on failure (non-critical for dashboard).
+    Count volunteers by status using local session + selection outcome data.
+    Avoids calling the external registry (which may be unreliable).
+    
+    - Registered: sessions that reached onboarding_complete stage
+    - Recommended: sessions where selection outcome = recommended
+    - OnHold: sessions where selection outcome = engagement_later/not_matched/human_review
     """
     try:
-        from services.serve_registry_client import volunteering_client
-        counts = {"Registered": 0, "Recommended": 0, "OnHold": 0}
-        for status in counts:
-            users = await volunteering_client.lookup_by_status(status)
-            counts[status] = len(users) if isinstance(users, list) else 0
-        return counts
+        async with get_db() as db:
+            # Registered = completed onboarding (reached onboarding_complete or beyond)
+            registered = (await db.execute(
+                select(func.count()).select_from(DBSession)
+                .where(DBSession.stage.in_([
+                    "onboarding_complete", "selection_conversation",
+                    "gathering_preferences", "re_engaging",
+                    "matching_ready", "active", "complete",
+                ]))
+            )).scalar() or 0
+
+            # Recommended/OnHold: parse from sub_state JSON where selection outcome is stored
+            # Selection outcomes are stored in sessions that passed through selection
+            from sqlalchemy import cast, String
+            selection_sessions = (await db.execute(
+                select(DBSession.sub_state)
+                .where(
+                    and_(
+                        DBSession.sub_state.isnot(None),
+                        or_(
+                            DBSession.active_agent == "selection",
+                            DBSession.active_agent == "engagement",
+                            DBSession.active_agent == "fulfillment",
+                        ),
+                    )
+                )
+            )).all()
+
+            recommended = 0
+            on_hold = 0
+            for row in selection_sessions:
+                try:
+                    import json as _json
+                    ss = _json.loads(row.sub_state) if row.sub_state else {}
+                    outcome = ss.get("outcome") or ss.get("handoff", {}).get("selection_outcome", "")
+                    if outcome == "recommended":
+                        recommended += 1
+                    elif outcome in ("engagement_later", "not_matched", "human_review"):
+                        on_hold += 1
+                except Exception:
+                    pass
+
+            return {"Registered": registered, "Recommended": recommended, "OnHold": on_hold}
     except Exception as e:
-        logger.warning(f"Failed to fetch registry status counts: {e}")
+        logger.warning(f"Failed to compute registry status counts: {e}")
         return {"Registered": 0, "Recommended": 0, "OnHold": 0}
 
 
