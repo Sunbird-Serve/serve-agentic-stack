@@ -1,0 +1,365 @@
+# ==============================================================================
+# Onboarding Agent — Golden Test Cases
+#
+# Structured scenarios for evaluating the onboarding agent's deterministic logic.
+# Each case specifies inputs and expected outputs for automated testing.
+# ==============================================================================
+
+# ─── Profile Extraction ───────────────────────────────────────────────────────
+
+profile_extraction:
+  names:
+    - input: "My name is Sowmya Raghuram"
+      expected: "Sowmya Raghuram"
+      tag: english_signal
+
+    - input: "I'm Asha Devi Sharma"
+      expected: "Asha Devi Sharma"
+      tag: english_contraction
+
+    - input: "Mera naam Ravi Kumar hai"
+      expected: "Ravi Kumar"
+      tag: hindi_signal
+
+    - input: "naam hai Priya Singh"
+      expected: "Priya Singh"
+      tag: hindi_short
+
+    - input: "Call me Rajesh Patel"
+      expected: "Rajesh Patel"
+      tag: english_call_me
+
+    - input: "Anjali Gupta here"
+      expected: "Anjali Gupta"
+      tag: here_suffix
+
+    - input: "Hi, I want to teach English"
+      expected: null
+      tag: no_name_greeting
+
+    - input: "yes"
+      expected: null
+      tag: no_name_yes
+
+    - input: "My name is Sowmya Raghuram, sowmya@gmail.com, 7760131253"
+      expected: "Sowmya Raghuram"
+      tag: batched_response
+
+    - input: "This is Dr Meena Kumari"
+      expected: "Meena Kumari"
+      tag: title_stripped
+
+    - input: "I am Rekha"
+      expected: null
+      tag: single_word_rejected
+
+    - input: "Name: Vikram Reddy"
+      expected: "Vikram Reddy"
+      tag: colon_format
+
+  emails:
+    - input: "My email is sowmya.r@gmail.com"
+      expected: "sowmya.r@gmail.com"
+
+    - input: "sowmya@gmal.com"
+      expected: "sowmya@gmal.com"
+      tag: typo_still_extracted
+
+    - input: "reach me at test.user+vol@outlook.co.in"
+      expected: "test.user+vol@outlook.co.in"
+
+    - input: "I don't have email"
+      expected: null
+
+    - input: "hello world"
+      expected: null
+
+  phones:
+    - input: "7760131253"
+      expected: "7760131253"
+      tag: bare_10_digit
+
+    - input: "my number is +91 7760131253"
+      expected: "+917760131253"
+      tag: with_country_code
+
+    - input: "call me on 776-013-1253"
+      expected: "7760131253"
+      tag: dashed_format
+
+    - input: "1234567890"
+      expected: null
+      tag: sequential_rejected
+
+    - input: "1111111111"
+      expected: null
+      tag: all_same_rejected
+
+    - input: "hi there"
+      expected: null
+      tag: no_phone
+
+  email_typos:
+    - input: "user@gmal.com"
+      expected_suggestion: "user@gmail.com"
+
+    - input: "user@gmial.com"
+      expected_suggestion: "user@gmail.com"
+
+    - input: "user@yahoo.co"
+      expected_suggestion: "user@yahoo.com"
+
+    - input: "user@gmail.com"
+      expected_suggestion: null
+
+    - input: "user@hotmal.com"
+      expected_suggestion: "user@hotmail.com"
+
+# ─── Eligibility Logic ────────────────────────────────────────────────────────
+
+eligibility:
+  bundled_responses:
+    - input: "Yes, all good"
+      expected_all_pass: true
+      tag: affirmative_bundled
+
+    - input: "Haan ji"
+      expected_all_pass: true
+      tag: hindi_bundled
+
+    - input: "Sure, I confirm all three"
+      expected_all_pass: true
+      tag: explicit_confirm
+
+    - input: "No"
+      expected_all_pass: false
+      tag: explicit_no_falls_to_individual
+
+    - input: "I'm not sure about the unpaid part"
+      expected_all_pass: false
+      tag: partial_concern
+
+  individual_age:
+    - input: "Yes I am 25"
+      expected: true
+      tag: explicit_yes_with_age
+
+    - input: "I'm 17"
+      expected: false
+      tag: underage_number
+
+    - input: "No I am under 18"
+      expected: false
+      tag: explicit_under_18
+
+    - input: "I am an adult"
+      expected: true
+      tag: adult_keyword
+
+  video_acknowledgement:
+    - input: "Done watching"
+      expected: true
+
+    - input: "Wow that was nice"
+      expected: true
+
+    - input: "Accha, badhiya"
+      expected: true
+
+    - input: "Let's go"
+      expected: true
+
+    - input: "Ready to continue"
+      expected: true
+
+# ─── State Transitions ────────────────────────────────────────────────────────
+
+state_transitions:
+  - description: "Welcome first turn shows welcome"
+    current_state: "welcome"
+    sub_state:
+      welcome_shown: false
+    user_message: "Hello"
+    expected_next_state: "welcome"
+    expected_reason_contains: "welcome"
+
+  - description: "Welcome second turn moves to orientation"
+    current_state: "welcome"
+    sub_state:
+      welcome_shown: true
+    user_message: "I want to teach children"
+    expected_next_state: "orientation_video"
+    expected_reason_contains: "orientation"
+
+  - description: "Orientation with video ack moves to eligibility"
+    current_state: "orientation_video"
+    sub_state:
+      video_acknowledged: true
+    user_message: "Ready"
+    expected_next_state: "eligibility_screening"
+    expected_reason_contains: "eligibility"
+
+  - description: "Eligibility all passed moves to contact capture"
+    current_state: "eligibility_screening"
+    sub_state:
+      eligibility:
+        age_18_plus: true
+        has_internet_and_device: true
+        accepts_unpaid_role: true
+    user_message: "yes"
+    expected_next_state: "contact_capture"
+    expected_reason_contains: "passed"
+
+  - description: "Eligibility failed routes to human review"
+    current_state: "eligibility_screening"
+    sub_state:
+      eligibility:
+        age_18_plus: false
+        has_internet_and_device: null
+        accepts_unpaid_role: null
+    user_message: "no"
+    expected_next_state: "human_review"
+    expected_reason_contains: "not met"
+
+  - description: "Contact capture complete moves to registration review"
+    current_state: "contact_capture"
+    confirmed_fields:
+      full_name: "Sowmya Raghuram"
+      email: "sowmya@gmail.com"
+      phone: "7760131253"
+    user_message: "that's all"
+    expected_next_state: "registration_review"
+    expected_reason_contains: "captured"
+
+  - description: "Registration review confirmed moves to complete"
+    current_state: "registration_review"
+    confirmed_fields:
+      full_name: "Sowmya Raghuram"
+      email: "sowmya@gmail.com"
+      phone: "7760131253"
+    sub_state:
+      eligibility:
+        age_18_plus: true
+        has_internet_and_device: true
+        accepts_unpaid_role: true
+    user_message: "Yes, looks correct"
+    expected_next_state: "onboarding_complete"
+    expected_reason_contains: "confirmed"
+
+  - description: "Pause from eligibility"
+    current_state: "eligibility_screening"
+    user_message: "I'm busy, pause for now"
+    expected_next_state: "paused"
+    expected_reason_contains: "pause"
+
+  - description: "Resume from paused"
+    current_state: "paused"
+    sub_state:
+      resume_stage: "eligibility_screening"
+    user_message: "I'm back, ready to continue"
+    expected_next_state: "eligibility_screening"
+    expected_reason_contains: "resumed"
+
+  - description: "Edit from registration review"
+    current_state: "registration_review"
+    user_message: "I want to change my email"
+    expected_next_state: "contact_capture"
+    expected_reason_contains: "update"
+
+# ─── Cross-Domain Signals ─────────────────────────────────────────────────────
+
+cross_domain_signals:
+  - input: "I want to teach English on weekends"
+    expected_preferences:
+      subjects: ["english"]
+      days: ["saturday", "sunday"]
+
+  - input: "I can teach math on Saturday mornings"
+    expected_preferences:
+      subjects: ["mathematics"]
+      days: ["saturday"]
+      time: "morning"
+
+  - input: "Interested in science for grade 7 and 8"
+    expected_preferences:
+      subjects: ["science"]
+      grades: ["7", "8"]
+
+  - input: "Hello, I want to volunteer"
+    expected_preferences: {}
+
+  - input: "Hindi and English both, evenings preferred"
+    expected_preferences:
+      subjects: ["english", "hindi"]
+      time: "evening"
+
+# ─── Integration Scenarios (Full Turn) ────────────────────────────────────────
+
+integration_scenarios:
+  happy_path:
+    description: "Complete journey from welcome to handoff"
+    turns:
+      - stage: "welcome"
+        sub_state: {welcome_shown: false}
+        user_message: "__handoff__"
+        expect_state: "welcome"
+        expect_fields_saved: []
+
+      - stage: "welcome"
+        sub_state: {welcome_shown: true}
+        user_message: "I want to teach English to kids"
+        expect_state: "orientation_video"
+        expect_fields_saved: []
+
+      - stage: "orientation_video"
+        sub_state: {video_acknowledged: false}
+        user_message: "Nice video, ready to continue"
+        expect_state: "eligibility_screening"
+        expect_fields_saved: []
+
+      - stage: "eligibility_screening"
+        sub_state: {eligibility_bundled_asked: true, eligibility: {age_18_plus: null, has_internet_and_device: null, accepts_unpaid_role: null}}
+        user_message: "Yes, all good"
+        expect_state: "contact_capture"
+        expect_fields_saved: []
+
+      - stage: "contact_capture"
+        sub_state: {eligibility: {age_18_plus: true, has_internet_and_device: true, accepts_unpaid_role: true}}
+        user_message: "My name is Sowmya Raghuram, sowmya@gmail.com, 7760131253"
+        expect_state: "registration_review"
+        expect_fields_saved: ["full_name", "email", "phone"]
+
+      - stage: "registration_review"
+        sub_state: {eligibility: {age_18_plus: true, has_internet_and_device: true, accepts_unpaid_role: true}}
+        confirmed_fields: {full_name: "Sowmya Raghuram", email: "sowmya@gmail.com", phone: "7760131253"}
+        user_message: "Yes, looks correct"
+        expect_state: "onboarding_complete"
+        expect_handoff: true
+
+  whatsapp_phone_auto:
+    description: "Phone auto-populated from WhatsApp — never asked"
+    turns:
+      - stage: "contact_capture"
+        sub_state: {eligibility: {age_18_plus: true, has_internet_and_device: true, accepts_unpaid_role: true}}
+        channel_metadata: {volunteer_phone: "9876543210"}
+        user_message: "I'm Asha Devi, asha@gmail.com"
+        expect_state: "registration_review"
+        expect_fields_saved: ["full_name", "email"]
+
+  eligibility_fail:
+    description: "Underage volunteer → transparent human_review"
+    turns:
+      - stage: "eligibility_screening"
+        sub_state: {eligibility_bundled_asked: true, eligibility: {age_18_plus: null, has_internet_and_device: null, accepts_unpaid_role: null}}
+        user_message: "No, I'm 16"
+        expect_state: "eligibility_screening"
+        note: "First no → pending, stays in stage for clarification"
+
+  email_typo:
+    description: "Email typo detected — agent asks to confirm"
+    turns:
+      - stage: "contact_capture"
+        sub_state: {eligibility: {age_18_plus: true, has_internet_and_device: true, accepts_unpaid_role: true}}
+        user_message: "I'm Priya Singh, priya@gmal.com, 8888777766"
+        expect_state: "contact_capture"
+        note: "Email not saved due to typo detection — LLM asks for confirmation"

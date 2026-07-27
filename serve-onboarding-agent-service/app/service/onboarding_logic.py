@@ -996,11 +996,11 @@ class OnboardingAgentService:
         time_match = re.search(r"\b(\d{1,2})\s*(?:am|pm)\s*(?:to|-)\s*(\d{1,2})\s*(?:am|pm)\b", lower)
         if time_match:
             preferences["time"] = time_match.group(0)
-        elif re.search(r"\bmorning\b", lower):
+        elif re.search(r"\bmornings?\b", lower):
             preferences["time"] = "morning"
-        elif re.search(r"\bevening\b", lower):
+        elif re.search(r"\bevenings?\b", lower):
             preferences["time"] = "evening"
-        elif re.search(r"\bafternoon\b", lower):
+        elif re.search(r"\bafternoons?\b", lower):
             preferences["time"] = "afternoon"
 
         # Grade preferences
