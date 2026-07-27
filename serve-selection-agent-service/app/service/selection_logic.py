@@ -283,6 +283,7 @@ class SelectionAgentService:
         next_question_key = _next_question(sub_state)
         if next_question_key and not (sub_state.get("signals") or {}).get("risk_signals"):
             fallback_question = QUESTION_PROMPTS[next_question_key]
+            originally_asked_key = next_question_key  # Track what we're actually asking
 
             messages = list(request.conversation_history[-12:])
             if request.user_message and request.user_message not in ("__handoff__", "__auto_continue__"):
@@ -338,7 +339,11 @@ class SelectionAgentService:
             if next_question_key != "none" and next_question_key not in QUESTION_PROMPTS:
                 next_question_key = _next_question(sub_state) or "none"
 
-            if next_question_key != "none" and next_question_key not in sub_state["asked_questions"]:
+            # Always mark the originally asked question as asked
+            if originally_asked_key not in sub_state["asked_questions"]:
+                sub_state["asked_questions"].append(originally_asked_key)
+            # Also mark the LLM-suggested next key if different
+            if next_question_key != "none" and next_question_key != originally_asked_key and next_question_key not in sub_state["asked_questions"]:
                 sub_state["asked_questions"].append(next_question_key)
             updated_sub_state = dump_selection_sub_state(sub_state)
             await domain_client.advance_state(
