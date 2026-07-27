@@ -513,6 +513,31 @@ class VolunteeringClient:
         result = await _request("PUT", url, json=payload)
         return result is not None
 
+    async def update_volunteer_status(
+        self,
+        volunteer_id: str,
+        status: str,
+    ) -> bool:
+        """
+        PUT /user/{volunteer_id}
+        Updates the volunteer's status in Serve Registry.
+        Valid values: Registered, Recommended, OnHold, Active, Inactive, Rejected.
+        """
+        valid_statuses = {"Registered", "Recommended", "OnHold", "Active", "Inactive", "Rejected"}
+        if status not in valid_statuses:
+            logger.error(f"[serve_registry] Invalid status '{status}'. Must be one of {valid_statuses}")
+            return False
+
+        url = f"{VOLUNTEERING_SERVICE_URL}/user/{volunteer_id}"
+        payload = {"status": status}
+        logger.info(f"[serve_registry] Updating volunteer {volunteer_id} status → {status}")
+        result = await _request("PUT", url, json=payload)
+        if result is not None:
+            logger.info(f"[serve_registry] Volunteer {volunteer_id} status updated to {status}")
+            return True
+        logger.warning(f"[serve_registry] Failed to update volunteer {volunteer_id} status to {status}")
+        return False
+
     # ── Normalisation helpers ─────────────────────────────────────────────────
 
     def _normalise_user(self, raw: Dict) -> Dict:

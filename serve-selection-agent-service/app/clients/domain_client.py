@@ -108,5 +108,19 @@ class DomainClient:
             },
         )
 
+    async def update_volunteer_registry_status(
+        self,
+        volunteer_id: str,
+        status: str,
+    ) -> Dict[str, Any]:
+        """Update volunteer status in Serve Registry (Recommended or OnHold)."""
+        return await _call_mcp_tool(
+            "update_volunteer_registry_status",
+            {
+                "volunteer_id": volunteer_id,
+                "status": status,
+            },
+        )
+
 
 domain_client = DomainClient()

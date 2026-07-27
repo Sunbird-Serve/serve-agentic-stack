@@ -6,12 +6,11 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   RefreshCw, Users, UserCheck, Clock, CheckCircle2, AlertTriangle,
   ArrowRight, ChevronLeft, ChevronRight, TrendingUp,
-  XCircle, Handshake, Timer, BarChart3,
+  Handshake, BarChart3,
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
-import { Input } from '../components/ui/input';
 import { dashboardApi } from '../services/api';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -584,9 +583,9 @@ export const OpsView = () => {
           <KpiCard label="Total Volunteers" value={stats.sessions?.total || 0} icon={Users} color="bg-blue-50" iconColor="text-blue-600" />
           <KpiCard label="New This Week" value={stats.sessions?.this_week || 0} icon={TrendingUp} color="bg-violet-50" iconColor="text-violet-600" />
           <KpiCard label="Active Now" value={stats.sessions?.active || 0} icon={Clock} color="bg-emerald-50" iconColor="text-emerald-600" />
-          <KpiCard label="Fully Placed" value={classified.fulfillment.nominated} icon={Handshake} color="bg-teal-50" iconColor="text-teal-600" />
-          <KpiCard label="Avg Placement" value={classified.avgPlacementDays !== null ? `${classified.avgPlacementDays}d` : '—'} icon={Timer} color="bg-cyan-50" iconColor="text-cyan-600" sub="days to nomination" />
-          <KpiCard label="Drop-off Rate" value={`${classified.dropOffRate}%`} icon={XCircle} color="bg-red-50" iconColor="text-red-500" sub="didn't reach fulfillment" />
+          <KpiCard label="Registered" value={stats.registry_status?.Registered || 0} icon={UserCheck} color="bg-cyan-50" iconColor="text-cyan-600" sub="in Serve Registry" />
+          <KpiCard label="Recommended" value={stats.registry_status?.Recommended || 0} icon={CheckCircle2} color="bg-emerald-50" iconColor="text-emerald-600" sub="selection passed" />
+          <KpiCard label="On Hold" value={stats.registry_status?.OnHold || 0} icon={AlertTriangle} color="bg-amber-50" iconColor="text-amber-600" sub="deferred / not matched" />
         </div>
 
         {/* Section 2: Pipeline Funnel */}

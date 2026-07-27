@@ -1945,7 +1945,7 @@ async def delivery_write_delivery_summary(params: DeliveryWriteDeliverySummaryIn
 from schemas import (
     FindVolunteerInput, CreateVolunteerInput,
     MergeVolunteerFactsInput, GetVolunteerFactsInput,
-    CheckVolunteerCredentialInput,
+    CheckVolunteerCredentialInput, UpdateVolunteerRegistryStatusInput,
 )
 
 
@@ -2063,6 +2063,33 @@ async def check_volunteer_credential(params: CheckVolunteerCredentialInput) -> d
         "has_credential": has_it,
         "credential": credential,
     }
+
+
+@mcp.tool()
+async def update_volunteer_registry_status(params: UpdateVolunteerRegistryStatusInput) -> dict:
+    """
+    Update a volunteer's status in the external Serve Registry.
+    Called after selection evaluation to mark volunteer as Recommended or OnHold.
+
+    Args:
+        volunteer_id: Serve Registry volunteer osid (the external registry ID, not platform UUID)
+        status: New status — must be 'Recommended' or 'OnHold'
+
+    Returns:
+        success (bool) and the applied status
+    """
+    allowed = {"Recommended", "OnHold"}
+    if params.status not in allowed:
+        return {"status": "error", "error": f"Status must be one of {allowed}, got '{params.status}'"}
+
+    from services.serve_registry_client import volunteering_client
+    success = await volunteering_client.update_volunteer_status(
+        volunteer_id=params.volunteer_id,
+        status=params.status,
+    )
+    if success:
+        return {"status": "success", "volunteer_id": params.volunteer_id, "new_status": params.status}
+    return {"status": "error", "error": f"Failed to update volunteer {params.volunteer_id} status to {params.status}"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

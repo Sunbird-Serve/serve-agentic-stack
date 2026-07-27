@@ -1181,3 +1181,9 @@ class CheckVolunteerCredentialInput(BaseModel):
     volunteer_id: str = Field(description="Platform volunteer UUID")
     category: str = Field(description="Credential category (e.g., english_teaching, hindi_teaching)")
     required_status: str = Field(default="recommended", description="Required status to pass the check")
+
+
+class UpdateVolunteerRegistryStatusInput(BaseModel):
+    """Update a volunteer's status in the Serve Registry."""
+    volunteer_id: str = Field(description="Serve Registry volunteer osid (not platform UUID)")
+    status: str = Field(description="New status: Recommended or OnHold")

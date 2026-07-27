@@ -1131,6 +1131,122 @@ class OrchestrationService:
             agent=agent_response.active_agent.value,
         )
 
+        # Step 9b: Handle handoff if present (transition to next agent)
+        if agent_response.handoff_event:
+            handoff = agent_response.handoff_event
+            to_agent = handoff.to_agent.value if hasattr(handoff.to_agent, 'value') else str(handoff.to_agent)
+
+            # Emit handoff event for audit trail
+            await domain_client.emit_handoff_event(
+                session_id=session_context.session_id,
+                from_agent=handoff.from_agent.value if hasattr(handoff.from_agent, 'value') else str(handoff.from_agent),
+                to_agent=to_agent,
+                handoff_type=handoff.handoff_type.value if hasattr(handoff.handoff_type, 'value') else str(handoff.handoff_type),
+                payload=handoff.payload if hasattr(handoff, 'payload') else {},
+                reason=handoff.reason if hasattr(handoff, 'reason') else None,
+            )
+
+            # Persist active_agent transition + handoff sub_state
+            handoff_payload = handoff.payload if hasattr(handoff, 'payload') else {}
+            target_sub_state = handoff_payload.get("target_sub_state") if isinstance(handoff_payload, dict) else None
+            handoff_sub_state_str = (
+                json.dumps(target_sub_state) if isinstance(target_sub_state, dict)
+                else target_sub_state if isinstance(target_sub_state, str)
+                else json.dumps({"handoff": handoff_payload}) if handoff_payload
+                else agent_response.sub_state
+            )
+
+            await domain_client.advance_state(
+                session_id=session_context.session_id,
+                new_state=agent_response.state,
+                active_agent=to_agent,
+                sub_state=handoff_sub_state_str,
+            )
+            logger.info(
+                f"[fact-routing] Handoff: active_agent → {to_agent!r}, "
+                f"state={agent_response.state}"
+            )
+
+            # Auto-invoke the target agent so volunteer gets immediate response
+            auto_session_state = SessionState(
+                id=session_context.session_id,
+                channel=session_context.channel,
+                persona=session_context.persona,
+                workflow=session_context.workflow,
+                active_agent=to_agent,
+                status=session_context.status,
+                stage=agent_response.state,
+                sub_state=handoff_sub_state_str,
+                volunteer_id=_safe_uuid(session_context.volunteer_id),
+                volunteer_name=volunteer.get("full_name"),
+                volunteer_phone=volunteer.get("phone"),
+                channel_metadata=event.raw_metadata if event.raw_metadata else None,
+            )
+
+            auto_request = AgentTurnRequest(
+                session_id=session_context.session_id,
+                session_state=auto_session_state,
+                user_message="__handoff__",
+                conversation_history=[],
+                intent_hint="continue_workflow",
+                channel_metadata=event.raw_metadata if event.raw_metadata else None,
+                volunteer_facts=facts,
+            )
+
+            auto_routing = RoutingDecision(
+                target_agent=to_agent,
+                confidence=1.0,
+                reason=f"Auto-invoke after handoff from {gap.next_agent}",
+                routing_context={"decision_type": "handoff_auto_invoke"},
+            )
+
+            try:
+                auto_response = await agent_router.invoke_agent(auto_routing, auto_request)
+                if auto_response and auto_response.assistant_message:
+                    # Save the auto-invoked agent's message
+                    await domain_client.save_message(
+                        session_id=session_context.session_id,
+                        role="assistant",
+                        content=auto_response.assistant_message,
+                        agent=auto_response.active_agent.value,
+                    )
+                    # Persist auto-invoked agent's state
+                    if auto_response.state:
+                        await domain_client.advance_state(
+                            session_id=session_context.session_id,
+                            new_state=auto_response.state,
+                            sub_state=auto_response.sub_state,
+                        )
+                    # Combine messages for the response
+                    combined_message = (
+                        f"{agent_response.assistant_message}\n\n"
+                        f"{auto_response.assistant_message}"
+                    )
+                    return InteractionResponse(
+                        session_id=session_context.session_id,
+                        assistant_message=combined_message,
+                        active_agent=auto_response.active_agent,
+                        workflow=auto_response.workflow,
+                        state=auto_response.state,
+                        sub_state=auto_response.sub_state,
+                        status=SessionStatus.ACTIVE,
+                        is_complete=False,
+                        journey_progress={
+                            "routing": "fact_based",
+                            "gap_agent": gap.next_agent,
+                            "handoff_to": to_agent,
+                            "desired_action": desired_action,
+                        },
+                        debug_info={
+                            "routing_path": "fact_based_v2_handoff",
+                            "volunteer_id": vol_id,
+                            "handoff": f"{gap.next_agent} → {to_agent}",
+                            "timing_ms": duration_ms,
+                        },
+                    )
+            except Exception as exc:
+                logger.warning(f"[fact-routing] Auto-invoke of {to_agent} failed: {exc}")
+
         # Step 10: Build and return response (NO auto-invoke of next agent)
         return InteractionResponse(
             session_id=session_context.session_id,

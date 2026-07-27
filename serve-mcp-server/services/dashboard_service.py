@@ -31,6 +31,24 @@ VOLUNTEER_STAGE_ORDER = [
 ]
 
 
+async def _get_registry_status_counts() -> Dict[str, int]:
+    """
+    Fetch volunteer counts by status from the Serve Registry.
+    Returns counts for Registered, Recommended, and OnHold.
+    Falls back to zeros on failure (non-critical for dashboard).
+    """
+    try:
+        from services.serve_registry_client import volunteering_client
+        counts = {"Registered": 0, "Recommended": 0, "OnHold": 0}
+        for status in counts:
+            users = await volunteering_client.lookup_by_status(status)
+            counts[status] = len(users) if isinstance(users, list) else 0
+        return counts
+    except Exception as e:
+        logger.warning(f"Failed to fetch registry status counts: {e}")
+        return {"Registered": 0, "Recommended": 0, "OnHold": 0}
+
+
 async def get_dashboard_stats(page: int = 1, page_size: int = 25) -> Dict[str, Any]:
     """Return aggregated stats for the tech dashboard with pagination."""
     from services.database import check_db_health
@@ -239,6 +257,7 @@ async def get_dashboard_stats(page: int = 1, page_size: int = 25) -> Dict[str, A
                         "draft":        draft_needs,
                         "by_status":    needs_by_status,
                     },
+                    "registry_status": await _get_registry_status_counts(),
                 },
                 "recent_sessions": recent_sessions,
                 "sessions_pagination": {

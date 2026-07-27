@@ -8,11 +8,15 @@ engagement for downstream preference capture.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.clients.domain_client import domain_client
+
+logger = logging.getLogger(__name__)
 from app.schemas.selection_schemas import (
     AgentTurnRequest,
     AgentTurnResponse,
@@ -405,6 +409,22 @@ class SelectionAgentService:
                 },
             )
 
+        # Update volunteer status in Serve Registry
+        registry_vol_id = str(request.session_state.volunteer_id) if request.session_state.volunteer_id else None
+        if registry_vol_id:
+            registry_status = (
+                "Recommended" if evaluation.outcome == SelectionOutcome.RECOMMENDED
+                else "OnHold"
+            )
+            try:
+                await domain_client.update_volunteer_registry_status(
+                    volunteer_id=registry_vol_id,
+                    status=registry_status,
+                )
+                logger.info(f"[selection] Registry status updated: {registry_vol_id} → {registry_status}")
+            except Exception as e:
+                logger.warning(f"[selection] Failed to update registry status: {e}")
+
         updated_sub_state = dump_selection_sub_state(sub_state)
         handoff_event = self._build_engagement_handoff(
             request=request,
@@ -414,6 +434,22 @@ class SelectionAgentService:
             onboarding_summary=onboarding_summary,
             key_facts=key_facts,
         )
+
+        # Build credential facts for the volunteer fact-store
+        teaching_lang = TEACHING_LANGUAGE.lower()
+        category = f"{teaching_lang}_teaching"
+        credential_facts = {
+            "credentials": {
+                category: {
+                    "status": evaluation.outcome.value,
+                    "confidence": evaluation.confidence,
+                    "assessed_at": datetime.utcnow().isoformat(),
+                    "signals": sub_state.get("signals") or {},
+                    "notes": sub_state.get("notes") or {},
+                }
+            }
+        }
+
         return self._build_response(
             request=request,
             message=self._selection_closeout(evaluation.outcome),
@@ -425,6 +461,7 @@ class SelectionAgentService:
                 "selection_confidence": evaluation.confidence,
                 "selection_reason": evaluation.reason,
             },
+            new_facts=credential_facts,
             handoff_event=handoff_event,
         )
 
@@ -639,6 +676,7 @@ class SelectionAgentService:
         completion_status: str,
         confirmed_fields: Dict[str, Any],
         missing_fields: Optional[List[str]] = None,
+        new_facts: Optional[Dict[str, Any]] = None,
         handoff_event: Optional[Dict[str, Any]] = None,
         telemetry_events: Optional[List[TelemetryEvent]] = None,
     ) -> AgentTurnResponse:
@@ -651,6 +689,7 @@ class SelectionAgentService:
             completion_status=completion_status,
             confirmed_fields=confirmed_fields,
             missing_fields=missing_fields or [],
+            new_facts=new_facts or {},
             handoff_event=handoff_event,
             telemetry_events=telemetry_events or [],
         )

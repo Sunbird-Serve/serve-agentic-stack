@@ -120,6 +120,7 @@ class AgentTurnResponse(BaseModel):
     completion_status: Optional[str] = None
     confirmed_fields: Dict[str, Any] = Field(default_factory=dict)
     missing_fields: List[str] = Field(default_factory=list)
+    new_facts: Dict[str, Any] = Field(default_factory=dict)
     handoff_event: Optional[Dict[str, Any]] = None
     telemetry_events: List[TelemetryEvent] = Field(default_factory=list)
 
