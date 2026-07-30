@@ -183,6 +183,7 @@ services:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - SERVE_PORTAL_URL=${SERVE_PORTAL_URL:-https://up.serve.net.in}
       - KEYCLOAK_URL=${KEYCLOAK_URL:-http://localhost:8080}
       - KEYCLOAK_REALM=${KEYCLOAK_REALM:-sunbird-serve}
     ports:

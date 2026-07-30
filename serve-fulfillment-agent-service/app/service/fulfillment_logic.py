@@ -8,6 +8,7 @@ Two-phase approach:
 LLM is only called ONCE per turn (max 4 iterations total per session).
 """
 import logging
+import os
 from typing import Any, Dict, Optional
 
 from app.schemas.fulfillment_schemas import (
@@ -22,6 +23,8 @@ from app.service.llm_adapter import llm_adapter
 from app.service.matching_service import match_finder
 
 logger = logging.getLogger(__name__)
+
+SERVE_PORTAL_URL = os.environ.get("SERVE_PORTAL_URL", "https://up.serve.net.in")
 
 _TERMINAL_STATES = {
     FulfillmentWorkflowState.COMPLETE.value,
@@ -289,7 +292,23 @@ class FulfillmentAgentService:
                 "volunteer_id": volunteer_id,
             })
             new_state = FulfillmentWorkflowState.COMPLETE.value
-            message = text or "Shukriya! Coordinator review karenge aur jald hi aapse contact karenge."
+
+            # Build portal orientation message
+            volunteer_email = sub_state.get("handoff", {}).get("volunteer_email", "")
+            portal_msg = (
+                f"\n\n📋 **Next steps — SERVE Portal access:**\n"
+                f"• Portal: {SERVE_PORTAL_URL}\n"
+                f"• Username: your registered email"
+            )
+            if volunteer_email:
+                portal_msg += f" ({volunteer_email})"
+            portal_msg += (
+                f"\n• Temporary password: Serve@2026 (you'll be asked to change it on first login)\n"
+                f"\nLog in to see your teaching assignment, schedule, and coordinator details."
+            )
+
+            base_message = text or "You've been matched! Your coordinator will review and get in touch soon."
+            message = base_message + portal_msg
 
             # Hand off to the delivery assistant so activation actually starts —
             # a nomination alone never used to trigger anything downstream.

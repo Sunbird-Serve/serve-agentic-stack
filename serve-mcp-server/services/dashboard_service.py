@@ -36,8 +36,8 @@ async def _get_registry_status_counts() -> Dict[str, int]:
     Count volunteers by status using local session + selection outcome data.
     Avoids calling the external registry (which may be unreliable).
     
-    - Registered: sessions that reached onboarding_complete stage
-    - Recommended: sessions where selection outcome = recommended
+    - Registered: sessions that reached onboarding_complete stage or beyond
+    - Recommended: sessions where selection outcome = recommended (in sub_state or handoff)
     - OnHold: sessions where selection outcome = engagement_later/not_matched/human_review
     """
     try:
@@ -49,14 +49,14 @@ async def _get_registry_status_counts() -> Dict[str, int]:
                     "onboarding_complete", "selection_conversation",
                     "gathering_preferences", "re_engaging",
                     "matching_ready", "active", "complete",
+                    "activation_started",
                 ]))
             )).scalar() or 0
 
-            # Recommended/OnHold: parse from sub_state JSON where selection outcome is stored
-            # Selection outcomes are stored in sessions that passed through selection
-            from sqlalchemy import cast, String
+            # Recommended/OnHold: check all sessions that have passed through selection
+            # (active_agent is selection, engagement, fulfillment, or delivery_assistant)
             selection_sessions = (await db.execute(
-                select(DBSession.sub_state)
+                select(DBSession.sub_state, DBSession.active_agent)
                 .where(
                     and_(
                         DBSession.sub_state.isnot(None),
@@ -64,6 +64,7 @@ async def _get_registry_status_counts() -> Dict[str, int]:
                             DBSession.active_agent == "selection",
                             DBSession.active_agent == "engagement",
                             DBSession.active_agent == "fulfillment",
+                            DBSession.active_agent == "delivery_assistant",
                         ),
                     )
                 )
@@ -75,7 +76,16 @@ async def _get_registry_status_counts() -> Dict[str, int]:
                 try:
                     import json as _json
                     ss = _json.loads(row.sub_state) if row.sub_state else {}
-                    outcome = ss.get("outcome") or ss.get("handoff", {}).get("selection_outcome", "")
+                    # Check multiple locations where selection outcome may be stored
+                    outcome = (
+                        ss.get("outcome")
+                        or (ss.get("handoff") or {}).get("selection_outcome", "")
+                    )
+                    # For sessions past selection (engagement/fulfillment/delivery),
+                    # if they got there, they were recommended
+                    if not outcome and row.active_agent in ("engagement", "fulfillment", "delivery_assistant"):
+                        outcome = "recommended"
+
                     if outcome == "recommended":
                         recommended += 1
                     elif outcome in ("engagement_later", "not_matched", "human_review"):

@@ -422,7 +422,10 @@ class SelectionAgentService:
             )
 
         # Update volunteer status in Serve Registry
-        registry_vol_id = str(request.session_state.volunteer_id) if request.session_state.volunteer_id else None
+        registry_vol_id = (
+            profile.volunteer_id
+            or (str(request.session_state.volunteer_id) if request.session_state.volunteer_id else None)
+        )
         if registry_vol_id:
             registry_status = (
                 "Recommended" if evaluation.outcome == SelectionOutcome.RECOMMENDED
@@ -561,7 +564,7 @@ class SelectionAgentService:
         key_facts = handoff.get("key_facts") or (memory_data or {}).get("key_facts", [])
 
         return VolunteerProfile(
-            volunteer_id=str(request.session_state.volunteer_id) if request.session_state.volunteer_id else merged_profile.get("volunteer_id"),
+            volunteer_id=str(request.session_state.volunteer_id) if request.session_state.volunteer_id else (merged_profile.get("volunteer_id") or merged_profile.get("serve_volunteer_id")),
             full_name=merged_profile.get("full_name"),
             first_name=merged_profile.get("first_name"),
             email=merged_profile.get("email"),

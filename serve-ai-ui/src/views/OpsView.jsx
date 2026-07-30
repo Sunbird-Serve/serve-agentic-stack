@@ -72,7 +72,7 @@ function classifyAll(sessions) {
     const agent = s.active_agent;
 
     // ── Onboarding ──
-    if (agent === 'onboarding' || ['welcome','orientation_video','eligibility_screening','contact_capture','teaching_profile','registration_review','onboarding_complete'].includes(s.stage)) {
+    if (agent === 'onboarding') {
       onboarding.entered++;
       let outcome = 'In Progress';
       if (s.stage === 'onboarding_complete') { onboarding.registered++; outcome = 'Registered'; }
@@ -86,10 +86,10 @@ function classifyAll(sessions) {
     }
 
     // ── Selection ──
-    if (agent === 'selection' || ['selection_conversation','gathering_preferences'].includes(s.stage)) {
+    if (agent === 'selection') {
       selection.entered++;
       let outcome = 'In Progress';
-      const selOutcome = ss.outcome;
+      const selOutcome = ss.outcome || (ss.handoff || {}).selection_outcome;
       if (selOutcome === 'recommended') { selection.recommended++; outcome = 'Recommended'; }
       else if (selOutcome === 'not_matched') { selection.notMatched++; outcome = 'Not Matched'; }
       else if (selOutcome === 'human_review' || s.stage === 'human_review') { selection.hold++; outcome = 'On Hold'; }
