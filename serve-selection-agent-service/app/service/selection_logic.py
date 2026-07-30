@@ -345,29 +345,35 @@ class SelectionAgentService:
             # Also mark the LLM-suggested next key if different
             if next_question_key != "none" and next_question_key != originally_asked_key and next_question_key not in sub_state["asked_questions"]:
                 sub_state["asked_questions"].append(next_question_key)
-            updated_sub_state = dump_selection_sub_state(sub_state)
-            await domain_client.advance_state(
-                session_id,
-                SelectionWorkflowState.SELECTION_CONVERSATION.value,
-                updated_sub_state,
-            )
-            telemetry = [
-                TelemetryEvent(
-                    session_id=request.session_id,
-                    event_type=EventType.AGENT_RESPONSE,
-                    agent=AgentType.SELECTION,
-                    data={"question": next_question_key},
+
+            # Re-check: if all questions are now asked, fall through to evaluation
+            # instead of returning in_progress (avoids needing one more user message)
+            if _next_question(sub_state) is None:
+                pass  # Fall through to evaluation below
+            else:
+                updated_sub_state = dump_selection_sub_state(sub_state)
+                await domain_client.advance_state(
+                    session_id,
+                    SelectionWorkflowState.SELECTION_CONVERSATION.value,
+                    updated_sub_state,
                 )
-            ]
-            return self._build_response(
-                request=request,
-                message=assistant_message or fallback_question,
-                state=SelectionWorkflowState.SELECTION_CONVERSATION.value,
-                sub_state=updated_sub_state,
-                completion_status="in_progress",
-                confirmed_fields={"selection_stage": "questioning"},
-                telemetry_events=telemetry,
-            )
+                telemetry = [
+                    TelemetryEvent(
+                        session_id=request.session_id,
+                        event_type=EventType.AGENT_RESPONSE,
+                        agent=AgentType.SELECTION,
+                        data={"question": next_question_key},
+                    )
+                ]
+                return self._build_response(
+                    request=request,
+                    message=assistant_message or fallback_question,
+                    state=SelectionWorkflowState.SELECTION_CONVERSATION.value,
+                    sub_state=updated_sub_state,
+                    completion_status="in_progress",
+                    confirmed_fields={"selection_stage": "questioning"},
+                    telemetry_events=telemetry,
+                )
 
         evaluation_request = await self._build_evaluation_request(
             request=request,

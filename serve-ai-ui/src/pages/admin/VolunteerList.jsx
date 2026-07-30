@@ -87,7 +87,16 @@ function getSelectionData(session) {
   const selReason = handoff.selection_reason || outcomeReason;
   const selConfidence = handoff.selection_confidence;
 
-  return { signals: selSignals, notes: selNotes, outcome: selOutcome, reason: selReason, confidence: selConfidence };
+  // For sessions past selection (engagement, fulfillment, delivery),
+  // check engagement_context in handoff for selection outcome
+  const engCtx = ss.engagement_context || {};
+  const inferredOutcome = selOutcome || (
+    ['engagement', 'fulfillment', 'delivery_assistant'].includes(session.active_agent)
+      ? 'recommended'
+      : null
+  );
+
+  return { signals: selSignals, notes: selNotes, outcome: inferredOutcome, reason: selReason, confidence: selConfidence };
 }
 
 // ── Detail Panel ──────────────────────────────────────────────────────────────

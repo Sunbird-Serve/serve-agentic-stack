@@ -522,6 +522,7 @@ class VolunteeringClient:
         PUT /user/{volunteer_id}
         Updates the volunteer's status in Serve Registry.
         Valid values: Registered, Recommended, OnHold, Active, Inactive, Rejected.
+        Requires sAdmin/vAdmin/vCoordinator role — passed via X-Role header.
         """
         valid_statuses = {"Registered", "Recommended", "OnHold", "Active", "Inactive", "Rejected"}
         if status not in valid_statuses:
@@ -531,11 +532,38 @@ class VolunteeringClient:
         url = f"{VOLUNTEERING_SERVICE_URL}/user/{volunteer_id}"
         payload = {"status": status}
         logger.info(f"[serve_registry] Updating volunteer {volunteer_id} status → {status}")
-        result = await _request("PUT", url, json=payload)
-        if result is not None:
-            logger.info(f"[serve_registry] Volunteer {volunteer_id} status updated to {status}")
-            return True
-        logger.warning(f"[serve_registry] Failed to update volunteer {volunteer_id} status to {status}")
+
+        # Build headers with admin role for authorization
+        headers = await _build_headers()
+        headers["X-Role"] = "sAdmin"
+
+        last_error = None
+        for attempt in range(SERVE_REGISTRY_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=SERVE_REGISTRY_TIMEOUT) as client:
+                    response = await client.put(url, headers=headers, json=payload)
+                if response.status_code == 404:
+                    logger.warning(f"[serve_registry] Volunteer {volunteer_id} not found (404)")
+                    return False
+                if response.status_code >= 500:
+                    raise httpx.HTTPStatusError(
+                        f"Server error {response.status_code}",
+                        request=response.request,
+                        response=response,
+                    )
+                response.raise_for_status()
+                logger.info(f"[serve_registry] Volunteer {volunteer_id} status updated to {status}")
+                return True
+            except Exception as exc:
+                last_error = exc
+                if attempt < SERVE_REGISTRY_RETRIES:
+                    wait = 0.5 * (2 ** attempt)
+                    logger.warning(
+                        f"[serve_registry] PUT {url} attempt {attempt+1} failed: {exc}. Retrying in {wait}s…"
+                    )
+                    await asyncio.sleep(wait)
+
+        logger.warning(f"[serve_registry] Failed to update volunteer {volunteer_id} status to {status}: {last_error}")
         return False
 
     # ── Normalisation helpers ─────────────────────────────────────────────────
@@ -1221,9 +1249,38 @@ class NominationClient:
         POST /nomination/{needId}/nominate/{nominatedUserId}
         Nominates a volunteer for a need.
         Returns the created Nomination object with nominationStatus='Nominated'.
+        Requires sAdmin/vCoordinator role.
         """
         url = f"{FULFILL_SERVICE_URL}/nomination/{need_id}/nominate/{volunteer_id}"
-        return await _request("POST", url, json={})
+        headers = await _build_headers()
+        headers["X-Role"] = "sAdmin"
+
+        last_error = None
+        for attempt in range(SERVE_REGISTRY_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=SERVE_REGISTRY_TIMEOUT) as client:
+                    response = await client.post(url, headers=headers, json={})
+                if response.status_code == 404:
+                    return None
+                if response.status_code >= 500:
+                    raise httpx.HTTPStatusError(
+                        f"Server error {response.status_code}",
+                        request=response.request,
+                        response=response,
+                    )
+                response.raise_for_status()
+                return response.json() if response.content else {}
+            except Exception as exc:
+                last_error = exc
+                if attempt < SERVE_REGISTRY_RETRIES:
+                    wait = 0.5 * (2 ** attempt)
+                    logger.warning(
+                        f"[serve_registry] POST {url} attempt {attempt+1} failed: {exc}. Retrying in {wait}s…"
+                    )
+                    await asyncio.sleep(wait)
+
+        logger.error(f"[serve_registry] POST {url} failed after {SERVE_REGISTRY_RETRIES+1} attempts: {last_error}")
+        return None
 
     async def confirm_nomination(
         self,
@@ -1235,9 +1292,38 @@ class NominationClient:
         POST /nomination/nominate/{nominatedUserId}/confirm/{nominationId}?status={status}
         Confirms or rejects a nomination.
         status: Nominated | Approved | Proposed | Backfill | Rejected
+        Requires sAdmin/vCoordinator role.
         """
         url = f"{FULFILL_SERVICE_URL}/nomination/nominate/{volunteer_id}/confirm/{nomination_id}"
-        return await _request("POST", url, params={"status": status}, json={})
+        headers = await _build_headers()
+        headers["X-Role"] = "sAdmin"
+
+        last_error = None
+        for attempt in range(SERVE_REGISTRY_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=SERVE_REGISTRY_TIMEOUT) as client:
+                    response = await client.post(url, headers=headers, params={"status": status}, json={})
+                if response.status_code == 404:
+                    return None
+                if response.status_code >= 500:
+                    raise httpx.HTTPStatusError(
+                        f"Server error {response.status_code}",
+                        request=response.request,
+                        response=response,
+                    )
+                response.raise_for_status()
+                return response.json() if response.content else {}
+            except Exception as exc:
+                last_error = exc
+                if attempt < SERVE_REGISTRY_RETRIES:
+                    wait = 0.5 * (2 ** attempt)
+                    logger.warning(
+                        f"[serve_registry] POST {url} attempt {attempt+1} failed: {exc}. Retrying in {wait}s…"
+                    )
+                    await asyncio.sleep(wait)
+
+        logger.error(f"[serve_registry] POST {url} failed after {SERVE_REGISTRY_RETRIES+1} attempts: {last_error}")
+        return None
 
 
 # ─── Singletons ───────────────────────────────────────────────────────────────
