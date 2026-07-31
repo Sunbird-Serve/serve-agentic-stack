@@ -154,6 +154,18 @@ Your ENTIRE response is this one bundled question."""
             question = "This is a volunteer, unpaid role — are you comfortable with that?"
         else:
             question = "All checks done!"
+            # All eligibility passed — add consent confirmation before moving on
+            return f"""{_BASE_CONTEXT}
+
+CURRENT STAGE: Eligibility — Consent Confirmation (Step 1/4)
+{motivation_context}
+
+All eligibility checks have passed. Before we move on, get their explicit consent.
+
+Your task: Say something like:
+"Perfect! Just to formally confirm before we proceed — you are declaring that you are 18 years or older, you have internet and device access for online teaching, and you understand this is a voluntary, unpaid role. By continuing, you consent to these terms. Shall we go ahead?"
+
+Keep it brief and warm but make sure all three points are mentioned explicitly. Wait for their confirmation before proceeding."""
 
         return f"""{_BASE_CONTEXT}
 

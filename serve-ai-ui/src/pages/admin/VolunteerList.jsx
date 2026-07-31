@@ -161,9 +161,24 @@ function VolunteerDetail({ session, onClose }) {
           <div>
             <h3 className="text-xs font-medium text-slate-400 uppercase mb-2">Onboarding</h3>
             <div className="text-xs space-y-1 text-slate-600">
-              <p>✅ Eligibility confirmed</p>
-              {passedSelection && <p>✅ Registered in Serve Registry</p>}
-              {!passedSelection && agent === 'onboarding' && <p>🔵 In progress — {session.stage?.replace(/_/g, ' ')}</p>}
+              {(() => {
+                const ELIG_PASSED_STAGES = ['contact_capture', 'teaching_profile', 'registration_review', 'onboarding_complete', 'selection_conversation', 'gathering_preferences'];
+                const eligPassed = passedSelection || ELIG_PASSED_STAGES.includes(session.stage);
+                const regDone = passedSelection;
+                const reviewReason = ss.review_reason;
+                const isIneligible = agent === 'onboarding' && session.stage === 'human_review' && reviewReason;
+
+                if (isIneligible) {
+                  const reasonLabels = {
+                    age_18_plus: 'Under 18',
+                    has_internet_and_device: 'No internet/device access',
+                    accepts_unpaid_role: 'Declined unpaid role',
+                  };
+                  return <p>❌ Not eligible — {reasonLabels[reviewReason] || reviewReason?.replace(/_/g, ' ')}</p>;
+                }
+                if (eligPassed) return <><p>✅ Eligibility confirmed</p>{regDone && <p>✅ Registered in Serve Registry</p>}{!regDone && agent === 'onboarding' && <p>🔵 Registration in progress</p>}</>;
+                return <p>🔵 In progress — {session.stage?.replace(/_/g, ' ')}</p>;
+              })()}
             </div>
           </div>
         )}
