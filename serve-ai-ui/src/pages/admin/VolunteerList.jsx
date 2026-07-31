@@ -105,6 +105,16 @@ function VolunteerDetail({ session, onClose }) {
   const ss = parseSubState(session);
   const sel = getSelectionData(session);
   const hasSelection = sel.outcome || Object.keys(sel.signals).some(k => sel.signals[k]);
+  const agent = session.active_agent;
+
+  // Determine which phases this volunteer has passed through
+  const AGENT_ORDER = ['onboarding', 'selection', 'engagement', 'fulfillment', 'delivery_assistant'];
+  const currentIdx = AGENT_ORDER.indexOf(agent);
+  const passedOnboarding = currentIdx >= 0;
+  const passedSelection = currentIdx >= 1;
+  const inEngagement = currentIdx >= 2;
+  const inFulfillment = currentIdx >= 3;
+  const inDelivery = currentIdx >= 4;
 
   const outcomeColors = {
     recommended: 'bg-emerald-100 text-emerald-700',
@@ -113,6 +123,15 @@ function VolunteerDetail({ session, onClose }) {
     human_review: 'bg-violet-100 text-violet-700',
     paused: 'bg-slate-100 text-slate-600',
   };
+
+  // Extract engagement data from sub_state
+  const engPrefs = ss.preference_notes || ss.handoff?.preference_notes;
+  const engDeferred = ss.deferred;
+  const engDeferredReason = ss.deferred_reason;
+
+  // Extract fulfillment data
+  const nominatedNeed = ss.nominated_need_id;
+  const matchResult = ss.match_result || {};
 
   return (
     <div className="fixed inset-0 md:inset-y-0 md:left-auto md:right-0 md:w-96 bg-white shadow-xl border-l border-slate-200 z-50 overflow-y-auto">
@@ -130,12 +149,24 @@ function VolunteerDetail({ session, onClose }) {
           <div className="space-y-1.5">
             <p className="text-sm"><span className="text-slate-500">Name:</span> <span className="font-medium">{session.volunteer_name || '—'}</span></p>
             <p className="text-sm"><span className="text-slate-500">Phone:</span> {session.volunteer_phone || '—'}</p>
-            <p className="text-sm"><span className="text-slate-500">Agent:</span> <span className="capitalize">{session.active_agent}</span></p>
+            <p className="text-sm"><span className="text-slate-500">Agent:</span> <span className="capitalize">{agent?.replace('_', ' ')}</span></p>
             <p className="text-sm"><span className="text-slate-500">Stage:</span> {session.stage}</p>
             <p className="text-sm"><span className="text-slate-500">Status:</span> <StatusPill status={session.status} /></p>
             <p className="text-sm"><span className="text-slate-500">Last active:</span> {timeAgo(session.last_message_at)}</p>
           </div>
         </div>
+
+        {/* Onboarding Summary */}
+        {passedOnboarding && (
+          <div>
+            <h3 className="text-xs font-medium text-slate-400 uppercase mb-2">Onboarding</h3>
+            <div className="text-xs space-y-1 text-slate-600">
+              <p>✅ Eligibility confirmed</p>
+              {passedSelection && <p>✅ Registered in Serve Registry</p>}
+              {!passedSelection && agent === 'onboarding' && <p>🔵 In progress — {session.stage?.replace(/_/g, ' ')}</p>}
+            </div>
+          </div>
+        )}
 
         {/* Selection Assessment */}
         {hasSelection && (
@@ -184,10 +215,49 @@ function VolunteerDetail({ session, onClose }) {
         )}
 
         {/* No selection yet */}
-        {!hasSelection && (
+        {!hasSelection && !passedSelection && (
           <div>
-            <h3 className="text-xs font-medium text-slate-400 uppercase mb-2">Selection Assessment</h3>
+            <h3 className="text-xs font-medium text-slate-400 uppercase mb-2">Selection</h3>
             <p className="text-xs text-slate-400">Not yet assessed — volunteer hasn't reached selection stage.</p>
+          </div>
+        )}
+
+        {/* Engagement Summary */}
+        {inEngagement && (
+          <div>
+            <h3 className="text-xs font-medium text-slate-400 uppercase mb-2">Engagement</h3>
+            <div className="text-xs space-y-1 text-slate-600">
+              {engPrefs && <p>📋 Preferences: {engPrefs}</p>}
+              {engDeferred && <p>⏸️ Deferred: {engDeferredReason || 'no reason given'}</p>}
+              {!engPrefs && !engDeferred && agent === 'engagement' && <p>🔵 Gathering preferences…</p>}
+              {!engPrefs && !engDeferred && agent !== 'engagement' && <p>✅ Preferences captured</p>}
+            </div>
+          </div>
+        )}
+
+        {/* Fulfillment Summary */}
+        {inFulfillment && (
+          <div>
+            <h3 className="text-xs font-medium text-slate-400 uppercase mb-2">Fulfillment</h3>
+            <div className="text-xs space-y-1 text-slate-600">
+              {nominatedNeed && <p>✅ Nominated for need: <span className="font-mono">{nominatedNeed.slice(0, 12)}…</span></p>}
+              {matchResult.status === 'found' && !nominatedNeed && <p>🔵 Match found — awaiting confirmation</p>}
+              {matchResult.status === 'not_found' && <p>⚠️ No matching need found</p>}
+              {!matchResult.status && agent === 'fulfillment' && <p>🔵 Searching for matches…</p>}
+              {agent !== 'fulfillment' && !nominatedNeed && <p>✅ Completed</p>}
+            </div>
+          </div>
+        )}
+
+        {/* Delivery Summary */}
+        {inDelivery && (
+          <div>
+            <h3 className="text-xs font-medium text-slate-400 uppercase mb-2">Delivery</h3>
+            <div className="text-xs space-y-1 text-slate-600">
+              {session.stage === 'activation_started' && <p>🔵 Activation in progress</p>}
+              {session.stage === 'activation_complete' && <p>✅ Activated — teaching sessions underway</p>}
+              {session.status === 'escalated' && <p>🚨 Escalated — needs coordinator attention</p>}
+            </div>
           </div>
         )}
       </div>

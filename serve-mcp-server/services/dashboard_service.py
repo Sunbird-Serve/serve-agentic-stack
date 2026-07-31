@@ -56,10 +56,9 @@ async def _get_registry_status_counts() -> Dict[str, int]:
             # Recommended/OnHold: check all sessions that have passed through selection
             # (active_agent is selection, engagement, fulfillment, or delivery_assistant)
             selection_sessions = (await db.execute(
-                select(DBSession.sub_state, DBSession.active_agent)
+                select(DBSession.sub_state, DBSession.active_agent, DBSession.stage)
                 .where(
                     and_(
-                        DBSession.sub_state.isnot(None),
                         or_(
                             DBSession.active_agent == "selection",
                             DBSession.active_agent == "engagement",
@@ -85,6 +84,9 @@ async def _get_registry_status_counts() -> Dict[str, int]:
                     # if they got there, they were recommended
                     if not outcome and row.active_agent in ("engagement", "fulfillment", "delivery_assistant"):
                         outcome = "recommended"
+                    # Sessions stuck in human_review with selection agent = on hold
+                    if not outcome and row.active_agent == "selection" and row.stage == "human_review":
+                        outcome = "human_review"
 
                     if outcome == "recommended":
                         recommended += 1

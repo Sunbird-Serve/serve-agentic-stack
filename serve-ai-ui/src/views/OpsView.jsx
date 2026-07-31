@@ -59,6 +59,7 @@ function classifyAll(sessions) {
   const selection  = { entered: 0, recommended: 0, notMatched: 0, hold: 0, rows: [] };
   const engagement = { entered: 0, prefsGiven: 0, deferred: 0, declined: 0, rows: [] };
   const fulfillment = { entered: 0, matched: 0, nominated: 0, noMatch: 0, rows: [] };
+  const delivery = { entered: 0, active: 0, completed: 0, escalated: 0, rows: [] };
 
   const actionQueue = [];
 
@@ -77,7 +78,7 @@ function classifyAll(sessions) {
       let outcome = 'In Progress';
       if (s.stage === 'onboarding_complete') { onboarding.registered++; outcome = 'Registered'; }
       if (['contact_capture','teaching_profile','registration_review','onboarding_complete'].includes(s.stage)) { onboarding.eligible++; if (outcome === 'In Progress') outcome = 'Eligible'; }
-      if (s.stage === 'human_review' && agent === 'onboarding') { onboarding.review++; outcome = 'Needs Review'; }
+      if (s.stage === 'human_review') { onboarding.review++; outcome = 'Needs Review'; }
       onboarding.rows.push({ id: s.id, name, phone, stage: s.stage, status: s.status, outcome, last: s.last_message_at, created: s.created_at });
 
       if (s.stage === 'human_review') {
@@ -92,11 +93,15 @@ function classifyAll(sessions) {
       const selOutcome = ss.outcome || (ss.handoff || {}).selection_outcome;
       if (selOutcome === 'recommended') { selection.recommended++; outcome = 'Recommended'; }
       else if (selOutcome === 'not_matched') { selection.notMatched++; outcome = 'Not Matched'; }
+      else if (selOutcome === 'engagement_later') { selection.hold++; outcome = 'On Hold'; }
       else if (selOutcome === 'human_review' || s.stage === 'human_review') { selection.hold++; outcome = 'On Hold'; }
       selection.rows.push({ id: s.id, name, phone, stage: s.stage, status: s.status, outcome, last: s.last_message_at, created: s.created_at });
 
       if (s.stage === 'human_review' || selOutcome === 'human_review') {
-        actionQueue.push({ id: s.id, name, phone, issue: 'Selection needs review', stage: 'Selection', since: s.last_message_at || s.created_at });
+        const reason = ss.outcome_reason || (ss.handoff || {}).selection_reason || 'Needs manual review';
+        const flags = (ss.signals || {}).risk_signals || [];
+        const detail = flags.length > 0 ? `Flags: ${flags.join(', ')}` : reason;
+        actionQueue.push({ id: s.id, name, phone, issue: detail, stage: 'Selection', since: s.last_message_at || s.created_at });
       }
     }
 
@@ -137,6 +142,21 @@ function classifyAll(sessions) {
       }
     }
 
+    // ── Delivery ──
+    if (agent === 'delivery_assistant') {
+      delivery.entered++;
+      let outcome = 'In Progress';
+      if (s.stage === 'activation_started') { delivery.active++; outcome = 'Activating'; }
+      else if (s.stage === 'activation_complete' || s.status === 'active') { delivery.active++; outcome = 'Active'; }
+      else if (s.status === 'completed') { delivery.completed++; outcome = 'Completed'; }
+      else if (s.status === 'escalated' || s.stage === 'escalated') { delivery.escalated++; outcome = 'Escalated'; }
+      delivery.rows.push({ id: s.id, name, phone, stage: s.stage, status: s.status, outcome, last: s.last_message_at, created: s.created_at });
+
+      if (s.status === 'escalated' || s.stage === 'escalated') {
+        actionQueue.push({ id: s.id, name, phone, issue: 'Delivery escalated — missed sessions', stage: 'Delivery', since: s.last_message_at || s.created_at });
+      }
+    }
+
     // ── Paused too long (any stage) ──
     if (s.status === 'paused' && s.last_message_at) {
       const days = daysBetween(s.last_message_at, new Date().toISOString());
@@ -168,7 +188,7 @@ function classifyAll(sessions) {
   const reachedFulfillment = fulfillment.entered;
   const dropOffRate = totalStarted > 0 ? Math.round((1 - reachedFulfillment / totalStarted) * 100) : 0;
 
-  return { onboarding, selection, engagement, fulfillment, actionQueue, avgPlacementDays, dropOffRate };
+  return { onboarding, selection, engagement, fulfillment, delivery, actionQueue, avgPlacementDays, dropOffRate };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -290,7 +310,7 @@ const FunnelStage = ({ label, count, convPct, reviewCount, color, isLast }) => (
   </div>
 );
 
-const PipelineFunnel = ({ onboarding, selection, engagement, fulfillment }) => {
+const PipelineFunnel = ({ onboarding, selection, engagement, fulfillment, delivery }) => {
   const conv = (from, to) => from > 0 ? Math.round((to / from) * 100) : null;
 
   const stages = [
@@ -298,7 +318,7 @@ const PipelineFunnel = ({ onboarding, selection, engagement, fulfillment }) => {
     { label: 'Selection', count: selection.entered, convPct: conv(onboarding.entered, selection.entered), review: selection.hold, color: 'bg-violet-100 text-violet-800' },
     { label: 'Engagement', count: engagement.entered, convPct: conv(selection.entered, engagement.entered), review: 0, color: 'bg-emerald-100 text-emerald-800' },
     { label: 'Fulfillment', count: fulfillment.entered, convPct: conv(engagement.entered, fulfillment.entered), review: fulfillment.noMatch, color: 'bg-teal-100 text-teal-800' },
-    { label: 'Placed', count: fulfillment.nominated, convPct: conv(fulfillment.entered, fulfillment.nominated), review: 0, color: 'bg-cyan-100 text-cyan-800' },
+    { label: 'Delivery', count: delivery.entered, convPct: conv(fulfillment.entered, delivery.entered), review: delivery.escalated, color: 'bg-cyan-100 text-cyan-800' },
   ];
 
   return (
@@ -580,12 +600,12 @@ export const OpsView = () => {
 
         {/* Section 1: Headline KPIs */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          <KpiCard label="Total Volunteers" value={stats.sessions?.total || 0} icon={Users} color="bg-blue-50" iconColor="text-blue-600" />
-          <KpiCard label="New This Week" value={stats.sessions?.this_week || 0} icon={TrendingUp} color="bg-violet-50" iconColor="text-violet-600" />
-          <KpiCard label="Active Now" value={stats.sessions?.active || 0} icon={Clock} color="bg-emerald-50" iconColor="text-emerald-600" />
-          <KpiCard label="Registered" value={stats.registry_status?.Registered || 0} icon={UserCheck} color="bg-cyan-50" iconColor="text-cyan-600" sub="in Serve Registry" />
-          <KpiCard label="Recommended" value={stats.registry_status?.Recommended || 0} icon={CheckCircle2} color="bg-emerald-50" iconColor="text-emerald-600" sub="selection passed" />
-          <KpiCard label="On Hold" value={stats.registry_status?.OnHold || 0} icon={AlertTriangle} color="bg-amber-50" iconColor="text-amber-600" sub="deferred / not matched" />
+          <KpiCard label="Total" value={stats.sessions?.total || 0} icon={Users} color="bg-blue-50" iconColor="text-blue-600" sub="volunteers" />
+          <KpiCard label="This Week" value={stats.sessions?.this_week || 0} icon={TrendingUp} color="bg-violet-50" iconColor="text-violet-600" sub="new" />
+          <KpiCard label="Active" value={stats.sessions?.active || 0} icon={Clock} color="bg-emerald-50" iconColor="text-emerald-600" sub="in progress" />
+          <KpiCard label="Registered" value={stats.registry_status?.Registered || 0} icon={UserCheck} color="bg-cyan-50" iconColor="text-cyan-600" sub="in registry" />
+          <KpiCard label="Recommended" value={stats.registry_status?.Recommended || 0} icon={CheckCircle2} color="bg-emerald-50" iconColor="text-emerald-600" sub="passed selection" />
+          <KpiCard label="On Hold" value={stats.registry_status?.OnHold || 0} icon={AlertTriangle} color="bg-amber-50" iconColor="text-amber-600" sub="deferred" />
         </div>
 
         {/* Section 2: Pipeline Funnel */}

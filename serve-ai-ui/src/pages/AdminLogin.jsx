@@ -1,13 +1,16 @@
 /**
  * AdminLogin — Simple token entry page for admin access.
+ * Validates token against the backend before granting access.
  */
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAdmin } from '../context/AdminContext';
+import { dashboardApi } from '../services/api';
 
 export function AdminLogin() {
   const [inputToken, setInputToken] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
   const { login, isAuthenticated } = useAdmin();
   const navigate = useNavigate();
 
@@ -17,14 +20,38 @@ export function AdminLogin() {
     return null;
   }
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     if (!inputToken.trim()) {
       setError('Please enter a token');
       return;
     }
-    login(inputToken.trim());
-    navigate('/admin/dashboard');
+
+    setLoading(true);
+    setError('');
+
+    // Temporarily store token so the API interceptor can use it
+    localStorage.setItem('serve_admin_token', inputToken.trim());
+
+    try {
+      const res = await dashboardApi.getStats(1, 1);
+      if (res.status === 'success') {
+        login(inputToken.trim());
+        navigate('/admin/dashboard');
+      } else {
+        localStorage.removeItem('serve_admin_token');
+        setError('Invalid token — access denied');
+      }
+    } catch (err) {
+      localStorage.removeItem('serve_admin_token');
+      if (err.response?.status === 401) {
+        setError('Invalid token — access denied');
+      } else {
+        setError('Unable to connect. Please try again.');
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -47,14 +74,16 @@ export function AdminLogin() {
               placeholder="Admin token"
               className="w-full px-4 py-3 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               autoFocus
+              disabled={loading}
             />
-            {error && <p className="text-xs text-red-500 mt-1">{error}</p>}
+            {error && <p className="text-xs text-red-500 mt-1.5 font-medium">{error}</p>}
           </div>
           <button
             type="submit"
-            className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+            disabled={loading}
+            className="w-full py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white text-sm font-medium rounded-lg transition-colors"
           >
-            Enter
+            {loading ? 'Verifying…' : 'Enter'}
           </button>
         </form>
 
