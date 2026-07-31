@@ -6,7 +6,7 @@
  * After first message: left panel transforms to progress tracker.
  */
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { Check, Circle, GraduationCap, Users, Clock, School, MessageCircle, Sparkles } from 'lucide-react';
+import { Check, Circle, Users, Clock, School, MessageCircle, Sparkles } from 'lucide-react';
 import { ChatThread } from '../components/conversation/ChatThread';
 import { ChatInput } from '../components/conversation/ChatInput';
 import { orchestratorApi } from '../services/api';
@@ -45,12 +45,9 @@ function HeroPanel() {
     <div className="flex flex-col h-full p-6 lg:p-8 justify-center">
       {/* Logo */}
       <div className="flex items-center gap-3 mb-8">
-        <div className="w-10 h-10 rounded-xl bg-amber-500 flex items-center justify-center shadow-sm">
-          <GraduationCap className="w-5 h-5 text-white" />
-        </div>
+        <img src="/serve-logo.jpeg" alt="SERVE" className="h-12 w-auto" />
         <div>
-          <h1 className="text-lg font-bold text-slate-900">eVidyaloka</h1>
-          <p className="text-xs text-slate-500">Project SERVE — UP</p>
+          <p className="text-xs text-slate-500">Transforming Intent to Impact</p>
         </div>
       </div>
 
@@ -60,7 +57,7 @@ function HeroPanel() {
           Teach a child.<br />Change a life.
         </h2>
         <p className="text-slate-600 text-sm leading-relaxed">
-          Join volunteers teaching underprivileged students online — just 2 hours a week from your home.
+          Join volunteers teaching students in rural India online — just 2 hours a week from your home.
         </p>
       </div>
 
@@ -122,13 +119,7 @@ function ProgressPanel({ activeStep }) {
     <div className="flex flex-col h-full p-6 lg:p-8">
       {/* Logo */}
       <div className="flex items-center gap-3 mb-8">
-        <div className="w-9 h-9 rounded-xl bg-amber-500 flex items-center justify-center shadow-sm">
-          <GraduationCap className="w-4 h-4 text-white" />
-        </div>
-        <div>
-          <h1 className="text-sm font-bold text-slate-900">eVidyaloka</h1>
-          <p className="text-[10px] text-slate-500">Project SERVE</p>
-        </div>
+        <img src="/serve-logo.jpeg" alt="SERVE" className="h-10 w-auto" />
       </div>
 
       {/* Progress steps */}
@@ -297,12 +288,10 @@ export function VolunteerChatPage() {
       <div className="flex-1 flex flex-col min-w-0 h-screen">
         {/* Mobile header */}
         <header className="border-b border-slate-100 px-4 py-3 flex items-center gap-3 shrink-0">
-          <div className="w-8 h-8 rounded-lg bg-amber-500 flex items-center justify-center">
-            <GraduationCap className="w-4 h-4 text-white" />
-          </div>
+          <img src="/serve-logo.jpeg" alt="SERVE" className="h-8 w-auto" />
           <div className="flex-1 min-w-0">
-            <h1 className="text-sm font-semibold text-slate-900">eVidyaloka — Project SERVE</h1>
-            <p className="text-[11px] text-slate-500">Volunteer with us to teach children in rural India</p>
+            <h1 className="text-sm font-semibold text-slate-900">SERVE — Volunteer Onboarding</h1>
+            <p className="text-[11px] text-slate-500">Transforming Intent to Impact</p>
           </div>
           {hasStarted && (
             <div className="hidden sm:flex lg:hidden items-center gap-1.5 px-2.5 py-1 bg-blue-50 rounded-full">
@@ -320,7 +309,7 @@ export function VolunteerChatPage() {
             </div>
             <h2 className="text-lg font-semibold text-slate-900 mb-2">Ready to make a difference?</h2>
             <p className="text-sm text-slate-500 mb-4 max-w-xs">
-              Join 300+ volunteers teaching underprivileged students. Takes just 5 minutes to get started.
+              Join 300+ volunteers teaching students in rural areas. Takes just 5 minutes to get started.
             </p>
             <div className="grid grid-cols-3 gap-2 mb-6 w-full max-w-xs">
               <div className="text-center p-2 bg-blue-50 rounded-lg">
