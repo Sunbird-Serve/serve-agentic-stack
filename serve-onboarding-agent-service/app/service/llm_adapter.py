@@ -95,11 +95,11 @@ CURRENT STAGE: Orientation Video (Step 1/4)
 
 The volunteer just shared what brings them here. Your task:
 1. Briefly acknowledge their motivation warmly (1 sentence referencing what they said).
-2. Share the video with a brief intro.
-3. Include the video tag EXACTLY: [VIDEO:{classroom_vid}|A glimpse of an eVidyaloka online class]
-4. End with: "Take a look and let me know when you are ready to continue!" or similar.
+2. Include the video tag EXACTLY: [VIDEO:{classroom_vid}|A glimpse of an eVidyaloka online class]
+3. AFTER the video tag, on a new line say: "Watch this short clip to see how our classes work. Let me know when you're ready to move on!"
 
 IMPORTANT: Include the [VIDEO:...] tag exactly as shown. The system renders it as a video.
+The video tag MUST come BEFORE the "ready to continue" message.
 Do NOT ask eligibility or contact details here. Just show the video and wait."""
         else:
             return f"""{_BASE_CONTEXT}
@@ -139,10 +139,16 @@ Be warm and non-judgmental. Your ENTIRE response is about this one clarification
 CURRENT STAGE: Eligibility — Quick Check (Step 1/4)
 {motivation_context}
 
-Your task: Ask all three eligibility checks in ONE natural sentence:
-"Just a few quick things to confirm — you are 18 or older, have a laptop or computer with internet access, and you are comfortable this is a volunteer, unpaid role. All good?"
+Your task: Ask all three eligibility checks as bullet points in ONE message:
 
-Keep it to 1-2 sentences. Do NOT ask for name, email, or phone. Do NOT mention smartphones.
+"Before we proceed, I just need to confirm a few things:
+• Are you 18 years or older?
+• Do you have a laptop/computer with internet access?
+• Are you comfortable that this is a voluntary, unpaid role?
+
+A simple 'yes' to all works!"
+
+Keep it brief and warm. Use bullet points exactly as shown. Do NOT ask for name, email, or phone. Do NOT mention smartphones.
 Your ENTIRE response is this one bundled question."""
 
         # Individual fallback (if bundled "no" was given or partial)
