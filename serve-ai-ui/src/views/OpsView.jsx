@@ -66,6 +66,8 @@ function classifyAll(sessions) {
   for (const s of sessions) {
     // Skip need_coordination sessions — this dashboard is volunteer-only
     if (s.workflow === 'need_coordination') continue;
+    // Skip completed/archived sessions — only show active pipeline
+    if (s.status === 'archived' || s.status === 'abandoned') continue;
 
     const ss = parseSS(s);
     const name = extractName(s, ss) || 'Volunteer';
@@ -600,7 +602,7 @@ export const OpsView = () => {
 
         {/* Section 1: Headline KPIs */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          <KpiCard label="Total" value={stats.sessions?.total || 0} icon={Users} color="bg-blue-50" iconColor="text-blue-600" sub="volunteers" />
+          <KpiCard label="Total" value={stats.sessions?.active || 0} icon={Users} color="bg-blue-50" iconColor="text-blue-600" sub="active" />
           <KpiCard label="This Week" value={stats.sessions?.this_week || 0} icon={TrendingUp} color="bg-violet-50" iconColor="text-violet-600" sub="new" />
           <KpiCard label="Active" value={stats.sessions?.active || 0} icon={Clock} color="bg-emerald-50" iconColor="text-emerald-600" sub="in progress" />
           <KpiCard label="Registered" value={stats.registry_status?.Registered || 0} icon={UserCheck} color="bg-cyan-50" iconColor="text-cyan-600" sub="in registry" />

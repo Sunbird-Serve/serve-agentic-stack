@@ -1,5 +1,5 @@
 """
-SERVE Orchestrator — Nudge Scheduler
+SERVE Orchestrator — Nudge Scheduler (DB-backed)
 
 Background task that sends reminder messages to inactive WhatsApp sessions.
 
@@ -13,9 +13,13 @@ Volunteer can reply "stop" to opt out permanently.
 
 Runs every NUDGE_CHECK_INTERVAL_MINUTES (default 5 min).
 Only sends to WhatsApp channel (web UI can't push).
-Respects quiet hours (default 9pm-8am).
+Respects quiet hours (default 9pm-8am IST).
+
+State is persisted in the nudge_queue DB table via MCP tools,
+so nudge state survives container restarts.
 """
 import asyncio
+import json
 import logging
 import os
 from datetime import datetime, timedelta
@@ -36,7 +40,7 @@ NUDGE_CHECK_INTERVAL_MINUTES = int(os.environ.get("NUDGE_CHECK_INTERVAL_MINUTES"
 
 MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://serve-mcp-server:8004")
 
-# WhatsApp config (same as main.py)
+# WhatsApp config
 _WA_TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
 _WA_PHONE_NUMBER_ID = os.environ.get("WHATSAPP_PHONE_NUMBER_ID", "")
 _WA_GRAPH_URL = "https://graph.facebook.com/v18.0"
@@ -60,7 +64,7 @@ NUDGE_MESSAGES = {
     ),
 }
 
-# ── Nudge delays (minutes from original silence) ─────────────────────────────
+# ── Nudge delays (minutes from last message) ─────────────────────────────────
 NUDGE_DELAYS = {
     1: NUDGE_DELAY_1_MINUTES,
     2: NUDGE_DELAY_2_MINUTES,
@@ -68,37 +72,54 @@ NUDGE_DELAYS = {
 }
 
 
+# ── MCP Tool Client ──────────────────────────────────────────────────────────
+
+async def _call_mcp_tool(tool_name: str, arguments: Dict) -> Dict:
+    """Call an MCP tool via SSE."""
+    try:
+        from mcp.client.session import ClientSession
+        from mcp.client.sse import sse_client
+
+        wire_args = {"params": arguments} if arguments else {}
+        sse_url = f"{MCP_SERVER_URL}/sse"
+        async with sse_client(url=sse_url) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(tool_name, arguments=wire_args)
+                for item in result.content:
+                    if hasattr(item, "text"):
+                        try:
+                            return json.loads(item.text)
+                        except (json.JSONDecodeError, ValueError):
+                            return {"result": item.text}
+        return {}
+    except Exception as e:
+        logger.error(f"[nudge] MCP tool {tool_name} failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
 def _is_quiet_hour() -> bool:
-    """Check if current time is within quiet hours (don't send nudges)."""
+    """Check if current time is within quiet hours (IST)."""
     now = datetime.utcnow()
-    # Simple UTC-based check. For IST, add 5.5 hours.
-    # TODO: Make timezone-aware for production
-    ist_hour = (now.hour + 5) % 24  # rough IST approximation
+    ist_hour = (now.hour + 5) % 24  # rough IST
     if NUDGE_QUIET_HOURS_START > NUDGE_QUIET_HOURS_END:
-        # Wraps midnight: e.g., 21-8 means quiet from 9pm to 8am
         return ist_hour >= NUDGE_QUIET_HOURS_START or ist_hour < NUDGE_QUIET_HOURS_END
-    else:
-        return NUDGE_QUIET_HOURS_START <= ist_hour < NUDGE_QUIET_HOURS_END
+    return NUDGE_QUIET_HOURS_START <= ist_hour < NUDGE_QUIET_HOURS_END
 
 
 async def _send_whatsapp(to: str, text: str) -> bool:
     """Send a WhatsApp text message."""
     if not _WA_TOKEN or not _WA_PHONE_NUMBER_ID:
-        logger.warning("[nudge] WhatsApp not configured — cannot send nudge")
         return False
-
     url = f"{_WA_GRAPH_URL}/{_WA_PHONE_NUMBER_ID}/messages"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.post(
                 url,
                 headers={"Authorization": f"Bearer {_WA_TOKEN}", "Content-Type": "application/json"},
-                json={
-                    "messaging_product": "whatsapp",
-                    "to": to,
-                    "type": "text",
-                    "text": {"body": text},
-                },
+                json={"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": text}},
             )
             r.raise_for_status()
             return True
@@ -107,131 +128,40 @@ async def _send_whatsapp(to: str, text: str) -> bool:
         return False
 
 
-async def _get_sessions_needing_nudge() -> List[Dict]:
-    """
-    Query MCP server for active WhatsApp sessions that have gone silent.
-    Returns sessions that need their next nudge.
-    """
-    try:
-        from mcp.client.session import ClientSession
-        from mcp.client.sse import sse_client
-        import json
+# ── Public API (called from main.py when volunteer messages) ──────────────────
 
-        sse_url = f"{MCP_SERVER_URL}/sse"
-        async with sse_client(url=sse_url) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                result = await session.call_tool("list_sessions", arguments={
-                    "params": {"status": "active", "limit": 200}
-                })
-                for item in result.content:
-                    if hasattr(item, "text"):
-                        data = json.loads(item.text)
-                        return data.get("sessions", [])
-        return []
-    except Exception as e:
-        logger.error(f"[nudge] Failed to query sessions: {e}")
-        return []
-
-
-async def _get_pending_nudges_for_session(session_id: str) -> List[Dict]:
-    """Check if there are already pending/sent nudges for a session."""
-    # For now, use a simple in-memory tracker.
-    # In production, this would query the nudge_queue table.
-    return _nudge_tracker.get(session_id, [])
-
-
-# ── In-memory nudge tracker (simple, single-instance) ─────────────────────────
-# Maps session_id → list of nudge records
-# In production, replace with DB queries to nudge_queue table
-_nudge_tracker: Dict[str, List[Dict]] = {}
-
-
-def cancel_nudges_for_session(session_id: str) -> None:
-    """Cancel all pending nudges for a session (called when volunteer messages)."""
-    if session_id in _nudge_tracker:
-        del _nudge_tracker[session_id]
-        logger.info(f"[nudge] Cancelled pending nudges for session {session_id[:8]}...")
+async def cancel_nudges_for_session(session_id: str) -> None:
+    """Cancel all pending nudges for a session (volunteer replied)."""
+    await _call_mcp_tool("nudge_cancel_for_session", {"session_id": session_id})
 
 
 def mark_do_not_disturb(session_id: str) -> None:
-    """Mark a session as do-not-disturb (volunteer said 'stop')."""
-    _nudge_tracker[session_id] = [{"do_not_disturb": True}]
+    """Mark session as DND. We cancel nudges; the session.do_not_disturb flag is set via MCP."""
+    asyncio.ensure_future(cancel_nudges_for_session(session_id))
     logger.info(f"[nudge] Session {session_id[:8]}... marked as DO_NOT_DISTURB")
 
 
 def is_do_not_disturb(session_id: str) -> bool:
-    """Check if a session is marked do-not-disturb."""
-    records = _nudge_tracker.get(session_id, [])
-    return any(r.get("do_not_disturb") for r in records)
+    """Check DND — this is now checked from session.do_not_disturb flag by the orchestrator."""
+    # The orchestrator checks this via session state; this function is a no-op placeholder.
+    return False
 
 
 def get_nudge_count(session_id: str) -> int:
-    """Get how many nudges have been sent for this session's current silence window."""
-    records = _nudge_tracker.get(session_id, [])
-    return sum(1 for r in records if r.get("sent") and not r.get("do_not_disturb"))
+    """Not used in DB-backed mode — tracked by nudge_number in DB."""
+    return 0
 
 
-def schedule_nudge(session_id: str, phone: str, nudge_number: int, send_at: datetime) -> None:
-    """Schedule a nudge for a session."""
-    if session_id not in _nudge_tracker:
-        _nudge_tracker[session_id] = []
-    _nudge_tracker[session_id].append({
-        "nudge_number": nudge_number,
-        "phone": phone,
-        "scheduled_at": send_at,
-        "sent": False,
-        "do_not_disturb": False,
-    })
-    logger.info(f"[nudge] Scheduled nudge #{nudge_number} for session {session_id[:8]}... at {send_at.isoformat()}")
-
-
-async def _process_pending_nudges() -> int:
-    """Process all pending nudges that are due. Returns count of nudges sent."""
-    sent_count = 0
-    now = datetime.utcnow()
-
-    if _is_quiet_hour():
-        return 0
-
-    for session_id, records in list(_nudge_tracker.items()):
-        if any(r.get("do_not_disturb") for r in records):
-            continue
-
-        for record in records:
-            if record.get("sent") or record.get("do_not_disturb"):
-                continue
-            if record["scheduled_at"] <= now:
-                # Time to send
-                nudge_num = record["nudge_number"]
-                phone = record["phone"]
-                message = NUDGE_MESSAGES.get(nudge_num, NUDGE_MESSAGES[1])
-
-                success = await _send_whatsapp(phone, message)
-                if success:
-                    record["sent"] = True
-                    record["sent_at"] = now
-                    sent_count += 1
-                    logger.info(f"[nudge] Sent nudge #{nudge_num} to {phone[:6]}*** (session {session_id[:8]}...)")
-
-                    # Schedule next nudge if not the last
-                    if nudge_num < 3:
-                        next_num = nudge_num + 1
-                        next_delay = NUDGE_DELAYS[next_num]
-                        next_at = now + timedelta(minutes=next_delay - NUDGE_DELAYS[nudge_num])
-                        schedule_nudge(session_id, phone, next_num, next_at)
-                else:
-                    logger.warning(f"[nudge] Failed to send nudge #{nudge_num} to {phone[:6]}***")
-
-    return sent_count
-
+# ── Core Loop Logic ───────────────────────────────────────────────────────────
 
 async def check_and_schedule_new_nudges() -> None:
     """
-    Check active WhatsApp sessions for silence and schedule first nudges.
-    Called by the background loop.
+    Check active WhatsApp sessions for silence and schedule nudge #1.
+    Deduplication is handled by the MCP tool (won't create duplicates).
     """
-    sessions = await _get_sessions_needing_nudge()
+    # Get all active sessions
+    result = await _call_mcp_tool("list_sessions", {"status": "active", "limit": 200})
+    sessions = result.get("sessions", [])
     now = datetime.utcnow()
 
     for session in sessions:
@@ -244,20 +174,23 @@ async def check_and_schedule_new_nudges() -> None:
         if channel != "whatsapp" or status != "active":
             continue
 
-        # Skip if already tracked or do-not-disturb
-        if session_id in _nudge_tracker:
+        # Check do_not_disturb flag on session
+        if session.get("do_not_disturb"):
             continue
 
-        # Check silence duration
         if not last_msg:
             continue
 
         try:
-            last_msg_time = datetime.fromisoformat(last_msg.replace("Z", "+00:00").replace("+00:00", ""))
+            last_msg_time = datetime.fromisoformat(last_msg.replace("Z", "").replace("+00:00", ""))
         except (ValueError, TypeError):
             continue
 
         silence_minutes = (now - last_msg_time).total_seconds() / 60
+
+        # Don't nudge sessions silent for more than 72 hours — they're abandoned
+        if silence_minutes > 72 * 60:
+            continue
 
         if silence_minutes >= NUDGE_DELAY_1_MINUTES:
             # Get phone from channel_metadata
@@ -267,9 +200,66 @@ async def check_and_schedule_new_nudges() -> None:
                 or ch_meta.get("phone_number")
                 or session.get("actor_id", "")
             )
-            if phone and phone != "dev-user-00000000-0000-0000-0000-000000000000":
-                schedule_nudge(session_id, phone, 1, now)
+            if not phone or phone.startswith("dev-") or phone.startswith("guest_"):
+                continue
 
+            # Schedule nudge #1 — MCP tool handles dedup
+            send_at = last_msg_time + timedelta(minutes=NUDGE_DELAY_1_MINUTES)
+            await _call_mcp_tool("nudge_schedule", {
+                "session_id": session_id,
+                "volunteer_phone": phone,
+                "nudge_number": 1,
+                "scheduled_at": send_at.isoformat(),
+                "volunteer_name": ch_meta.get("volunteer_name", ""),
+            })
+
+
+async def process_due_nudges() -> int:
+    """Send all due nudges. Returns count sent."""
+    if _is_quiet_hour():
+        return 0
+
+    result = await _call_mcp_tool("nudge_get_due", {"now": datetime.utcnow().isoformat()})
+    nudges = result.get("nudges", [])
+    sent_count = 0
+
+    for nudge in nudges:
+        nudge_id = nudge["id"]
+        session_id = nudge["session_id"]
+        phone = nudge["volunteer_phone"]
+        nudge_num = nudge["nudge_number"]
+
+        message = NUDGE_MESSAGES.get(nudge_num, NUDGE_MESSAGES[1])
+        success = await _send_whatsapp(phone, message)
+
+        if success:
+            # Mark as sent in DB
+            await _call_mcp_tool("nudge_mark_sent", {"nudge_id": nudge_id})
+            sent_count += 1
+            logger.info(f"[nudge] Sent nudge #{nudge_num} to {phone[:6]}*** (session {session_id[:8]}...)")
+
+            # Schedule next nudge if not the last
+            if nudge_num < 3:
+                next_num = nudge_num + 1
+                # Calculate from original last_message_at (nudge scheduled_at was based on it)
+                scheduled_base = datetime.fromisoformat(nudge["scheduled_at"])
+                next_delay_from_base = NUDGE_DELAYS[next_num] - NUDGE_DELAYS[nudge_num]
+                next_at = scheduled_base + timedelta(minutes=next_delay_from_base)
+
+                await _call_mcp_tool("nudge_schedule", {
+                    "session_id": session_id,
+                    "volunteer_phone": phone,
+                    "nudge_number": next_num,
+                    "scheduled_at": next_at.isoformat(),
+                    "volunteer_name": nudge.get("volunteer_name", ""),
+                })
+        else:
+            logger.warning(f"[nudge] Failed to send nudge #{nudge_num} to {phone[:6]}***")
+
+    return sent_count
+
+
+# ── Background Loop ───────────────────────────────────────────────────────────
 
 async def start_nudge_scheduler() -> None:
     """
@@ -285,7 +275,7 @@ async def start_nudge_scheduler() -> None:
         return
 
     logger.info(
-        f"[nudge] Nudge scheduler starting — "
+        f"[nudge] Nudge scheduler starting (DB-backed) — "
         f"check every {NUDGE_CHECK_INTERVAL_MINUTES}min, "
         f"delays: {NUDGE_DELAY_1_MINUTES}m/{NUDGE_DELAY_2_MINUTES}m/{NUDGE_DELAY_3_MINUTES}m, "
         f"quiet hours: {NUDGE_QUIET_HOURS_START}:00-{NUDGE_QUIET_HOURS_END}:00 IST"
@@ -294,7 +284,7 @@ async def start_nudge_scheduler() -> None:
     while True:
         try:
             await check_and_schedule_new_nudges()
-            sent = await _process_pending_nudges()
+            sent = await process_due_nudges()
             if sent:
                 logger.info(f"[nudge] Cycle complete: {sent} nudges sent")
         except Exception as e:

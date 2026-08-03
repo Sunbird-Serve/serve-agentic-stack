@@ -2093,6 +2093,124 @@ async def update_volunteer_registry_status(params: UpdateVolunteerRegistryStatus
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# NUDGE QUEUE TOOLS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+async def nudge_schedule(session_id: str, volunteer_phone: str, nudge_number: int, scheduled_at: str, volunteer_name: str = "") -> dict:
+    """Schedule a nudge reminder for an inactive WhatsApp session."""
+    from services.database import get_db, NudgeQueue, is_db_healthy
+    from uuid import UUID
+    if not is_db_healthy():
+        return {"status": "error", "error": "DB not available"}
+    try:
+        async with get_db() as db:
+            # Check for existing unsent nudge for this session+number
+            from sqlalchemy import select, and_
+            existing = (await db.execute(
+                select(NudgeQueue).where(and_(
+                    NudgeQueue.session_id == UUID(session_id),
+                    NudgeQueue.nudge_number == nudge_number,
+                    NudgeQueue.sent_at.is_(None),
+                    NudgeQueue.cancelled == False,
+                ))
+            )).scalars().first()
+            if existing:
+                return {"status": "already_scheduled", "id": str(existing.id)}
+
+            nudge = NudgeQueue(
+                session_id=UUID(session_id),
+                volunteer_phone=volunteer_phone,
+                volunteer_name=volunteer_name,
+                nudge_number=nudge_number,
+                scheduled_at=datetime.fromisoformat(scheduled_at),
+            )
+            db.add(nudge)
+            return {"status": "success", "id": str(nudge.id)}
+    except Exception as e:
+        logger.error(f"nudge_schedule failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+@mcp.tool()
+async def nudge_get_due(now: str = "") -> dict:
+    """Get all nudges that are due to be sent (scheduled_at <= now, not sent, not cancelled)."""
+    from services.database import get_db, NudgeQueue, is_db_healthy
+    from sqlalchemy import select, and_
+    if not is_db_healthy():
+        return {"status": "error", "error": "DB not available"}
+    try:
+        current = datetime.fromisoformat(now) if now else datetime.utcnow()
+        async with get_db() as db:
+            rows = (await db.execute(
+                select(NudgeQueue).where(and_(
+                    NudgeQueue.scheduled_at <= current,
+                    NudgeQueue.sent_at.is_(None),
+                    NudgeQueue.cancelled == False,
+                )).order_by(NudgeQueue.scheduled_at)
+                .limit(50)
+            )).scalars().all()
+            return {
+                "status": "success",
+                "nudges": [{
+                    "id": str(r.id),
+                    "session_id": str(r.session_id),
+                    "volunteer_phone": r.volunteer_phone,
+                    "volunteer_name": r.volunteer_name,
+                    "nudge_number": r.nudge_number,
+                    "scheduled_at": r.scheduled_at.isoformat(),
+                } for r in rows],
+            }
+    except Exception as e:
+        logger.error(f"nudge_get_due failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+@mcp.tool()
+async def nudge_mark_sent(nudge_id: str) -> dict:
+    """Mark a nudge as sent."""
+    from services.database import get_db, NudgeQueue, is_db_healthy
+    from sqlalchemy import update as sa_update
+    from uuid import UUID
+    if not is_db_healthy():
+        return {"status": "error", "error": "DB not available"}
+    try:
+        async with get_db() as db:
+            await db.execute(
+                sa_update(NudgeQueue)
+                .where(NudgeQueue.id == UUID(nudge_id))
+                .values(sent_at=datetime.utcnow())
+            )
+        return {"status": "success"}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@mcp.tool()
+async def nudge_cancel_for_session(session_id: str) -> dict:
+    """Cancel all pending nudges for a session (volunteer replied)."""
+    from services.database import get_db, NudgeQueue, is_db_healthy
+    from sqlalchemy import update as sa_update, and_
+    from uuid import UUID
+    if not is_db_healthy():
+        return {"status": "error", "error": "DB not available"}
+    try:
+        async with get_db() as db:
+            result = await db.execute(
+                sa_update(NudgeQueue)
+                .where(and_(
+                    NudgeQueue.session_id == UUID(session_id),
+                    NudgeQueue.sent_at.is_(None),
+                    NudgeQueue.cancelled == False,
+                ))
+                .values(cancelled=True)
+            )
+        return {"status": "success", "cancelled_count": result.rowcount}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # DASHBOARD HTTP ENDPOINTS
 # Must be registered BEFORE mcp.run() is called.
 # ─────────────────────────────────────────────────────────────────────────────
