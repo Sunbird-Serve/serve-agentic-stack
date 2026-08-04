@@ -1217,10 +1217,62 @@ class OrchestrationService:
                             new_state=auto_response.state,
                             sub_state=auto_response.sub_state,
                         )
+
+                    # Handle auto_continue — agent wants a follow-up turn
+                    final_message = auto_response.assistant_message
+                    if getattr(auto_response, 'auto_continue', False):
+                        try:
+                            continue_state = SessionState(
+                                id=session_context.session_id,
+                                channel=session_context.channel,
+                                persona=session_context.persona,
+                                workflow=session_context.workflow,
+                                active_agent=to_agent,
+                                status=session_context.status,
+                                stage=auto_response.state or agent_response.state,
+                                sub_state=auto_response.sub_state,
+                                volunteer_id=_safe_uuid(session_context.volunteer_id),
+                                volunteer_name=volunteer.get("full_name"),
+                                volunteer_phone=volunteer.get("phone"),
+                                channel_metadata=event.raw_metadata if event.raw_metadata else None,
+                            )
+                            continue_request = AgentTurnRequest(
+                                session_id=session_context.session_id,
+                                session_state=continue_state,
+                                user_message="__auto_continue__",
+                                conversation_history=[],
+                                intent_hint="continue_workflow",
+                                channel_metadata=event.raw_metadata if event.raw_metadata else None,
+                                volunteer_facts=facts,
+                            )
+                            continue_routing = RoutingDecision(
+                                target_agent=to_agent,
+                                confidence=1.0,
+                                reason="Auto-continue after ack",
+                                routing_context={"decision_type": "auto_continue"},
+                            )
+                            continue_response = await agent_router.invoke_agent(continue_routing, continue_request)
+                            if continue_response and continue_response.assistant_message:
+                                await domain_client.save_message(
+                                    session_id=session_context.session_id,
+                                    role="assistant",
+                                    content=continue_response.assistant_message,
+                                    agent=continue_response.active_agent.value,
+                                )
+                                if continue_response.state:
+                                    await domain_client.advance_state(
+                                        session_id=session_context.session_id,
+                                        new_state=continue_response.state,
+                                        sub_state=continue_response.sub_state,
+                                    )
+                                final_message = f"{auto_response.assistant_message}\n\n{continue_response.assistant_message}"
+                        except Exception as cont_exc:
+                            logger.warning(f"[fact-routing] Auto-continue failed: {cont_exc}")
+
                     # Combine messages for the response
                     combined_message = (
                         f"{agent_response.assistant_message}\n\n"
-                        f"{auto_response.assistant_message}"
+                        f"{final_message}"
                     )
                     return InteractionResponse(
                         session_id=session_context.session_id,

@@ -45,12 +45,15 @@ async def _get_registry_status_counts() -> Dict[str, int]:
             # Registered = completed onboarding (reached onboarding_complete or beyond)
             registered = (await db.execute(
                 select(func.count()).select_from(DBSession)
-                .where(DBSession.stage.in_([
-                    "onboarding_complete", "selection_conversation",
-                    "gathering_preferences", "re_engaging",
-                    "matching_ready", "active", "complete",
-                    "activation_started",
-                ]))
+                .where(and_(
+                    DBSession.status != "archived",
+                    DBSession.stage.in_([
+                        "onboarding_complete", "selection_conversation",
+                        "gathering_preferences", "re_engaging",
+                        "matching_ready", "active", "complete",
+                        "activation_started",
+                    ]),
+                ))
             )).scalar() or 0
 
             # Recommended/OnHold: check all sessions that have passed through selection
@@ -59,6 +62,7 @@ async def _get_registry_status_counts() -> Dict[str, int]:
                 select(DBSession.sub_state, DBSession.active_agent, DBSession.stage)
                 .where(
                     and_(
+                        DBSession.status != "archived",
                         or_(
                             DBSession.active_agent == "selection",
                             DBSession.active_agent == "engagement",
