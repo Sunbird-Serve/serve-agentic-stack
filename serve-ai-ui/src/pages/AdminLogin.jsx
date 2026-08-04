@@ -9,6 +9,7 @@ import { dashboardApi } from '../services/api';
 
 export function AdminLogin() {
   const [inputToken, setInputToken] = useState('');
+  const [role, setRole] = useState('vm');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const { login, isAuthenticated } = useAdmin();
@@ -36,7 +37,11 @@ export function AdminLogin() {
     try {
       const res = await dashboardApi.getStats(1, 1);
       if (res.status === 'success') {
-        login(inputToken.trim());
+        // Both ADMIN_TOKEN (tech) and DASHBOARD_API_KEY (vm) are accepted.
+        // We store the token and let the AdminShell determine visibility.
+        // Convention: tech team uses ADMIN_TOKEN, VM team uses DASHBOARD_API_KEY.
+        // The frontend can't know which — so we add a simple role selector.
+        login(inputToken.trim(), role);
         navigate('/admin/dashboard');
       } else {
         localStorage.removeItem('serve_admin_token');
@@ -77,6 +82,17 @@ export function AdminLogin() {
               disabled={loading}
             />
             {error && <p className="text-xs text-red-500 mt-1.5 font-medium">{error}</p>}
+          </div>
+          <div>
+            <select
+              value={role}
+              onChange={(e) => setRole(e.target.value)}
+              className="w-full px-4 py-3 border border-slate-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              disabled={loading}
+            >
+              <option value="vm">Operations Team</option>
+              <option value="tech">Tech Team</option>
+            </select>
           </div>
           <button
             type="submit"

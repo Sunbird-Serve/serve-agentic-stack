@@ -7,15 +7,8 @@ import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { useAdmin } from '../../context/AdminContext';
 import { LayoutDashboard, Users, MessageSquare, Bot, LogOut, Menu, X } from 'lucide-react';
 
-const NAV_ITEMS = [
-  { path: '/admin/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { path: '/admin/volunteers', label: 'Volunteers', icon: Users },
-  { path: '/admin/conversations', label: 'Conversations', icon: MessageSquare },
-  { path: '/admin/agents', label: 'Agents', icon: Bot },
-];
-
 export function AdminShell() {
-  const { logout } = useAdmin();
+  const { logout, isTech } = useAdmin();
   const navigate = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -23,6 +16,13 @@ export function AdminShell() {
     logout();
     navigate('/admin');
   };
+
+  const navItems = [
+    { path: '/admin/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { path: '/admin/volunteers', label: 'Volunteers', icon: Users },
+    ...(isTech ? [{ path: '/admin/conversations', label: 'Conversations', icon: MessageSquare }] : []),
+    { path: '/admin/agents', label: 'Agents', icon: Bot },
+  ];
 
   const navContent = (
     <>
@@ -36,7 +36,7 @@ export function AdminShell() {
       </div>
 
       <nav className="flex-1 p-3 space-y-1">
-        {NAV_ITEMS.map((item) => (
+        {navItems.map((item) => (
           <NavLink
             key={item.path}
             to={item.path}
