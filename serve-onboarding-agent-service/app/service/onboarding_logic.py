@@ -84,6 +84,11 @@ RESUME_PATTERNS = [r"\bresume\b", r"\bcontinue\b", r"\bstart\b", r"\bready\b", r
 CONFIRM_PATTERNS = [
     r"\byes\b", r"\bcorrect\b", r"\bconfirm\b", r"\blooks good\b",
     r"\bright\b", r"\bok\b", r"\bokay\b", r"\ball good\b",
+    r"\bfine\b", r"\bproceed\b", r"\bgo ahead\b", r"\bsure\b",
+    r"\byep\b", r"\byeah\b", r"\bthats right\b", r"\bthat's right\b",
+    r"\ball set\b", r"\bperfect\b", r"\bno changes\b", r"\bno change\b",
+    r"\bagree\b", r"\bconsent\b", r"\bdone\b", r"\blets go\b",
+    r"\bhaan\b", r"\bha\b", r"\btheek\b", r"\bsahi\b", r"\bji\b",
 ]
 EDIT_CONTACT_PATTERNS = [r"\bname\b", r"\bemail\b", r"\bcontact\b", r"\bqualification\b"]
 

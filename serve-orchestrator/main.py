@@ -155,7 +155,7 @@ async def _wa_send_rich(to: str, text: str) -> None:
     """
     Send a message to WhatsApp, handling [VIDEO:url|caption] tags.
     Videos are uploaded to WhatsApp and sent as native video messages.
-    Text around the tags is sent as regular text messages.
+    Text before the tag is sent first, then video, then text after.
     """
     from app.channel.wa_media import fetch_and_send_video
 
@@ -167,15 +167,16 @@ async def _wa_send_rich(to: str, text: str) -> None:
         await _wa_send(to, text)
         return
 
-    # Strip video tags from text and send the text part first
-    text_only = _VIDEO_TAG_RE.sub('', text).strip()
-    if text_only:
-        await _wa_send(to, text_only)
-
-    # Send each video as a native WhatsApp video message
+    # Split text around video tags and send in order: text → video → text → video → ...
+    last_end = 0
     for match in video_matches:
+        # Send text before this video tag
+        before_text = text[last_end:match.start()].strip()
+        if before_text:
+            await _wa_send(to, before_text)
+
+        # Send the video
         video_url = match.group(1)
-        # Rewrite localhost URLs to Docker internal hostname for container-to-container fetch
         video_url = video_url.replace("http://localhost:8002", "http://serve-onboarding-agent-service:8002")
         caption = match.group(2)
         logger.info(f"Sending WhatsApp video: url={video_url}, caption={caption}")
@@ -183,6 +184,13 @@ async def _wa_send_rich(to: str, text: str) -> None:
         if not ok:
             logger.warning(f"WhatsApp video send failed for {video_url} — sending caption as text fallback")
             await _wa_send(to, f"🎥 {caption}")
+
+        last_end = match.end()
+
+    # Send any text after the last video tag
+    after_text = text[last_end:].strip()
+    if after_text:
+        await _wa_send(to, after_text)
 
 
 async def _wa_mark_read(message_id: str) -> None:
