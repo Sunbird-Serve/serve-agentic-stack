@@ -140,7 +140,10 @@ async def get_dashboard_stats(page: int = 1, page_size: int = 25) -> Dict[str, A
 
             sessions_week = (await db.execute(
                 select(func.count()).select_from(DBSession)
-                .where(DBSession.created_at >= week_ago)
+                .where(and_(
+                    DBSession.created_at >= week_ago,
+                    DBSession.status != "archived",
+                ))
             )).scalar() or 0
 
             # ── Sessions by channel ───────────────────────────────────────────
