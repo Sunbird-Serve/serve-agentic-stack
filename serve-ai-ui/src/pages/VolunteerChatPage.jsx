@@ -325,7 +325,7 @@ export function VolunteerChatPage() {
                 <p className="text-[9px] text-slate-500">Schools</p>
               </div>
             </div>
-            <p className="text-xs text-slate-400">Type "Hi" below to start ↓</p>
+            <p className="text-xs text-slate-400">Tap Send to start ↓</p>
           </div>
         )}
 
@@ -335,7 +335,7 @@ export function VolunteerChatPage() {
         </div>
 
         <div className="shrink-0">
-          <ChatInput onSend={sendMessage} loading={loading} placeholder={hasStarted ? "Type your message..." : "Type 'Hi' to start your journey..."} />
+          <ChatInput onSend={sendMessage} loading={loading} placeholder={hasStarted ? "Type your message..." : "I would like to volunteer"} defaultValue={hasStarted ? "" : "I would like to volunteer"} />
         </div>
       </div>
     </div>
