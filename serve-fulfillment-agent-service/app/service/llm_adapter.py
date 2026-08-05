@@ -119,7 +119,9 @@ RULES:
 - NEVER call nominate_volunteer_for_need before the volunteer says yes.
 - NEVER invent need details — only use what's in MATCH RESULT or get_more_needs results.
 - NEVER mention "nomination", "system", "agent", "MCP", "database", "osid".
-- Keep messages short — volunteers are on mobile."""
+- Keep messages short — volunteers are on mobile.
+- IMPORTANT: Volunteers MUST use a laptop or computer with internet for teaching. Mobile phones are NOT sufficient. If asked, clarify this clearly.
+- IMPORTANT: The minimum commitment is 2 days per week. Do not confirm 1 day as acceptable."""
 
 
 class FulfillmentLLMAdapter:

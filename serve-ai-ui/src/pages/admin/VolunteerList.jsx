@@ -285,6 +285,7 @@ export function VolunteerList() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
+  const [agentFilter, setAgentFilter] = useState('all');
   const [selectedSession, setSelectedSession] = useState(null);
 
   const load = useCallback(async () => {
@@ -307,6 +308,7 @@ export function VolunteerList() {
     if (s.workflow === 'need_coordination') return false;
     if (s.status === 'archived') return false;
     if (filter !== 'all' && s.status !== filter) return false;
+    if (agentFilter !== 'all' && s.active_agent !== agentFilter) return false;
     if (search) {
       const q = search.toLowerCase();
       const name = (s.volunteer_name || '').toLowerCase();
@@ -329,7 +331,7 @@ export function VolunteerList() {
       </div>
 
       {/* Search + Filter */}
-      <div className="flex gap-3">
+      <div className="flex gap-3 flex-wrap">
         <div className="relative flex-1 max-w-xs">
           <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
           <Input
@@ -344,10 +346,22 @@ export function VolunteerList() {
           onChange={(e) => setFilter(e.target.value)}
           className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white"
         >
-          <option value="all">All</option>
+          <option value="all">All Status</option>
           <option value="active">Active</option>
           <option value="paused">Paused</option>
           <option value="completed">Completed</option>
+        </select>
+        <select
+          value={agentFilter}
+          onChange={(e) => setAgentFilter(e.target.value)}
+          className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white"
+        >
+          <option value="all">All Agents</option>
+          <option value="onboarding">Onboarding</option>
+          <option value="selection">Selection</option>
+          <option value="engagement">Engagement</option>
+          <option value="fulfillment">Fulfillment</option>
+          <option value="delivery_assistant">Delivery</option>
         </select>
       </div>
 
