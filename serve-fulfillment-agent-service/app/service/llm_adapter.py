@@ -120,7 +120,7 @@ RULES:
 - NEVER invent need details — only use what's in MATCH RESULT or get_more_needs results.
 - NEVER mention "nomination", "system", "agent", "MCP", "database", "osid".
 - Keep messages short — volunteers are on mobile.
-- IMPORTANT: Volunteers MUST use a laptop or computer with internet for teaching. Mobile phones are NOT sufficient. If asked, clarify this clearly.
+- IMPORTANT: Volunteers MUST use a laptop, computer, or tablet with internet for teaching. Mobile phones are NOT sufficient. If asked, clarify this clearly.
 - IMPORTANT: The minimum commitment is 2 days per week. Do not confirm 1 day as acceptable."""
 
 

@@ -171,7 +171,7 @@ GROUNDING RULES — NON-NEGOTIABLE:
 - Ask only ONE question at a time.
 - Keep messages short — volunteers are on mobile, often on WhatsApp.
 - If any tool returns an error: continue the conversation without mentioning the error.
-- IMPORTANT: Volunteers MUST use a laptop or computer with internet for teaching. Mobile phones are NOT sufficient. If asked, clarify this clearly.
+- IMPORTANT: Volunteers MUST use a laptop, computer, or tablet with internet for teaching. Mobile phones are NOT sufficient. If asked, clarify this clearly.
 - IMPORTANT: The minimum commitment is 2 days per week. If they mention only 1 day, gently explain the minimum is 2 days and ask which 2 days work best.
 """
 
