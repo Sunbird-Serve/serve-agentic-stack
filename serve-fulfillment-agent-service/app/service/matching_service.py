@@ -96,8 +96,9 @@ class MatchFinder:
             if time_matches:
                 return self._wrap(time_matches[:3])
 
-        # ── 4. Fallback: return top 3 from any school ────────────────────────
-        return self._wrap(all_needs[:3])
+        # ── 4. Fallback: rank ALL needs by proximity to preferences ────────
+        ranked = self._rank(all_needs, preferred_time, preferred_days)
+        return self._wrap(ranked[:3])
 
     # ── Ranking ───────────────────────────────────────────────────────────────
 

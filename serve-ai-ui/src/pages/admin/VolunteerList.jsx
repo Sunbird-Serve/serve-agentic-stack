@@ -124,157 +124,191 @@ function VolunteerDetail({ session, onClose }) {
     paused: 'bg-slate-100 text-slate-600',
   };
 
-  // Extract engagement data from sub_state
-  const engPrefs = ss.preference_notes || ss.handoff?.preference_notes;
+  // Extract engagement data
+  const engPrefs = ss.preference_notes || (ss.handoff || {}).preference_notes;
   const engDeferred = ss.deferred;
   const engDeferredReason = ss.deferred_reason;
+  const engDays = (ss.handoff || {}).preference_notes || engPrefs;
 
   // Extract fulfillment data
   const nominatedNeed = ss.nominated_need_id;
   const matchResult = ss.match_result || {};
+  const matchCount = (matchResult.candidates || []).length;
+
+  // Compute onboarding duration
+  const createdAt = session.created_at ? new Date(session.created_at) : null;
+  const firstSelMsg = null; // Would need conversation data for exact timing
 
   return (
-    <div className="fixed inset-0 md:inset-y-0 md:left-auto md:right-0 md:w-96 bg-white shadow-xl border-l border-slate-200 z-50 overflow-y-auto">
+    <div className="fixed inset-0 md:inset-y-0 md:left-auto md:right-0 md:w-[420px] bg-white shadow-xl border-l border-slate-200 z-50 overflow-y-auto">
       <div className="sticky top-0 bg-white border-b border-slate-100 px-4 py-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-slate-900">Volunteer Detail</h2>
+        <h2 className="text-sm font-semibold text-slate-900">Volunteer Journey</h2>
         <button onClick={onClose} className="p-1 rounded hover:bg-slate-100">
           <X className="w-4 h-4" />
         </button>
       </div>
 
-      <div className="p-4 space-y-5">
-        {/* Identity */}
-        <div>
-          <h3 className="text-xs font-medium text-slate-400 uppercase mb-2">Identity</h3>
-          <div className="space-y-1.5">
-            <p className="text-sm"><span className="text-slate-500">Name:</span> <span className="font-medium">{session.volunteer_name || '—'}</span></p>
-            <p className="text-sm"><span className="text-slate-500">Phone:</span> {session.volunteer_phone || '—'}</p>
-            <p className="text-sm"><span className="text-slate-500">Agent:</span> <span className="capitalize">{agent?.replace('_', ' ')}</span></p>
-            <p className="text-sm"><span className="text-slate-500">Stage:</span> {session.stage}</p>
-            <p className="text-sm"><span className="text-slate-500">Status:</span> <StatusPill status={session.status} /></p>
-            <p className="text-sm"><span className="text-slate-500">Last active:</span> {timeAgo(session.last_message_at)}</p>
+      <div className="p-4 space-y-4">
+        {/* Identity Header */}
+        <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
+          <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
+            <span className="text-sm font-bold text-blue-700">
+              {(session.volunteer_name || '?')[0].toUpperCase()}
+            </span>
           </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-slate-900 truncate">{session.volunteer_name || 'Unknown'}</p>
+            <p className="text-xs text-slate-500">{session.volunteer_phone || '—'} · {session.channel}</p>
+          </div>
+          <StatusPill status={session.status} />
         </div>
 
-        {/* Onboarding Summary */}
-        {passedOnboarding && (
-          <div>
-            <h3 className="text-xs font-medium text-slate-400 uppercase mb-2">Onboarding</h3>
-            <div className="text-xs space-y-1 text-slate-600">
-              {(() => {
-                const ELIG_PASSED_STAGES = ['contact_capture', 'teaching_profile', 'registration_review', 'onboarding_complete', 'selection_conversation', 'gathering_preferences'];
-                const eligPassed = passedSelection || ELIG_PASSED_STAGES.includes(session.stage);
-                const regDone = passedSelection;
-                const reviewReason = ss.review_reason;
-                const isIneligible = agent === 'onboarding' && session.stage === 'human_review' && reviewReason;
+        {/* Journey Timeline */}
+        <div className="space-y-0">
 
-                if (isIneligible) {
-                  const reasonLabels = {
-                    age_18_plus: 'Under 18',
-                    has_internet_and_device: 'No internet/device access',
-                    accepts_unpaid_role: 'Declined unpaid role',
-                  };
-                  return <p>❌ Not eligible — {reasonLabels[reviewReason] || reviewReason?.replace(/_/g, ' ')}</p>;
-                }
-                if (eligPassed) return <><p>✅ Eligibility confirmed</p>{regDone && <p>✅ Registered in Serve Registry</p>}{!regDone && agent === 'onboarding' && <p>🔵 Registration in progress</p>}</>;
-                return <p>🔵 In progress — {session.stage?.replace(/_/g, ' ')}</p>;
-              })()}
-            </div>
-          </div>
-        )}
+          {/* Onboarding */}
+          <TimelineStep
+            label="Onboarding"
+            status={passedSelection ? 'complete' : (agent === 'onboarding' ? 'active' : 'pending')}
+          >
+            {(() => {
+              const ELIG_PASSED_STAGES = ['contact_capture', 'teaching_profile', 'registration_review', 'onboarding_complete', 'selection_conversation', 'gathering_preferences'];
+              const eligPassed = passedSelection || ELIG_PASSED_STAGES.includes(session.stage);
+              const regDone = passedSelection;
+              const reviewReason = ss.review_reason;
+              const isIneligible = agent === 'onboarding' && session.stage === 'human_review' && reviewReason;
 
-        {/* Selection Assessment */}
-        {hasSelection && (
-          <div>
-            <h3 className="text-xs font-medium text-slate-400 uppercase mb-2">Selection Assessment</h3>
+              if (isIneligible) {
+                const reasonLabels = { age_18_plus: 'Under 18', has_internet_and_device: 'No device/internet', accepts_unpaid_role: 'Declined unpaid' };
+                return <p className="text-red-600">❌ Not eligible — {reasonLabels[reviewReason] || reviewReason}</p>;
+              }
+              return (
+                <>
+                  {eligPassed && <p>✓ Eligibility confirmed</p>}
+                  {regDone && <p>✓ Registered in Serve Registry</p>}
+                  {!eligPassed && agent === 'onboarding' && <p className="text-blue-600">In progress — {session.stage?.replace(/_/g, ' ')}</p>}
+                </>
+              );
+            })()}
+          </TimelineStep>
 
-            {/* Outcome badge */}
-            {sel.outcome && (
-              <div className="mb-3">
-                <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${outcomeColors[sel.outcome] || 'bg-slate-100'}`}>
-                  {sel.outcome.replace(/_/g, ' ')}
-                  {sel.confidence && ` (${Math.round(sel.confidence * 100)}%)`}
-                </span>
-                {sel.reason && <p className="text-xs text-slate-500 mt-1.5">{sel.reason}</p>}
-              </div>
+          {/* Selection */}
+          <TimelineStep
+            label="Selection"
+            status={inEngagement ? 'complete' : (agent === 'selection' ? 'active' : (passedSelection ? 'active' : 'pending'))}
+          >
+            {hasSelection && (
+              <>
+                {sel.outcome && (
+                  <p>
+                    <span className={`inline-block text-[10px] px-1.5 py-0.5 rounded-full font-medium mr-1.5 ${outcomeColors[sel.outcome] || 'bg-slate-100'}`}>
+                      {sel.outcome.replace(/_/g, ' ')}
+                    </span>
+                    {sel.confidence && <span className="text-slate-400">({Math.round(sel.confidence * 100)}%)</span>}
+                  </p>
+                )}
+                {sel.reason && <p className="text-slate-500 italic">{sel.reason}</p>}
+                <div className="flex flex-wrap gap-1.5 mt-1">
+                  {Object.entries(SIGNAL_LABELS).map(([key, label]) => {
+                    const value = sel.signals[key];
+                    if (!value) return null;
+                    const isGood = SIGNAL_GOOD[key]?.includes(value);
+                    return (
+                      <span key={key} className={`text-[10px] px-1.5 py-0.5 rounded ${isGood ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+                        {label}: {value}
+                      </span>
+                    );
+                  })}
+                </div>
+              </>
             )}
+            {!hasSelection && !passedSelection && agent !== 'onboarding' && <p className="text-slate-400">Not yet reached</p>}
+          </TimelineStep>
 
-            {/* Signals breakdown */}
-            <div className="space-y-2">
-              {Object.entries(SIGNAL_LABELS).map(([key, label]) => {
-                const value = sel.signals[key];
-                const note = sel.notes[key === 'motivation_alignment' ? 'motivation' : key === 'availability_realism' ? 'availability' : key === 'language_comfort' ? 'language_notes' : ''];
-                if (!value && value !== null) return null;
-                return (
-                  <div key={key} className="flex items-start gap-2">
-                    <SignalIcon value={value} field={key} />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-medium text-slate-700">{label}:</span>
-                        <span className="text-xs text-slate-500">{value || 'not assessed'}</span>
-                      </div>
-                      {note && <p className="text-xs text-slate-400 truncate mt-0.5" title={note}>{note}</p>}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Blockers */}
-            {sel.signals.blockers && sel.signals.blockers.length > 0 && (
-              <div className="mt-2 p-2 bg-red-50 rounded-lg">
-                <p className="text-xs font-medium text-red-700">Blockers: {sel.signals.blockers.join(', ')}</p>
-              </div>
+          {/* Engagement */}
+          <TimelineStep
+            label="Engagement"
+            status={inFulfillment ? 'complete' : (agent === 'engagement' ? 'active' : (inEngagement ? 'active' : 'pending'))}
+          >
+            {inEngagement && (
+              <>
+                {engDays && <p>📅 {engDays}</p>}
+                {engDeferred && <p className="text-amber-600">⏸️ Deferred: {engDeferredReason || 'no reason'}</p>}
+                {!engDays && !engDeferred && agent === 'engagement' && <p className="text-blue-600">Gathering preferences…</p>}
+                {!engDays && !engDeferred && agent !== 'engagement' && <p>✓ Preferences captured</p>}
+              </>
             )}
-          </div>
-        )}
+          </TimelineStep>
 
-        {/* No selection yet */}
-        {!hasSelection && !passedSelection && (
-          <div>
-            <h3 className="text-xs font-medium text-slate-400 uppercase mb-2">Selection</h3>
-            <p className="text-xs text-slate-400">Not yet assessed — volunteer hasn't reached selection stage.</p>
-          </div>
-        )}
+          {/* Fulfillment */}
+          <TimelineStep
+            label="Fulfillment"
+            status={inDelivery ? 'complete' : (agent === 'fulfillment' ? 'active' : (inFulfillment ? 'active' : 'pending'))}
+          >
+            {inFulfillment && (
+              <>
+                {matchCount > 0 && !nominatedNeed && <p>🔍 {matchCount} option{matchCount > 1 ? 's' : ''} shown — exploring</p>}
+                {nominatedNeed && <p>✓ Nominated: <span className="font-mono text-[10px]">{nominatedNeed.slice(0, 12)}…</span></p>}
+                {matchResult.status === 'not_found' && <p className="text-amber-600">⚠️ No matching need found</p>}
+                {!matchResult.status && agent === 'fulfillment' && <p className="text-blue-600">Searching…</p>}
+              </>
+            )}
+          </TimelineStep>
 
-        {/* Engagement Summary */}
-        {inEngagement && (
-          <div>
-            <h3 className="text-xs font-medium text-slate-400 uppercase mb-2">Engagement</h3>
-            <div className="text-xs space-y-1 text-slate-600">
-              {engPrefs && <p>📋 Preferences: {engPrefs}</p>}
-              {engDeferred && <p>⏸️ Deferred: {engDeferredReason || 'no reason given'}</p>}
-              {!engPrefs && !engDeferred && agent === 'engagement' && <p>🔵 Gathering preferences…</p>}
-              {!engPrefs && !engDeferred && agent !== 'engagement' && <p>✅ Preferences captured</p>}
-            </div>
-          </div>
-        )}
+          {/* Delivery */}
+          <TimelineStep
+            label="Delivery"
+            status={inDelivery ? 'active' : 'pending'}
+          >
+            {inDelivery && (
+              <>
+                {session.stage === 'activation_started' && <p className="text-blue-600">Activation in progress</p>}
+                {session.stage === 'volunteer_acknowledged' && <p>✓ Volunteer acknowledged assignment</p>}
+                {session.stage === 'activation_complete' && <p>✓ Teaching sessions underway</p>}
+                {session.status === 'escalated' && <p className="text-red-600">🚨 Escalated</p>}
+              </>
+            )}
+          </TimelineStep>
 
-        {/* Fulfillment Summary */}
-        {inFulfillment && (
-          <div>
-            <h3 className="text-xs font-medium text-slate-400 uppercase mb-2">Fulfillment</h3>
-            <div className="text-xs space-y-1 text-slate-600">
-              {nominatedNeed && <p>✅ Nominated for need: <span className="font-mono">{nominatedNeed.slice(0, 12)}…</span></p>}
-              {matchResult.status === 'found' && !nominatedNeed && <p>🔵 Match found — awaiting confirmation</p>}
-              {matchResult.status === 'not_found' && <p>⚠️ No matching need found</p>}
-              {!matchResult.status && agent === 'fulfillment' && <p>🔵 Searching for matches…</p>}
-              {agent !== 'fulfillment' && !nominatedNeed && <p>✅ Completed</p>}
-            </div>
-          </div>
-        )}
+        </div>
 
-        {/* Delivery Summary */}
-        {inDelivery && (
-          <div>
-            <h3 className="text-xs font-medium text-slate-400 uppercase mb-2">Delivery</h3>
-            <div className="text-xs space-y-1 text-slate-600">
-              {session.stage === 'activation_started' && <p>🔵 Activation in progress</p>}
-              {session.stage === 'activation_complete' && <p>✅ Activated — teaching sessions underway</p>}
-              {session.status === 'escalated' && <p>🚨 Escalated — needs coordinator attention</p>}
-            </div>
-          </div>
-        )}
+        {/* Meta info */}
+        <div className="pt-3 border-t border-slate-100 text-[11px] text-slate-400 space-y-1">
+          <p>Agent: <span className="capitalize text-slate-600">{agent?.replace('_', ' ')}</span> · Stage: <span className="text-slate-600">{session.stage}</span></p>
+          <p>Created: {session.created_at ? new Date(session.created_at).toLocaleString() : '—'}</p>
+          <p>Last active: {timeAgo(session.last_message_at)}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Timeline step component
+function TimelineStep({ label, status, children }) {
+  const colors = {
+    complete: 'bg-emerald-500',
+    active: 'bg-blue-500',
+    pending: 'bg-slate-200',
+  };
+  const textColors = {
+    complete: 'text-slate-700',
+    active: 'text-slate-900 font-medium',
+    pending: 'text-slate-400',
+  };
+
+  return (
+    <div className="flex gap-3 pb-4">
+      {/* Vertical line + dot */}
+      <div className="flex flex-col items-center">
+        <div className={`w-3 h-3 rounded-full shrink-0 ${colors[status]}`} />
+        <div className="w-0.5 flex-1 bg-slate-100 mt-1" />
+      </div>
+      {/* Content */}
+      <div className="flex-1 min-w-0 pb-1">
+        <p className={`text-xs mb-1 ${textColors[status]}`}>{label}</p>
+        <div className="text-[11px] text-slate-600 space-y-0.5">
+          {children}
+        </div>
       </div>
     </div>
   );
@@ -374,6 +408,7 @@ export function VolunteerList() {
                 <tr className="border-b border-slate-100">
                   <th className="text-left text-xs text-slate-400 font-medium py-3 px-4">Name</th>
                   <th className="text-left text-xs text-slate-400 font-medium py-3 px-4">Phone</th>
+                  <th className="text-left text-xs text-slate-400 font-medium py-3 px-4">Channel</th>
                   <th className="text-left text-xs text-slate-400 font-medium py-3 px-4">Agent</th>
                   <th className="text-left text-xs text-slate-400 font-medium py-3 px-4">Stage</th>
                   <th className="text-left text-xs text-slate-400 font-medium py-3 px-4">Status</th>
@@ -382,7 +417,7 @@ export function VolunteerList() {
               </thead>
               <tbody>
                 {filtered.length === 0 ? (
-                  <tr><td colSpan={6} className="text-center text-slate-400 py-8">No volunteers found</td></tr>
+                  <tr><td colSpan={7} className="text-center text-slate-400 py-8">No volunteers found</td></tr>
                 ) : filtered.map((s) => (
                   <tr
                     key={s.id}
@@ -391,6 +426,11 @@ export function VolunteerList() {
                   >
                     <td className="py-2.5 px-4 text-slate-900 font-medium">{s.volunteer_name || '—'}</td>
                     <td className="py-2.5 px-4 text-slate-600">{s.volunteer_phone || '—'}</td>
+                    <td className="py-2.5 px-4">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${s.channel === 'whatsapp' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
+                        {s.channel === 'whatsapp' ? 'WA' : 'Web'}
+                      </span>
+                    </td>
                     <td className="py-2.5 px-4 text-slate-600 capitalize">{s.active_agent || '—'}</td>
                     <td className="py-2.5 px-4 text-slate-600">{s.stage}</td>
                     <td className="py-2.5 px-4"><StatusPill status={s.status} /></td>

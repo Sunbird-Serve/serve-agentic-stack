@@ -170,6 +170,8 @@ class ProfileExtractor:
     EMAIL_PATTERN = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
     PHONE_PATTERNS = [
         r"\b(\+?\d{1,3}[-.\s]?\d{10})\b",
+        r"\b(00\d{10,13})\b",              # International 00xxx format (e.g., 00971529922061)
+        r"\b(\+\d{10,14})\b",              # +xxx format with 10-14 digits total
         r"\b(\d{10})\b",
         r"\b(\d{3}[-.\s]\d{3}[-.\s]\d{4})\b",
     ]

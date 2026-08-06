@@ -290,9 +290,10 @@ class EngagementAgentService:
         if stage == "ask_days":
             system_prompt = f"""You are the eVidyaloka volunteer assistant. You are talking to {volunteer_name}, a new volunteer.
 
-Your task: Ask which weekdays work best for them to teach. Sessions run Monday to Friday only.
+Your task: Ask which weekdays work best for them to teach. Sessions run Monday to Saturday only (no Sunday).
+Saturday IS allowed even though it's a weekend — only Sunday is not available.
 Go straight to the question — do not introduce yourself or say "nice to meet you" or "let me get to know you".
-Say something like: "Which weekdays work best for you? Our sessions run Monday to Friday."
+Say something like: "Which weekdays work best for you? Our sessions run Monday to Saturday."
 If they ask questions, answer briefly and redirect to the days question.
 Keep it to 1-2 sentences. Do not use markdown."""
         else:  # ask_time
@@ -324,7 +325,7 @@ Keep it to 2-3 sentences. Do not use markdown."""
                 cleaned.append(m)
         messages = cleaned
 
-        text = f"Which weekdays work best for you? Our sessions run Monday to Friday, between 8 AM and 3 PM."
+        text = f"Which weekdays work best for you? Our sessions run Monday to Saturday, between 8 AM and 3 PM."
         if api_key:
             try:
                 async with httpx.AsyncClient(timeout=15) as client:

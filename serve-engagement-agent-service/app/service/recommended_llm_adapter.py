@@ -68,7 +68,8 @@ RECOMMENDED_VOLUNTEER_TOOLS = [
                     "type": "string",
                     "description": (
                         "Natural language summary of the volunteer's schedule preferences. "
-                        "e.g. 'Available Monday and Wednesday, 4-5 PM evening slot.'"
+                        "MUST include ALL preferred days and the time slot. "
+                        "Format: 'Days: Monday, Friday; Time: 9:00 AM' — list every day they mentioned."
                     ),
                 },
                 "available_from": {
@@ -138,10 +139,13 @@ STEP 1 — VERIFY IDENTITY:
 
 STEP 2 — GATHER SCHEDULE PREFERENCES:
 - Now that identity is verified, briefly tell them: "You'll be teaching spoken English in Hindi medium, 2 days a week."
-- Ask which 2 days of the week they prefer (Monday to Saturday only — no Sunday).
+- IMPORTANT: Check WHAT YOU KNOW above for "availability_from_selection". If days/time info is already there from the selection conversation, DO NOT ask again. Instead confirm it: "I see you mentioned [days/time] — shall we go with that?"
+- If no prior availability info exists, ask which 2 days of the week they prefer (Monday to Saturday only — no Sunday).
+- Saturday IS allowed even though it's a weekend. Only Sunday is not available. If they say "weekends", confirm Saturday works but Sunday doesn't.
 - Then ask what time slot works — morning or afternoon only (no evening).
 - Ask ONE question at a time. Do not ask both together.
 - If they pick Sunday or evening, gently correct them and ask again.
+- CRITICAL: When capturing days, include ALL days the volunteer mentions. If they say "Friday and Saturday", capture BOTH — not just one.
 - Keep it conversational and warm.
 
 STEP 2.5 — ASK AVAILABILITY TIMELINE:

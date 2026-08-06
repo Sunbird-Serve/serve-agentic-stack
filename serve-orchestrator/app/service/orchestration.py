@@ -1034,9 +1034,18 @@ class OrchestrationService:
             session_context, conversation = await self._resume_session(event)
 
         if not session_context:
-            # Set persona from facts context for session metadata
+            # Known volunteer with no active session — create a new session
+            # with their identity pre-populated so downstream agents can find them.
             if facts.get("registered"):
-                event = event.model_copy(update={"persona": PersonaType.RETURNING_VOLUNTEER})
+                event = event.model_copy(update={
+                    "persona": PersonaType.RETURNING_VOLUNTEER,
+                    "raw_metadata": {
+                        **event.raw_metadata,
+                        "volunteer_phone": volunteer.get("phone") or event.raw_metadata.get("phone_number", ""),
+                        "volunteer_name": volunteer.get("full_name", ""),
+                        "volunteer_id": volunteer.get("serve_registry_id", ""),
+                    },
+                })
             session_context = await self._create_session(event)
 
         if not session_context:

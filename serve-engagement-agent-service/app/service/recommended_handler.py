@@ -395,6 +395,20 @@ class RecommendedVolunteerHandler:
         engagement_context = sub_state.get("engagement_context") or {}
         if not ctx["volunteer_name"] and engagement_context.get("volunteer_name"):
             ctx["volunteer_name"] = engagement_context["volunteer_name"]
+
+        # Surface selection notes (availability info already captured)
+        handoff = sub_state.get("handoff") or {}
+        selection_notes = handoff.get("selection_notes") or {}
+        selection_signals = handoff.get("selection_signals") or {}
+        if selection_notes.get("availability"):
+            ctx["availability_from_selection"] = selection_notes["availability"]
+        if selection_signals.get("availability_realism"):
+            ctx["availability_realism"] = selection_signals["availability_realism"]
+
+        # Surface available_from if already captured
+        if sub_state.get("available_from"):
+            ctx["available_from"] = sub_state["available_from"]
+
         return ctx
 
     def _build_response(

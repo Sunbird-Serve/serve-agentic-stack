@@ -173,7 +173,8 @@ All eligibility checks have passed. Before we move on, get their explicit consen
 Your task: Say something like:
 "Perfect! Just to formally confirm before we proceed — you are declaring that you are 18 years or older, you have internet and device access for online teaching, and you understand this is a voluntary, unpaid role. By continuing, you consent to these terms. Shall we go ahead?"
 
-Keep it brief and warm but make sure all three points are mentioned explicitly. Wait for their confirmation before proceeding."""
+Keep it brief and warm but make sure all three points are mentioned explicitly. Wait for their confirmation before proceeding.
+Do NOT ask about hours, availability, schedule, or anything else. ONLY the consent confirmation."""
 
         return f"""{_BASE_CONTEXT}
 
