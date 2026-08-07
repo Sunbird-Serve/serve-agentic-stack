@@ -232,7 +232,7 @@ class TestOnboardingCompleteQuality:
 
     @pytest.mark.asyncio
     async def test_includes_login_credentials(self):
-        """Completion must include portal URL, email as username, and default password."""
+        """Completion must include portal URL, email as username, and password instructions."""
         response = await _adapter.generate_response(
             stage="onboarding_complete",
             messages=[],
@@ -241,7 +241,8 @@ class TestOnboardingCompleteQuality:
             confirmed_fields={"full_name": "Sowmya Raghuram", "email": "sowmya@gmail.com"},
         )
         assert "sowmya@gmail.com" in response, f"Username (email) missing: {response}"
-        assert "Serve@2026" in response, f"Default password missing: {response}"
+        assert "password setup instructions" in response, f"Password instructions missing: {response}"
+        assert "Serve@2026" not in response, f"Hardcoded default password leaked: {response}"
         assert "serve.net.in" in response or "portal" in response.lower(), f"Portal URL missing: {response}"
 
     @pytest.mark.asyncio
