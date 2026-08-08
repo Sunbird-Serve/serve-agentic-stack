@@ -21,7 +21,7 @@ from app.service.onboarding_logic import (
     ELIGIBILITY_FIELDS, DEFAULT_SUB_STATE, CONTACT_FIELDS,
     OnboardingState,
 )
-from app.service.llm_adapter import _build_stage_prompt, _BASE_CONTEXT
+from app.service.llm_adapter import LLMAdapter, _build_stage_prompt, _BASE_CONTEXT
 from app.schemas import AgentTurnRequest, SessionState
 
 
@@ -358,7 +358,10 @@ class TestPromptConstruction:
 
     def test_complete_shows_credentials(self):
         prompt = _build_stage_prompt("onboarding_complete", [], {"full_name": "Sowmya", "email": "s@gmail.com"})
-        assert "Serve@2026" in prompt and "serve.net.in" in prompt.lower() or "portal" in prompt.lower()
+        assert "s@gmail.com" in prompt
+        assert "serve.net.in" in prompt.lower() or "portal" in prompt.lower()
+        assert "password setup instructions" in prompt
+        assert "Serve@2026" not in prompt
 
     def test_human_review_transparent(self):
         prompt = _build_stage_prompt("human_review", [], {"review_reason": "age_18_plus"})
@@ -372,6 +375,72 @@ class TestPromptConstruction:
 
     def test_conciseness_rule(self):
         assert "2-3" in _BASE_CONTEXT
+
+
+class TestDeterministicResponses:
+    """Verify templateable stages skip the underlying LLM call."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stage,missing,fields,expected", [
+        ("eligibility_screening", ["age_18_plus", "has_internet_and_device", "accepts_unpaid_role"],
+         {"age_18_plus": None, "has_internet_and_device": None, "accepts_unpaid_role": None}, "18"),
+        ("contact_capture", ["full_name", "email"], {"phone": "7760131253"}, "email"),
+        ("registration_review", [], {"full_name": "Sowmya Raghuram", "email": "sowmya@gmail.com", "phone": "7760131253"}, "Sowmya Raghuram"),
+        ("onboarding_complete", [], {"full_name": "Sowmya Raghuram", "email": "sowmya@gmail.com"}, "password setup instructions"),
+        ("human_review", [], {"review_reason": "age_18_plus"}, "18+"),
+        ("paused", [], {}, "progress is saved"),
+    ])
+    async def test_templateable_stages_do_not_call_llm(self, monkeypatch, stage, missing, fields, expected):
+        called = {"value": False}
+
+        async def fake_call_llm(*args, **kwargs):
+            called["value"] = True
+            return "LLM response"
+
+        monkeypatch.setattr("app.service.llm_adapter._call_llm", fake_call_llm)
+        response = await LLMAdapter().generate_response(
+            stage=stage,
+            messages=[],
+            user_message="hello",
+            missing_fields=missing,
+            confirmed_fields=fields,
+        )
+
+        assert expected in response
+        assert called["value"] is False
+
+    @pytest.mark.asyncio
+    async def test_welcome_still_calls_llm(self, monkeypatch):
+        called = {"value": False}
+
+        async def fake_call_llm(*args, **kwargs):
+            called["value"] = True
+            return "Welcome from LLM"
+
+        monkeypatch.setattr("app.service.llm_adapter._call_llm", fake_call_llm)
+        response = await LLMAdapter().generate_response(
+            stage="welcome",
+            messages=[],
+            user_message="hello",
+            missing_fields=[],
+            confirmed_fields={},
+        )
+
+        assert response == "Welcome from LLM"
+        assert called["value"] is True
+
+    @pytest.mark.asyncio
+    async def test_completion_password_is_env_configured(self, monkeypatch):
+        monkeypatch.setenv("SERVE_DEFAULT_PASSWORD", "ConfiguredTempPassword")
+        response = await LLMAdapter().generate_response(
+            stage="onboarding_complete",
+            messages=[],
+            user_message="Confirmed",
+            missing_fields=[],
+            confirmed_fields={"full_name": "Sowmya Raghuram", "email": "sowmya@gmail.com"},
+        )
+
+        assert "ConfiguredTempPassword" in response
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
