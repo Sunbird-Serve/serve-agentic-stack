@@ -773,20 +773,32 @@ class NeedServiceClient:
         url = f"{NEED_SERVICE_URL}/need/{need_id}"
         return await _request("GET", url)
 
-    async def get_approved_needs_bulk(self, max_entities: int = 50, max_needs_per_entity: int = 20) -> List[Dict]:
+    async def get_approved_needs_bulk(self, max_needs_per_entity: int = 20) -> List[Dict]:
         """
-        Fetch all approved needs across all entities in bulk.
+        Fetch all approved needs across ALL entities (paginated).
         Returns enriched need details (with time_slots, subjects, grades).
         """
-        entities = await self.search_entities(page=0, size=max_entities)
-        logger.info(f"get_approved_needs_bulk: found {len(entities)} entities")
+        # Paginate through all entities
+        all_entities = []
+        page = 0
+        while True:
+            batch = await self.search_entities(page=page, size=100)
+            if not batch:
+                break
+            all_entities.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+            if page > 10:  # Safety limit: 1000 entities max
+                break
+
+        logger.info(f"get_approved_needs_bulk: found {len(all_entities)} total entities across {page+1} pages")
         all_needs = []
-        for entity in entities:
+        for entity in all_entities:
             entity_id = entity.get("id")
             if not entity_id:
                 continue
             raw_needs = await self.get_needs_for_entity(entity_id, page=0, size=max_needs_per_entity)
-            logger.info(f"  entity={entity.get('name', entity_id)}: {len(raw_needs)} needs, statuses={[n.get('status') for n in raw_needs]}")
             for need in raw_needs:
                 need_status = need.get("status", "")
                 if need_status != "Approved":
