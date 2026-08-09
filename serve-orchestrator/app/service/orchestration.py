@@ -1033,6 +1033,21 @@ class OrchestrationService:
         if event.session_id:
             session_context, conversation = await self._resume_session(event)
 
+        # If no session_id provided (WhatsApp), try to find existing active session by actor_id
+        if not session_context and event.actor_id:
+            existing = await domain_client.find_session_by_actor(event.actor_id)
+            if existing.get("status") == "success":
+                session_data = existing.get("data", {}).get("session") or existing.get("session")
+                if session_data and session_data.get("status") in ("active", "paused"):
+                    # Found an existing active session — resume it instead of creating new
+                    event_with_session = event.model_copy(update={"session_id": UUID(session_data["id"])})
+                    session_context, conversation = await self._resume_session(event_with_session)
+                    if session_context:
+                        logger.info(
+                            f"[fact-routing] Resumed existing session {session_data['id'][:8]} "
+                            f"for actor {event.actor_id[:10]}"
+                        )
+
         if not session_context:
             # Known volunteer with no active session — create a new session
             # with their identity pre-populated so downstream agents can find them.
