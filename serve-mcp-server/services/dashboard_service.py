@@ -195,6 +195,7 @@ async def get_dashboard_stats(page: int = 1, page_size: int = 25) -> Dict[str, A
                     DBSession.created_at,
                     DBSession.last_message_at,
                 )
+                .where(DBSession.status != "archived")
                 .order_by(desc(DBSession.updated_at))
                 .limit(page_size)
                 .offset(offset)
