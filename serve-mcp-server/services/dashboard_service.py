@@ -114,7 +114,7 @@ async def get_dashboard_stats(page: int = 1, page_size: int = 25) -> Dict[str, A
 
     # Clamp pagination params
     page = max(1, page)
-    page_size = max(1, min(page_size, 100))
+    page_size = max(1, min(page_size, 2000))
     offset = (page - 1) * page_size
 
     try:

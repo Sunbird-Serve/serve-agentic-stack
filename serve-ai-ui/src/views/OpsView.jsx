@@ -556,7 +556,7 @@ export const OpsView = () => {
 
     setLoading(true);
     try {
-      const res = await dashboardApi.getStats(1, 500);
+      const res = await dashboardApi.getStats(1, 2000);
       if (res.status === 'success') {
         setData(res);
         setLastRefresh(new Date());
