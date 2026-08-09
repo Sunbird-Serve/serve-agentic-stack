@@ -100,15 +100,20 @@ memory_service  = MemoryService()
 
 # ── Server lifespan ────────────────────────────────────────────────────────────
 
+_db_initialized = False
+
 @asynccontextmanager
 async def _lifespan(server: FastMCP):
-    from services.database import init_db, check_db_health
-    try:
-        await init_db()
-        await check_db_health()
-        logger.info("MCP Server ready — DB initialised and health cached")
-    except Exception as e:
-        logger.warning(f"DB init failed (in-memory fallback active): {e}")
+    global _db_initialized
+    if not _db_initialized:
+        from services.database import init_db, check_db_health
+        try:
+            await init_db()
+            await check_db_health()
+            _db_initialized = True
+            logger.info("MCP Server ready — DB initialised and health cached")
+        except Exception as e:
+            logger.warning(f"DB init failed (in-memory fallback active): {e}")
     yield
 
 
