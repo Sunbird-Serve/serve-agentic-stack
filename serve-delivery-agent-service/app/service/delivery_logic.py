@@ -59,7 +59,8 @@ class DeliveryAgentService:
         if not delivery:
             msg = ("I couldn't find your delivery assignment yet. Our team has been notified "
                    "and will set this up shortly. Please check back soon.")
-            await domain_client.save_message(session_id, "assistant", msg)
+            # NOTE: Do NOT save_message here — the orchestrator saves the returned
+            # assistant_message automatically. Saving here caused duplicate messages.
             await domain_client.log_event(session_id, "delivery_activation_blocked", {"reason": "no_delivery_context"})
             await domain_client.advance_state(session_id, ActivationStage.ACTIVATION_BLOCKED.value,
                                               sub_state=dump_sub_state(sub_state), active_agent="delivery_assistant",
@@ -384,8 +385,8 @@ class DeliveryAgentService:
         elif stage_out == OpsStage.DELIVERY_COMPLETE.value:
             await domain_client.log_event(session_id, "conversation_closed", {"delivery_id": delivery_id})
         sub_state_str = dump_sub_state(sub_state)
-        if message:
-            await domain_client.save_message(session_id, "assistant", message)
+        # NOTE: Do NOT save_message here — the orchestrator saves the returned
+        # assistant_message automatically. Saving here caused duplicate messages.
         await domain_client.advance_state(session_id, stage_out, sub_state=sub_state_str,
                                           active_agent="delivery_assistant", workflow="delivery_support")
         return self._response(message, state=stage_out, sub_state=sub_state_str)

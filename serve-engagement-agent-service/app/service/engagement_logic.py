@@ -54,14 +54,41 @@ class EngagementAgentService:
         session_id = str(request.session_id)
         stage = request.session_state.stage
 
-        # ── Terminal state: return fallback, do not call LLM ─────────────────
+        # ── Terminal state: check if volunteer wants to resume ─────────────────
         if stage in _TERMINAL_STATES:
-            logger.info(f"Session {session_id} in terminal state '{stage}' — returning fallback")
-            return self._build_response(
-                message=_TERMINAL_FALLBACK_MESSAGES.get(stage, "How can I help you?"),
-                state=stage,
-                sub_state=request.session_state.sub_state,
+            user_msg = (request.user_message or "").strip().lower()
+            # If volunteer sends a new real message (not system triggers), they want to resume
+            resume_signals = [
+                "yes", "ready", "i am ready", "start", "continue", "join",
+                "volunteer", "teach", "i want", "i would like", "interested",
+                "ok", "let's go", "sure", "available", "connect",
+            ]
+            is_resume_attempt = (
+                user_msg
+                and user_msg not in ("__handoff__", "__auto_continue__")
+                and (
+                    any(signal in user_msg for signal in resume_signals)
+                    or len(user_msg) > 10  # Substantive message indicates re-engagement
+                )
             )
+            if is_resume_attempt and stage == EngagementWorkflowState.PAUSED.value:
+                # Resume the session — transition back to RE_ENGAGING
+                logger.info(f"Session {session_id} resuming from PAUSED state — volunteer re-engaged")
+                sub_state = _load_sub_state(request.session_state.sub_state)
+                sub_state["resumed_from_pause"] = True
+                updated_sub_state = _dump_sub_state(sub_state)
+                await domain_client.advance_state(
+                    session_id, EngagementWorkflowState.RE_ENGAGING.value, updated_sub_state
+                )
+                # Let it fall through to normal processing below with updated stage
+                stage = EngagementWorkflowState.RE_ENGAGING.value
+            else:
+                logger.info(f"Session {session_id} in terminal state '{stage}' — returning fallback")
+                return self._build_response(
+                    message=_TERMINAL_FALLBACK_MESSAGES.get(stage, "How can I help you?"),
+                    state=stage,
+                    sub_state=request.session_state.sub_state,
+                )
 
         # ── Load sub_state ────────────────────────────────────────────────────
         sub_state = _load_sub_state(request.session_state.sub_state)
@@ -104,7 +131,8 @@ class EngagementAgentService:
         if is_first_turn and context_was_missing:
             ack_message = "One moment, let me pull up your details... 🔍"
             updated_sub_state = _dump_sub_state(sub_state)
-            await domain_client.save_message(session_id, "assistant", ack_message)
+            # NOTE: Do NOT save_message here — the orchestrator saves the returned
+            # assistant_message automatically. Saving here caused duplicate messages.
             await domain_client.advance_state(
                 session_id, EngagementWorkflowState.RE_ENGAGING.value, updated_sub_state
             )
@@ -162,7 +190,8 @@ class EngagementAgentService:
 
         # ── Active turn: persist and return ──────────────────────────────────
         updated_sub_state = _dump_sub_state(sub_state)
-        await domain_client.save_message(session_id, "assistant", text)
+        # NOTE: Do NOT save_message here — the orchestrator saves the returned
+        # assistant_message automatically. Saving here caused duplicate messages.
         await domain_client.advance_state(
             session_id, EngagementWorkflowState.RE_ENGAGING.value, updated_sub_state
         )
@@ -270,7 +299,8 @@ class EngagementAgentService:
             await domain_client.advance_state(session_id, "active", _dump_sub_state(sub_state))
 
             message = f"Perfect, {volunteer_name}! Let me find the best teaching opportunity for you based on your preferences... 🔍"
-            await domain_client.save_message(session_id, "assistant", message)
+            # NOTE: Do NOT save_message here — the orchestrator saves the returned
+            # assistant_message automatically. Saving here caused duplicate messages.
 
             return self._build_response(
                 message=message,
@@ -345,7 +375,8 @@ Keep it to 2-3 sentences. Do not use markdown."""
                 logger.warning(f"Session {session_id}: new vol LLM call failed: {e}")
 
         updated = _dump_sub_state(sub_state)
-        await domain_client.save_message(session_id, "assistant", text)
+        # NOTE: Do NOT save_message here — the orchestrator saves the returned
+        # assistant_message automatically. Saving here caused duplicate messages.
         await domain_client.advance_state(session_id, EngagementWorkflowState.RE_ENGAGING.value, updated)
 
         return self._build_response(

@@ -148,12 +148,15 @@ class ProfileExtractor:
         r"(?:my name is|i'm|i am|call me|this is)\s+([A-Za-z][a-zA-Z'\-]*(?:\s+[A-Za-z][a-zA-Z'\-]*)*)",
         # Hindi/Hinglish signals
         r"(?:naam hai|mera naam|mera naam hai)\s+([A-Za-z][a-zA-Z'\-]*(?:\s+[A-Za-z][a-zA-Z'\-]*)*)",
-        # "Name: X" format
-        r"(?:name[:\s]+)([A-Za-z][a-zA-Z'\-]*(?:\s+[A-Za-z][a-zA-Z'\-]*)*)",
-        # Starts with capital, has comma or "here"
-        r"^([A-Z][a-zA-Z'\-]*(?:\s+[A-Z][a-zA-Z'\-]*)*)(?:\s+here|,)",
-        # Bare capitalized words (last resort — only for short messages)
-        r"^([A-Z][a-zA-Z'\-]*(?:\s+[A-Z][a-zA-Z'\-]*){0,4})$",
+        # "Name: X" or "Name - X" format
+        r"(?:name[:\s\-]+)([A-Za-z][a-zA-Z'\-]*(?:\s+[A-Za-z][a-zA-Z'\-]*)*)",
+        # Bare short message (2-4 words, ONLY letters, no other content) — only when
+        # the message is very likely a name response. We apply strict conditions:
+        # - Exactly 2-4 words
+        # - All words start with uppercase (or all lowercase — both acceptable)
+        # - No word is in the stopwords list
+        # - Message contains nothing else (no numbers, no punctuation, no URLs)
+        r"^([A-Z][a-zA-Z'\-]*(?:\s+[A-Z][a-zA-Z'\-]*){1,3})$",
     ]
     NAME_STOPWORDS = {
         "and", "or", "but", "hello", "hi", "hey", "want", "would", "like",
@@ -166,7 +169,32 @@ class ProfileExtractor:
         "this", "have", "been", "done", "teaching", "volunteering", "joining",
         "starting", "continuing", "returning", "recommended",
         "main", "mera", "naam", "hai", "ji",
+        # Common conversational phrases that get title-cased and misidentified as names
+        "it", "its", "only", "is", "my", "full", "name", "the", "how",
+        "many", "days", "oh", "unpaid", "paid", "laptop", "computer",
+        "missing", "tablet", "mobile", "phone", "belongs", "to", "all",
+        "of", "above", "uttar", "pradesh", "haryana", "bihar", "bengal",
+        "karnataka", "maharashtra", "telangana", "rajasthan", "madhya",
+        "tamil", "nadu", "kerala", "gujarat", "punjab", "odisha",
+        "english", "teacher", "maths", "science", "hindi",
+        "what", "when", "where", "which", "who", "why",
+        "can", "will", "shall", "should", "could", "may", "might",
+        "tank", "sir", "mam", "madam",
+        "district", "village", "city", "town", "state",
+        "mail", "email", "id", "pe", "kare", "kis",
+        "first", "second", "third", "last", "middle",
+        "surname", "pareek", "faridabad", "meerut",
     }
+
+    # Phrases that should NEVER be treated as names — checked before regex extraction
+    NAME_BLACKLIST_PHRASES = [
+        "it's only", "is only", "my full name", "oh it", "how many",
+        "laptop computer", "belongs to", "all of the above",
+        "an english", "a teacher", "a maths", "mail kis",
+        "uttar pradesh", "haryana faridabad", "tamil nadu",
+        "not now", "from today", "from tomorrow", "from monday",
+        "yes to all", "unpaid", "it's unpaid", "oh its",
+    ]
     EMAIL_PATTERN = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
     PHONE_PATTERNS = [
         r"\b(\+?\d{1,3}[-.\s]?\d{10})\b",
@@ -245,7 +273,37 @@ class ProfileExtractor:
 
     def _extract_name(self, message: str) -> Optional[str]:
         text = message.strip()
-        for pattern in self.NAME_SIGNALS:
+
+        # Reject messages that match blacklisted conversational phrases
+        text_lower = text.lower()
+        for phrase in self.NAME_BLACKLIST_PHRASES:
+            if phrase in text_lower:
+                return None
+
+        # Reject if the message contains common punctuation that indicates a question/exclamation
+        word_count = len(text.split())
+        if word_count > 6:
+            return None
+        if any(c in text for c in ["?", "!"]) and word_count > 2:
+            return None
+        # Reject if it contains email-like content (but don't block — email might be in a batched msg)
+        # We'll let the regex patterns handle extraction from batched messages
+
+        for i, pattern in enumerate(self.NAME_SIGNALS):
+            is_bare_pattern = (i >= 3)  # The last pattern is the bare-capitalized fallback
+
+            # For bare-capitalized pattern: apply strict additional checks
+            if is_bare_pattern:
+                # Reject if message contains digits (phone numbers, ages, etc.)
+                if re.search(r"\d", text):
+                    continue
+                # Reject if message contains @ (email addresses)
+                if "@" in text:
+                    continue
+                # Reject if message contains commas (likely a sentence or list)
+                if "," in text:
+                    continue
+
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 value = match.group(1).strip()
@@ -253,6 +311,11 @@ class ProfileExtractor:
                 for word in value.split():
                     lower = word.lower()
                     if lower in self.NAME_STOPWORDS:
+                        # For explicit name signals (patterns 0-2), stop at first stopword
+                        # For bare pattern, reject entirely
+                        if is_bare_pattern:
+                            words = []  # Reset — any stopword invalidates bare pattern
+                            break
                         break
                     if lower in self.NAME_TITLES:
                         continue
@@ -278,6 +341,12 @@ class ProfileExtractor:
                 return False
             if not self.NAME_WORD_PATTERN.match(word):
                 return False
+
+        # Reject if ALL words (lowercased) are in the stopwords list
+        # A real name should have at least one word that isn't a common stopword
+        if all(w.lower() in self.NAME_STOPWORDS for w in words):
+            return False
+
         return True
 
     def _extract_email(self, message: str) -> Optional[str]:
