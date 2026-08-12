@@ -263,6 +263,18 @@ async def wa_receive(request: Request):
 
                 session_id = _wa_sessions.get(phone)
 
+                # ── DB fallback: restore session mapping after container restart ──
+                if not session_id:
+                    try:
+                        from app.service.orchestration import orchestration_service
+                        existing = await orchestration_service.find_active_session_by_actor(phone)
+                        if existing and existing.get("session"):
+                            session_id = str(existing["session"]["id"])
+                            _wa_sessions[phone] = session_id
+                            logger.info(f"Restored WA session for {phone[:6]}***: {session_id[:8]}...")
+                    except Exception as e:
+                        logger.warning(f"WA session restore failed for {phone[:6]}***: {e}")
+
                 # ── Handle nudge responses and cancel pending nudges ──────────
                 from app.service.nudge_scheduler import (
                     cancel_nudges_for_session, mark_do_not_disturb, is_do_not_disturb

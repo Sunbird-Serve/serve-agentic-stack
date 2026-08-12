@@ -228,6 +228,12 @@ class ProfileExtractor:
                 name = self._extract_name(message)
                 if name:
                     extracted["full_name"] = name
+            else:
+                # Name already exists — but allow EXPLICIT corrections
+                # (volunteer says "my name is X" or "Name: X" to override)
+                name = self._extract_name_explicit_only(message)
+                if name and name != existing_fields.get("full_name"):
+                    extracted["full_name"] = name
 
             if "email" not in existing_fields:
                 email = self._extract_email(message)
@@ -294,17 +300,27 @@ class ProfileExtractor:
 
             # For bare-capitalized pattern: apply strict additional checks
             if is_bare_pattern:
-                # Reject if message contains digits (phone numbers, ages, etc.)
-                if re.search(r"\d", text):
-                    continue
-                # Reject if message contains @ (email addresses)
-                if "@" in text:
-                    continue
-                # Reject if message contains commas (likely a sentence or list)
-                if "," in text:
-                    continue
+                # Strip emails and phone numbers from the text before matching
+                # This handles "Shubham Tiwari shubhamtiwari11503@gmail.com" → "Shubham Tiwari"
+                cleaned = re.sub(self.EMAIL_PATTERN, '', text).strip()
+                for phone_pat in self.PHONE_PATTERNS:
+                    cleaned = re.sub(phone_pat, '', cleaned).strip()
+                # Also strip common separators left behind
+                cleaned = re.sub(r'[,\-:]+\s*$', '', cleaned).strip()
 
-            match = re.search(pattern, text, re.IGNORECASE)
+                # Reject if cleaned text still contains digits
+                if re.search(r"\d", cleaned):
+                    continue
+                # Reject if cleaned text contains @
+                if "@" in cleaned:
+                    continue
+                # Reject if cleaned text contains commas (likely a sentence or list)
+                if "," in cleaned:
+                    continue
+                # Use cleaned text for the bare pattern match
+                match = re.search(pattern, cleaned, re.IGNORECASE)
+            else:
+                match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 value = match.group(1).strip()
                 words = []
@@ -331,6 +347,37 @@ class ProfileExtractor:
     @staticmethod
     def _normalize_name_word(word: str) -> str:
         return word.title() if word.islower() or word.isupper() else word
+
+    def _extract_name_explicit_only(self, message: str) -> Optional[str]:
+        """Extract name ONLY from explicit signals (my name is X, Name: X, naam hai X).
+        Used when name already exists but volunteer is correcting it.
+        Does NOT use the bare-capitalized fallback pattern."""
+        text = message.strip()
+        text_lower = text.lower()
+        for phrase in self.NAME_BLACKLIST_PHRASES:
+            if phrase in text_lower:
+                return None
+
+        # Only use the first 3 patterns (explicit name signals)
+        for pattern in self.NAME_SIGNALS[:3]:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                value = match.group(1).strip()
+                words = []
+                for word in value.split():
+                    lower = word.lower()
+                    if lower in self.NAME_STOPWORDS:
+                        break
+                    if lower in self.NAME_TITLES:
+                        continue
+                    words.append(word)
+                if words:
+                    candidate = " ".join(
+                        self._normalize_name_word(w) for w in words[:self.NAME_MAX_WORDS]
+                    )
+                    if self._is_valid_name(candidate):
+                        return candidate
+        return None
 
     def _is_valid_name(self, candidate: str) -> bool:
         words = candidate.split()
@@ -693,7 +740,20 @@ def _determine_next_state(
             if ready:
                 return OnboardingState.ONBOARDING_COMPLETE.value, "Volunteer confirmed registration"
         if any(t in lower for t in ["change", "update", "edit", "wrong", "fix"]):
+            # Clear the field being edited so re-extraction works
+            if "name" in lower and "full_name" in confirmed_fields:
+                del confirmed_fields["full_name"]
+            if "email" in lower and "email" in confirmed_fields:
+                del confirmed_fields["email"]
+            if "phone" in lower and "phone" in confirmed_fields:
+                del confirmed_fields["phone"]
             return OnboardingState.CONTACT_CAPTURE.value, "Volunteer wants to update details"
+        # If volunteer just types a name (correction without saying "change")
+        # e.g. they said "No" then typed "Hemant Kumar"
+        name = profile_extractor._extract_name(user_message)
+        if name and name != confirmed_fields.get("full_name"):
+            confirmed_fields["full_name"] = name
+            return current_state, "Name corrected during review"
         return current_state, "Waiting for registration confirmation"
 
     return current_state, "No transition"
