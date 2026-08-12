@@ -316,18 +316,20 @@ const PipelineFunnel = ({ onboarding, selection, engagement, fulfillment, delive
   const conv = (from, to) => from > 0 ? Math.round((to / from) * 100) : null;
 
   // Cumulative: everyone in a later stage also passed through earlier stages
-  const deliveryTotal = delivery.entered;
-  const fulfillmentTotal = fulfillment.entered + deliveryTotal;
-  const engagementTotal = engagement.entered + fulfillmentTotal;
-  const selectionTotal = selection.entered + engagementTotal;
-  const onboardingTotal = onboarding.entered + selectionTotal;
+  const assignedTotal = delivery.entered + 6;  // +6 manual assignments
+  const recommendedTotal = fulfillment.entered + delivery.entered;
+  const registeredTotal = selection.entered + engagement.entered + fulfillment.entered + delivery.entered;
+  // Eligible = passed eligibility check (those still in onboarding who are eligible + everyone who left onboarding)
+  const eligibleTotal = onboarding.eligible + registeredTotal;
+  const enteredTotal = onboarding.entered + registeredTotal;
 
   const stages = [
-    { label: 'Onboarding', count: onboardingTotal, convPct: null, review: onboarding.review, color: 'bg-blue-100 text-blue-800' },
-    { label: 'Selection', count: selectionTotal, convPct: conv(onboardingTotal, selectionTotal), review: selection.hold, color: 'bg-violet-100 text-violet-800' },
-    { label: 'Engagement', count: engagementTotal, convPct: conv(selectionTotal, engagementTotal), review: 0, color: 'bg-emerald-100 text-emerald-800' },
-    { label: 'Recommended', count: fulfillmentTotal, convPct: conv(engagementTotal, fulfillmentTotal), review: fulfillment.noMatch, color: 'bg-teal-100 text-teal-800' },
-    { label: 'Placed', count: deliveryTotal + 6, convPct: conv(fulfillmentTotal, deliveryTotal + 6), review: delivery.escalated, color: 'bg-cyan-100 text-cyan-800' },
+    { label: 'Entered', count: enteredTotal, convPct: null, review: null, color: 'bg-blue-100 text-blue-800' },
+    { label: 'Eligible', count: eligibleTotal, convPct: conv(enteredTotal, eligibleTotal), review: null, color: 'bg-indigo-100 text-indigo-800' },
+    { label: 'Registered', count: registeredTotal, convPct: conv(eligibleTotal, registeredTotal), review: onboarding.review, color: 'bg-violet-100 text-violet-800' },
+    { label: 'Recommended', count: recommendedTotal, convPct: conv(registeredTotal, recommendedTotal), review: fulfillment.noMatch, color: 'bg-teal-100 text-teal-800' },
+    { label: 'Assigned', count: assignedTotal, convPct: conv(recommendedTotal, assignedTotal), review: delivery.escalated, color: 'bg-cyan-100 text-cyan-800' },
+    { label: 'On Hold', count: selection.hold + engagement.deferred, convPct: null, review: null, color: 'bg-amber-100 text-amber-800' },
   ];
 
   return (
@@ -618,13 +620,6 @@ export const OpsView = () => {
 
         {/* Section 2: Pipeline Funnel */}
         <PipelineFunnel {...classified} />
-
-        {/* On Hold indicator */}
-        {(stats.registry_status?.OnHold || 0) > 0 && (
-          <div className="flex items-center gap-2 px-1">
-            <KpiCard label="On Hold / Deferred" value={stats.registry_status?.OnHold || 0} icon={AlertTriangle} color="bg-amber-50" iconColor="text-amber-600" sub="need follow-up or waiting" />
-          </div>
-        )}
 
         {/* Section 3: Per-Agent Detail */}
         <Card className="border-none shadow-sm">
