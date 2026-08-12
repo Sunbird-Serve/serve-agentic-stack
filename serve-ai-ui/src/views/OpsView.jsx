@@ -315,12 +315,19 @@ const FunnelStage = ({ label, count, convPct, reviewCount, color, isLast }) => (
 const PipelineFunnel = ({ onboarding, selection, engagement, fulfillment, delivery }) => {
   const conv = (from, to) => from > 0 ? Math.round((to / from) * 100) : null;
 
+  // Cumulative: everyone in a later stage also passed through earlier stages
+  const deliveryTotal = delivery.entered;
+  const fulfillmentTotal = fulfillment.entered + deliveryTotal;
+  const engagementTotal = engagement.entered + fulfillmentTotal;
+  const selectionTotal = selection.entered + engagementTotal;
+  const onboardingTotal = onboarding.entered + selectionTotal;
+
   const stages = [
-    { label: 'Onboarding', count: onboarding.entered, convPct: null, review: onboarding.review, color: 'bg-blue-100 text-blue-800' },
-    { label: 'Selection', count: selection.entered, convPct: conv(onboarding.entered, selection.entered), review: selection.hold, color: 'bg-violet-100 text-violet-800' },
-    { label: 'Engagement', count: engagement.entered, convPct: conv(selection.entered, engagement.entered), review: 0, color: 'bg-emerald-100 text-emerald-800' },
-    { label: 'Fulfillment', count: fulfillment.entered, convPct: conv(engagement.entered, fulfillment.entered), review: fulfillment.noMatch, color: 'bg-teal-100 text-teal-800' },
-    { label: 'Delivery', count: delivery.entered, convPct: conv(fulfillment.entered, delivery.entered), review: delivery.escalated, color: 'bg-cyan-100 text-cyan-800' },
+    { label: 'Onboarding', count: onboardingTotal, convPct: null, review: onboarding.review, color: 'bg-blue-100 text-blue-800' },
+    { label: 'Selection', count: selectionTotal, convPct: conv(onboardingTotal, selectionTotal), review: selection.hold, color: 'bg-violet-100 text-violet-800' },
+    { label: 'Engagement', count: engagementTotal, convPct: conv(selectionTotal, engagementTotal), review: 0, color: 'bg-emerald-100 text-emerald-800' },
+    { label: 'Recommended', count: fulfillmentTotal, convPct: conv(engagementTotal, fulfillmentTotal), review: fulfillment.noMatch, color: 'bg-teal-100 text-teal-800' },
+    { label: 'Placed', count: deliveryTotal + 6, convPct: conv(fulfillmentTotal, deliveryTotal + 6), review: delivery.escalated, color: 'bg-cyan-100 text-cyan-800' },
   ];
 
   return (
@@ -601,17 +608,23 @@ export const OpsView = () => {
         </div>
 
         {/* Section 1: Headline KPIs */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
           <KpiCard label="Total" value={stats.sessions?.active || 0} icon={Users} color="bg-blue-50" iconColor="text-blue-600" sub="active" />
           <KpiCard label="This Week" value={stats.sessions?.this_week || 0} icon={TrendingUp} color="bg-violet-50" iconColor="text-violet-600" sub="new" />
           <KpiCard label="Active" value={stats.sessions?.active || 0} icon={Clock} color="bg-emerald-50" iconColor="text-emerald-600" sub="in progress" />
           <KpiCard label="Registered" value={stats.registry_status?.Registered || 0} icon={UserCheck} color="bg-cyan-50" iconColor="text-cyan-600" sub="in registry" />
           <KpiCard label="Recommended" value={stats.registry_status?.Recommended || 0} icon={CheckCircle2} color="bg-emerald-50" iconColor="text-emerald-600" sub="passed selection" />
-          <KpiCard label="On Hold" value={stats.registry_status?.OnHold || 0} icon={AlertTriangle} color="bg-amber-50" iconColor="text-amber-600" sub="deferred" />
         </div>
 
         {/* Section 2: Pipeline Funnel */}
         <PipelineFunnel {...classified} />
+
+        {/* On Hold indicator */}
+        {(stats.registry_status?.OnHold || 0) > 0 && (
+          <div className="flex items-center gap-2 px-1">
+            <KpiCard label="On Hold / Deferred" value={stats.registry_status?.OnHold || 0} icon={AlertTriangle} color="bg-amber-50" iconColor="text-amber-600" sub="need follow-up or waiting" />
+          </div>
+        )}
 
         {/* Section 3: Per-Agent Detail */}
         <Card className="border-none shadow-sm">
