@@ -252,6 +252,27 @@ async def wa_receive(request: Request):
                 if not phone or not text:
                     continue
 
+                # Extract campaign/referral source from Meta's referral payload
+                # (present when volunteer clicks from an Instagram/Facebook ad)
+                referral = msg.get("referral") or {}
+                campaign_source = {}
+                if referral:
+                    campaign_source["campaign"] = (
+                        referral.get("headline")
+                        or referral.get("source_type")
+                        or "ad"
+                    )
+                    if referral.get("source_url"):
+                        campaign_source["utm_source"] = referral["source_url"]
+
+                # Also check for "referred by" pattern in first message
+                if not campaign_source and "referred" in text.lower():
+                    import re as _re
+                    ref_match = _re.search(r"(?:referred by|recommend(?:ed)? by)\s+(.+?)(?:\s*$|[,.])", text, _re.IGNORECASE)
+                    if ref_match:
+                        campaign_source["campaign"] = "referral"
+                        campaign_source["referred_by"] = ref_match.group(1).strip()
+
                 # Option 2: mark message as read immediately (shows blue ticks)
                 if message_id:
                     asyncio.create_task(_wa_mark_read(message_id))
@@ -327,17 +348,22 @@ async def wa_receive(request: Request):
                 # For new sessions, detect from message; for existing, let orchestrator handle
                 detected_persona = _detect_persona(text) if not session_id else None
 
-                async def _process(phone=phone, text=text, session_id=session_id, detected_persona=detected_persona):
+                async def _process(phone=phone, text=text, session_id=session_id, detected_persona=detected_persona, campaign_source=campaign_source):
                     try:
+                        meta = {
+                            "phone_number": phone,
+                            "volunteer_phone": phone,
+                        }
+                        # Include campaign/referral source for new sessions
+                        if campaign_source and not session_id:
+                            meta.update(campaign_source)
+
                         req = InteractionRequest(
                             session_id=session_id,
                             message=text,
                             channel=ChannelType.WHATSAPP,
                             persona=detected_persona,  # from message keywords or None (let resolver decide)
-                            channel_metadata={
-                                "phone_number": phone,
-                                "volunteer_phone": phone,
-                            },
+                            channel_metadata=meta,
                         )
                         resp = await orchestration_service.process_interaction(req)
                         _wa_sessions[phone] = str(resp.session_id)

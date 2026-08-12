@@ -181,6 +181,26 @@ export function VolunteerChatPage() {
     localStorage.getItem('serve_guest_id') || `guest_${Date.now().toString(36)}`
   );
 
+  // Capture campaign/referral params from URL (once on mount)
+  const sourceRef = useRef(() => {
+    const params = new URLSearchParams(window.location.search);
+    const source = {};
+    if (params.get('utm_campaign') || params.get('campaign')) {
+      source.campaign = params.get('utm_campaign') || params.get('campaign');
+    }
+    if (params.get('ref')) {
+      source.referred_by = params.get('ref');
+    }
+    if (params.get('utm_source')) {
+      source.utm_source = params.get('utm_source');
+    }
+    if (params.get('utm_medium')) {
+      source.utm_medium = params.get('utm_medium');
+    }
+    return Object.keys(source).length > 0 ? source : null;
+  });
+  const campaignSource = useRef(sourceRef.current());
+
   // Persist guest ID
   useEffect(() => {
     localStorage.setItem('serve_guest_id', guestIdRef.current);
@@ -207,7 +227,8 @@ export function VolunteerChatPage() {
         content.trim(),
         guestIdRef.current,
         'web_ui',
-        'new_volunteer'
+        'new_volunteer',
+        campaignSource.current
       );
 
       if (response.session_id) {
