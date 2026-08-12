@@ -340,7 +340,7 @@ export function VolunteerList() {
   // Filter and search
   const filtered = sessions.filter((s) => {
     if (s.workflow === 'need_coordination') return false;
-    if (s.status === 'archived') return false;
+    if (s.status === 'archived' || s.status === 'abandoned') return false;
     if (filter !== 'all' && s.status !== filter) return false;
     if (agentFilter !== 'all' && s.active_agent !== agentFilter) return false;
     if (search) {

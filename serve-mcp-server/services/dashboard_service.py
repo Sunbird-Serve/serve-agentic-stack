@@ -46,7 +46,7 @@ async def _get_registry_status_counts() -> Dict[str, int]:
             registered = (await db.execute(
                 select(func.count()).select_from(DBSession)
                 .where(and_(
-                    DBSession.status != "archived",
+                    DBSession.status.notin_(["archived", "abandoned"]),
                     DBSession.stage.in_([
                         "onboarding_complete", "selection_conversation",
                         "gathering_preferences", "re_engaging",
@@ -62,7 +62,7 @@ async def _get_registry_status_counts() -> Dict[str, int]:
                 select(DBSession.sub_state, DBSession.active_agent, DBSession.stage)
                 .where(
                     and_(
-                        DBSession.status != "archived",
+                        DBSession.status.notin_(["archived", "abandoned"]),
                         or_(
                             DBSession.active_agent == "selection",
                             DBSession.active_agent == "engagement",
@@ -126,6 +126,7 @@ async def get_dashboard_stats(page: int = 1, page_size: int = 25) -> Dict[str, A
             # ── Session counts ────────────────────────────────────────────────
             total_sessions = (await db.execute(
                 select(func.count()).select_from(DBSession)
+                .where(DBSession.status.notin_(["archived", "abandoned"]))
             )).scalar() or 0
 
             active_sessions = (await db.execute(
@@ -135,20 +136,24 @@ async def get_dashboard_stats(page: int = 1, page_size: int = 25) -> Dict[str, A
 
             sessions_today = (await db.execute(
                 select(func.count()).select_from(DBSession)
-                .where(DBSession.created_at >= day_ago)
+                .where(and_(
+                    DBSession.created_at >= day_ago,
+                    DBSession.status.notin_(["archived", "abandoned"]),
+                ))
             )).scalar() or 0
 
             sessions_week = (await db.execute(
                 select(func.count()).select_from(DBSession)
                 .where(and_(
                     DBSession.created_at >= week_ago,
-                    DBSession.status != "archived",
+                    DBSession.status.notin_(["archived", "abandoned"]),
                 ))
             )).scalar() or 0
 
             # ── Sessions by channel ───────────────────────────────────────────
             channel_rows = (await db.execute(
                 select(DBSession.channel, func.count().label("cnt"))
+                .where(DBSession.status.notin_(["archived", "abandoned"]))
                 .group_by(DBSession.channel)
             )).all()
             by_channel = {r.channel: r.cnt for r in channel_rows}
@@ -156,6 +161,7 @@ async def get_dashboard_stats(page: int = 1, page_size: int = 25) -> Dict[str, A
             # ── Sessions by stage ─────────────────────────────────────────────
             stage_rows = (await db.execute(
                 select(DBSession.stage, func.count().label("cnt"))
+                .where(DBSession.status.notin_(["archived", "abandoned"]))
                 .group_by(DBSession.stage)
             )).all()
             by_stage = {r.stage: r.cnt for r in stage_rows}
@@ -177,6 +183,7 @@ async def get_dashboard_stats(page: int = 1, page_size: int = 25) -> Dict[str, A
             # ── Recent sessions (paginated) ──────────────────────────────────
             total_sessions_for_list = (await db.execute(
                 select(func.count()).select_from(DBSession)
+                .where(DBSession.status.notin_(["archived", "abandoned"]))
             )).scalar() or 0
 
             recent_rows = (await db.execute(
@@ -195,7 +202,7 @@ async def get_dashboard_stats(page: int = 1, page_size: int = 25) -> Dict[str, A
                     DBSession.created_at,
                     DBSession.last_message_at,
                 )
-                .where(DBSession.status != "archived")
+                .where(DBSession.status.notin_(["archived", "abandoned"]))
                 .order_by(desc(DBSession.updated_at))
                 .limit(page_size)
                 .offset(offset)

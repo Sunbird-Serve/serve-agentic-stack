@@ -67,7 +67,7 @@ export function ConversationList() {
         {/* Session list */}
         <Card className="w-full md:w-80 flex-shrink-0 border-none shadow-sm overflow-y-auto max-h-[40vh] md:max-h-none">
           <CardContent className="p-0">
-            {sessions.map((s) => (
+            {sessions.filter(s => s.status !== 'archived' && s.status !== 'abandoned').map((s) => (
               <button
                 key={s.id}
                 onClick={() => viewConversation(s.id)}
