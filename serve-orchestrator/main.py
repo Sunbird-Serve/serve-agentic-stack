@@ -273,6 +273,20 @@ async def wa_receive(request: Request):
                         campaign_source["campaign"] = "referral"
                         campaign_source["referred_by"] = ref_match.group(1).strip()
 
+                # Extract [ref:VOLID] or [campaign:NAME] tags from pre-filled WhatsApp links
+                # Strip them from the message so the LLM/onboarding agent doesn't see them
+                import re as _re
+                _ref_tag_match = _re.search(r"\[ref:([^\]]+)\]", text)
+                if _ref_tag_match:
+                    campaign_source["campaign"] = campaign_source.get("campaign") or "referral"
+                    campaign_source["referred_by"] = _ref_tag_match.group(1).strip()
+                    text = _re.sub(r"\s*\[ref:[^\]]+\]", "", text).strip()
+
+                _camp_tag_match = _re.search(r"\[campaign:([^\]]+)\]", text)
+                if _camp_tag_match:
+                    campaign_source["campaign"] = _camp_tag_match.group(1).strip()
+                    text = _re.sub(r"\s*\[campaign:[^\]]+\]", "", text).strip()
+
                 # Option 2: mark message as read immediately (shows blue ticks)
                 if message_id:
                     asyncio.create_task(_wa_mark_read(message_id))
