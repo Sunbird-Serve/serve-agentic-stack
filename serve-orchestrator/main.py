@@ -287,12 +287,14 @@ async def wa_receive(request: Request):
                 # ── DB fallback: restore session mapping after container restart ──
                 if not session_id:
                     try:
-                        from app.service.orchestration import orchestration_service
-                        existing = await orchestration_service.find_active_session_by_actor(phone)
-                        if existing and existing.get("session"):
-                            session_id = str(existing["session"]["id"])
-                            _wa_sessions[phone] = session_id
-                            logger.info(f"Restored WA session for {phone[:6]}***: {session_id[:8]}...")
+                        from app.clients.domain_client import domain_client as _dc
+                        existing = await _dc.find_session_by_actor(phone)
+                        if existing.get("status") == "success":
+                            session_data = existing.get("data", {}).get("session") or existing.get("session")
+                            if session_data and session_data.get("id"):
+                                session_id = str(session_data["id"])
+                                _wa_sessions[phone] = session_id
+                                logger.info(f"Restored WA session for {phone[:6]}***: {session_id[:8]}...")
                     except Exception as e:
                         logger.warning(f"WA session restore failed for {phone[:6]}***: {e}")
 
