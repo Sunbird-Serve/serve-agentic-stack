@@ -320,6 +320,7 @@ export function VolunteerList() {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
   const [agentFilter, setAgentFilter] = useState('all');
+  const [sourceFilter, setSourceFilter] = useState('all');
   const [selectedSession, setSelectedSession] = useState(null);
 
   const load = useCallback(async () => {
@@ -343,6 +344,12 @@ export function VolunteerList() {
     if (s.status === 'archived' || s.status === 'abandoned') return false;
     if (filter !== 'all' && s.status !== filter) return false;
     if (agentFilter !== 'all' && s.active_agent !== agentFilter) return false;
+    if (sourceFilter !== 'all') {
+      const meta = typeof s.channel_metadata === 'object' ? s.channel_metadata : {};
+      const campaign = meta?.campaign || null;
+      if (sourceFilter === 'organic' && campaign) return false;
+      if (sourceFilter !== 'organic' && campaign !== sourceFilter) return false;
+    }
     if (search) {
       const q = search.toLowerCase();
       const name = (s.volunteer_name || '').toLowerCase();
@@ -397,6 +404,19 @@ export function VolunteerList() {
           <option value="fulfillment">Fulfillment</option>
           <option value="delivery_assistant">Delivery</option>
         </select>
+        <select
+          value={sourceFilter}
+          onChange={(e) => setSourceFilter(e.target.value)}
+          className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white"
+        >
+          <option value="all">All Sources</option>
+          <option value="referral">Referral</option>
+          <option value="organic">Organic (no tag)</option>
+          {/* Dynamic campaign options */}
+          {[...new Set(sessions.map(s => (typeof s.channel_metadata === 'object' ? s.channel_metadata?.campaign : null)).filter(c => c && c !== 'referral'))].map(c => (
+            <option key={c} value={c}>{c}</option>
+          ))}
+        </select>
       </div>
 
       {/* Table */}
@@ -408,6 +428,7 @@ export function VolunteerList() {
                 <tr className="border-b border-slate-100">
                   <th className="text-left text-xs text-slate-400 font-medium py-3 px-4">Name</th>
                   <th className="text-left text-xs text-slate-400 font-medium py-3 px-4">Phone</th>
+                  <th className="text-left text-xs text-slate-400 font-medium py-3 px-4">Source</th>
                   <th className="text-left text-xs text-slate-400 font-medium py-3 px-4">Channel</th>
                   <th className="text-left text-xs text-slate-400 font-medium py-3 px-4">Agent</th>
                   <th className="text-left text-xs text-slate-400 font-medium py-3 px-4">Stage</th>
@@ -417,7 +438,7 @@ export function VolunteerList() {
               </thead>
               <tbody>
                 {filtered.length === 0 ? (
-                  <tr><td colSpan={7} className="text-center text-slate-400 py-8">No volunteers found</td></tr>
+                  <tr><td colSpan={8} className="text-center text-slate-400 py-8">No volunteers found</td></tr>
                 ) : filtered.map((s) => (
                   <tr
                     key={s.id}
@@ -426,6 +447,15 @@ export function VolunteerList() {
                   >
                     <td className="py-2.5 px-4 text-slate-900 font-medium">{s.volunteer_name || '—'}</td>
                     <td className="py-2.5 px-4 text-slate-600">{s.volunteer_phone || '—'}</td>
+                    <td className="py-2.5 px-4">
+                      {(() => {
+                        const meta = typeof s.channel_metadata === 'object' ? s.channel_metadata : {};
+                        const campaign = meta?.campaign;
+                        if (!campaign) return <span className="text-slate-300">—</span>;
+                        const colors = campaign === 'referral' ? 'bg-purple-100 text-purple-700' : 'bg-sky-100 text-sky-700';
+                        return <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${colors}`}>{campaign}</span>;
+                      })()}
+                    </td>
                     <td className="py-2.5 px-4">
                       <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${s.channel === 'whatsapp' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
                         {s.channel === 'whatsapp' ? 'WA' : 'Web'}
