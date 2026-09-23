@@ -68,7 +68,7 @@ QUESTION_PROMPTS = {
     ),
 }
 
-PAUSE_PATTERNS = [r"\blater\b", r"\bnot now\b", r"\bpause\b", r"\bbusy\b", r"\bcontinue later\b"]
+PAUSE_PATTERNS = [r"\bcontinue later\b", r"\bnot now\b", r"\bpause\b", r"\btoo busy\b", r"\bcome back later\b", r"\btalk later\b", r"\blet me think\b", r"\bneed time\b", r"\bbaad mein\b", r"\babhi nahi\b"]
 POSITIVE_MOTIVATION = ["teach", "children", "students", "education", "give back", "impact", "volunteer", "kids", "help", "learn", "padhana", "contribute", "difference", "passion", "inspire"]
 STRONG_COMMITMENT = ["regular", "consistent", "weekly", "commit", "committed", "long term", "few months"]
 LOW_COMMITMENT = ["try", "maybe", "not sure", "depends", "occasionally", "if possible"]

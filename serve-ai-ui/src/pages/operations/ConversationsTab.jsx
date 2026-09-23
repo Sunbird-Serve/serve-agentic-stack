@@ -53,6 +53,7 @@ const SessionsList = ({ sessions, selectedId, onSelect }) => {
   const channels = [...new Set(sessions.map(s => s.channel).filter(Boolean))];
 
   const filtered = sessions.filter(s => {
+    if (s.status === 'archived' || s.status === 'abandoned') return false;
     if (filterStage && s.stage !== filterStage) return false;
     if (filterChannel && s.channel !== filterChannel) return false;
     if (search) {

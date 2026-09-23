@@ -47,13 +47,19 @@ export const orchestratorApi = {
     message,
     guestId = null,
     channel = "web_ui",
-    persona = "new_volunteer"
+    persona = "new_volunteer",
+    campaignSource = null
   ) => {
+    const channel_metadata = { guest_id: guestId };
+    // Merge campaign/referral source into channel_metadata
+    if (campaignSource) {
+      Object.assign(channel_metadata, campaignSource);
+    }
     const payload = {
       message,
       channel,
       persona,
-      channel_metadata: { guest_id: guestId },
+      channel_metadata,
     };
     if (sessionId) {
       payload.session_id = sessionId;

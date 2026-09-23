@@ -175,14 +175,27 @@ class OrchestrationService:
             )
 
         # ── TRY FACT-BASED ROUTING (v2) ─────────────────────────────────────
-        # If the volunteer has a fact-store record, use the new routing path.
-        # Falls back to legacy path if no record found or v2 returns None.
-        try:
-            v2_response = await self.process_event_v2(event)
-            if v2_response is not None:
-                return v2_response
-        except Exception as exc:
-            logger.warning(f"[fact-routing] v2 path failed, falling back to legacy: {exc}")
+        # Only activate v2 for actors who DON'T already have an active session.
+        # If they have an active session, the legacy path will resume it and
+        # route based on the session's current agent/stage (respecting handoffs).
+        # v2 is only for truly returning volunteers with no active session.
+        has_active_session = False
+        if event.session_id:
+            has_active_session = True
+        elif event.actor_id:
+            existing = await domain_client.find_session_by_actor(event.actor_id)
+            if existing.get("status") == "success":
+                session_data = existing.get("data", {}).get("session") or existing.get("session")
+                if session_data and session_data.get("status") in ("active", "paused"):
+                    has_active_session = True
+
+        if not has_active_session:
+            try:
+                v2_response = await self.process_event_v2(event)
+                if v2_response is not None:
+                    return v2_response
+            except Exception as exc:
+                logger.warning(f"[fact-routing] v2 path failed, falling back to legacy: {exc}")
 
         # ── LEGACY PATH (original workflow-based routing) ────────────────────
         start_time = datetime.utcnow()
@@ -1033,10 +1046,34 @@ class OrchestrationService:
         if event.session_id:
             session_context, conversation = await self._resume_session(event)
 
+        # If no session_id provided (WhatsApp), try to find existing active session by actor_id
+        if not session_context and event.actor_id:
+            existing = await domain_client.find_session_by_actor(event.actor_id)
+            if existing.get("status") == "success":
+                session_data = existing.get("data", {}).get("session") or existing.get("session")
+                if session_data and session_data.get("status") in ("active", "paused"):
+                    # Found an existing active session — resume it instead of creating new
+                    event_with_session = event.model_copy(update={"session_id": UUID(session_data["id"])})
+                    session_context, conversation = await self._resume_session(event_with_session)
+                    if session_context:
+                        logger.info(
+                            f"[fact-routing] Resumed existing session {session_data['id'][:8]} "
+                            f"for actor {event.actor_id[:10]}"
+                        )
+
         if not session_context:
-            # Set persona from facts context for session metadata
+            # Known volunteer with no active session — create a new session
+            # with their identity pre-populated so downstream agents can find them.
             if facts.get("registered"):
-                event = event.model_copy(update={"persona": PersonaType.RETURNING_VOLUNTEER})
+                event = event.model_copy(update={
+                    "persona": PersonaType.RETURNING_VOLUNTEER,
+                    "raw_metadata": {
+                        **event.raw_metadata,
+                        "volunteer_phone": volunteer.get("phone") or event.raw_metadata.get("phone_number", ""),
+                        "volunteer_name": volunteer.get("full_name", ""),
+                        "volunteer_id": volunteer.get("serve_registry_id", ""),
+                    },
+                })
             session_context = await self._create_session(event)
 
         if not session_context:

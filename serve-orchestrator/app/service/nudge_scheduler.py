@@ -48,7 +48,8 @@ _WA_GRAPH_URL = "https://graph.facebook.com/v18.0"
 # ── Nudge messages ────────────────────────────────────────────────────────────
 NUDGE_MESSAGES = {
     1: (
-        "Hi! Looks like we paused mid-conversation. Would you like to continue?\n\n"
+        "Hi! We had a brief technical issue on our end — apologies for the interruption. "
+        "Your progress is fully saved. Just reply here to continue right where you left off. 🙏\n\n"
         "Reply:\n"
         "▶️ *continue* — pick up where you left off\n"
         "⏰ *later* — remind me in a few hours\n"

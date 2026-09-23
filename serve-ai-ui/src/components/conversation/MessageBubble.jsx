@@ -1,8 +1,60 @@
 /**
  * MessageBubble — Renders a single message with role-based styling.
  * Supports user and assistant messages with distinct visual treatment.
+ * Parses [VIDEO:url|caption] tags into video players.
  */
 import { User, Bot } from 'lucide-react';
+
+const VIDEO_TAG_RE = /\[VIDEO:(.*?)\|(.*?)\]/g;
+
+function renderContent(content) {
+  const parts = [];
+  let lastIndex = 0;
+  let match;
+
+  const regex = new RegExp(VIDEO_TAG_RE);
+  while ((match = regex.exec(content)) !== null) {
+    // Text before the video tag
+    if (match.index > lastIndex) {
+      const text = content.slice(lastIndex, match.index).trim();
+      if (text) parts.push({ type: 'text', value: text });
+    }
+    // Video
+    parts.push({ type: 'video', url: match[1], caption: match[2] });
+    lastIndex = regex.lastIndex;
+  }
+  // Remaining text after last video tag
+  if (lastIndex < content.length) {
+    const text = content.slice(lastIndex).trim();
+    if (text) parts.push({ type: 'text', value: text });
+  }
+
+  if (parts.length === 0) {
+    return <p className="whitespace-pre-wrap">{content}</p>;
+  }
+
+  return (
+    <div className="space-y-2">
+      {parts.map((part, i) =>
+        part.type === 'text' ? (
+          <p key={i} className="whitespace-pre-wrap">{part.value}</p>
+        ) : (
+          <div key={i} className="rounded-lg overflow-hidden">
+            <video
+              src={part.url}
+              controls
+              className="w-full max-w-[300px] rounded-lg"
+              preload="metadata"
+            />
+            {part.caption && (
+              <p className="text-xs text-slate-500 mt-1">{part.caption}</p>
+            )}
+          </div>
+        )
+      )}
+    </div>
+  );
+}
 
 export function MessageBubble({ message }) {
   const isUser = message.role === 'user';
@@ -32,7 +84,7 @@ export function MessageBubble({ message }) {
             : 'bg-slate-100 text-slate-800 rounded-2xl rounded-bl-sm'
         }`}
       >
-        <p className="whitespace-pre-wrap">{message.content}</p>
+        {renderContent(message.content)}
         {message.timestamp && (
           <p
             className={`text-[10px] mt-1.5 ${

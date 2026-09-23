@@ -53,7 +53,9 @@ Rules you MUST follow:
 - Never mention technical terms: workflow, orchestrator, MCP, agent, system, database, session.
 - Do not say the volunteer is ineligible, rejected, or disqualified.
 - Do not promise registration unless the stage is onboarding_complete.
-- CRITICAL: Only respond with what the CURRENT STAGE instructions specify. Nothing else."""
+- CRITICAL: Only respond with what the CURRENT STAGE instructions specify. Nothing else.
+- IMPORTANT: Volunteers MUST use a laptop, computer, or tablet with internet for online teaching. Mobile phones are NOT sufficient. If asked about mobile/phone teaching, clearly say a laptop, computer, or tablet is required.
+- IMPORTANT: The minimum teaching commitment is 2 days per week (2-3 hours total). If asked, clarify this. One day per week is not enough."""
 
 
 # ── Stage-specific prompts ──────────────────────────────────────────────────────
@@ -171,7 +173,8 @@ All eligibility checks have passed. Before we move on, get their explicit consen
 Your task: Say something like:
 "Perfect! Just to formally confirm before we proceed — you are declaring that you are 18 years or older, you have internet and device access for online teaching, and you understand this is a voluntary, unpaid role. By continuing, you consent to these terms. Shall we go ahead?"
 
-Keep it brief and warm but make sure all three points are mentioned explicitly. Wait for their confirmation before proceeding."""
+Keep it brief and warm but make sure all three points are mentioned explicitly. Wait for their confirmation before proceeding.
+Do NOT ask about hours, availability, schedule, or anything else. ONLY the consent confirmation."""
 
         return f"""{_BASE_CONTEXT}
 

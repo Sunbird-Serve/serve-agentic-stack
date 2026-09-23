@@ -93,7 +93,8 @@ class FulfillmentAgentService:
                 f"candidates={len(match_result.candidates)}"
             )
             updated = _dump_sub_state(sub_state)
-            await domain_client.save_message(session_id, "assistant", ack_message)
+            # NOTE: Do NOT save_message here — the orchestrator saves the returned
+            # assistant_message automatically. Saving here caused duplicate messages.
             await domain_client.advance_state(session_id, FulfillmentWorkflowState.ACTIVE.value, updated)
             return self._build_response(
                 message=ack_message,
@@ -189,7 +190,8 @@ class FulfillmentAgentService:
 
         # ── Active turn ───────────────────────────────────────────────────────
         updated = _dump_sub_state(sub_state)
-        await domain_client.save_message(session_id, "assistant", text)
+        # NOTE: Do NOT save_message here — the orchestrator saves the returned
+        # assistant_message automatically. Saving here caused duplicate messages.
         await domain_client.advance_state(session_id, FulfillmentWorkflowState.ACTIVE.value, updated)
         return self._build_response(
             message=text,
@@ -357,8 +359,8 @@ class FulfillmentAgentService:
 
         updated = _dump_sub_state(sub_state)
         await domain_client.advance_state(session_id, new_state, updated)
-        if message:
-            await domain_client.save_message(session_id, "assistant", message)
+        # NOTE: Do NOT save_message here — the orchestrator saves the returned
+        # assistant_message automatically. Saving here caused duplicate messages.
 
         # Build new_facts for the volunteer fact-store
         response_new_facts = {}

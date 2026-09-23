@@ -100,15 +100,20 @@ memory_service  = MemoryService()
 
 # ── Server lifespan ────────────────────────────────────────────────────────────
 
+_db_initialized = False
+
 @asynccontextmanager
 async def _lifespan(server: FastMCP):
-    from services.database import init_db, check_db_health
-    try:
-        await init_db()
-        await check_db_health()
-        logger.info("MCP Server ready — DB initialised and health cached")
-    except Exception as e:
-        logger.warning(f"DB init failed (in-memory fallback active): {e}")
+    global _db_initialized
+    if not _db_initialized:
+        from services.database import init_db, check_db_health
+        try:
+            await init_db()
+            await check_db_health()
+            _db_initialized = True
+            logger.info("MCP Server ready — DB initialised and health cached")
+        except Exception as e:
+            logger.warning(f"DB init failed (in-memory fallback active): {e}")
     yield
 
 
@@ -2135,6 +2140,7 @@ async def nudge_schedule(session_id: str, volunteer_phone: str, nudge_number: in
 @mcp.tool()
 async def nudge_get_due(now: str = "") -> dict:
     """Get all nudges that are due to be sent (scheduled_at <= now, not sent, not cancelled)."""
+    from datetime import datetime
     from services.database import get_db, NudgeQueue, is_db_healthy
     from sqlalchemy import select, and_
     if not is_db_healthy():

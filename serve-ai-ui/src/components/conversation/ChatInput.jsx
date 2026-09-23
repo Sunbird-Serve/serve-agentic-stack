@@ -5,8 +5,8 @@ import { useState, useRef, useEffect } from 'react';
 import { Send, Loader2 } from 'lucide-react';
 import { Button } from '../ui/button';
 
-export function ChatInput({ onSend, disabled = false, loading = false, placeholder = 'Type your message...' }) {
-  const [value, setValue] = useState('');
+export function ChatInput({ onSend, disabled = false, loading = false, placeholder = 'Type your message...', defaultValue = '' }) {
+  const [value, setValue] = useState(defaultValue);
   const inputRef = useRef(null);
 
   // Focus input on mount

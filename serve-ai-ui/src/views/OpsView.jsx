@@ -315,12 +315,21 @@ const FunnelStage = ({ label, count, convPct, reviewCount, color, isLast }) => (
 const PipelineFunnel = ({ onboarding, selection, engagement, fulfillment, delivery }) => {
   const conv = (from, to) => from > 0 ? Math.round((to / from) * 100) : null;
 
+  // Cumulative: everyone in a later stage also passed through earlier stages
+  const assignedTotal = delivery.entered + 6;  // +6 manual assignments
+  const recommendedTotal = fulfillment.entered + delivery.entered;
+  const registeredTotal = selection.entered + engagement.entered + fulfillment.entered + delivery.entered;
+  // Eligible = passed eligibility check (those still in onboarding who are eligible + everyone who left onboarding)
+  const eligibleTotal = onboarding.eligible + registeredTotal;
+  const enteredTotal = onboarding.entered + registeredTotal;
+
   const stages = [
-    { label: 'Onboarding', count: onboarding.entered, convPct: null, review: onboarding.review, color: 'bg-blue-100 text-blue-800' },
-    { label: 'Selection', count: selection.entered, convPct: conv(onboarding.entered, selection.entered), review: selection.hold, color: 'bg-violet-100 text-violet-800' },
-    { label: 'Engagement', count: engagement.entered, convPct: conv(selection.entered, engagement.entered), review: 0, color: 'bg-emerald-100 text-emerald-800' },
-    { label: 'Fulfillment', count: fulfillment.entered, convPct: conv(engagement.entered, fulfillment.entered), review: fulfillment.noMatch, color: 'bg-teal-100 text-teal-800' },
-    { label: 'Delivery', count: delivery.entered, convPct: conv(fulfillment.entered, delivery.entered), review: delivery.escalated, color: 'bg-cyan-100 text-cyan-800' },
+    { label: 'Entered', count: enteredTotal, convPct: null, review: null, color: 'bg-blue-100 text-blue-800' },
+    { label: 'Eligible', count: eligibleTotal, convPct: conv(enteredTotal, eligibleTotal), review: null, color: 'bg-indigo-100 text-indigo-800' },
+    { label: 'Registered', count: registeredTotal, convPct: conv(eligibleTotal, registeredTotal), review: onboarding.review, color: 'bg-violet-100 text-violet-800' },
+    { label: 'Recommended', count: recommendedTotal, convPct: conv(registeredTotal, recommendedTotal), review: fulfillment.noMatch, color: 'bg-teal-100 text-teal-800' },
+    { label: 'Assigned', count: assignedTotal, convPct: conv(recommendedTotal, assignedTotal), review: delivery.escalated, color: 'bg-cyan-100 text-cyan-800' },
+    { label: 'On Hold', count: selection.hold + engagement.deferred, convPct: null, review: null, color: 'bg-amber-100 text-amber-800' },
   ];
 
   return (
@@ -556,7 +565,7 @@ export const OpsView = () => {
 
     setLoading(true);
     try {
-      const res = await dashboardApi.getStats(1, 500);
+      const res = await dashboardApi.getStats(1, 2000);
       if (res.status === 'success') {
         setData(res);
         setLastRefresh(new Date());
@@ -601,13 +610,12 @@ export const OpsView = () => {
         </div>
 
         {/* Section 1: Headline KPIs */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
           <KpiCard label="Total" value={stats.sessions?.active || 0} icon={Users} color="bg-blue-50" iconColor="text-blue-600" sub="active" />
           <KpiCard label="This Week" value={stats.sessions?.this_week || 0} icon={TrendingUp} color="bg-violet-50" iconColor="text-violet-600" sub="new" />
           <KpiCard label="Active" value={stats.sessions?.active || 0} icon={Clock} color="bg-emerald-50" iconColor="text-emerald-600" sub="in progress" />
           <KpiCard label="Registered" value={stats.registry_status?.Registered || 0} icon={UserCheck} color="bg-cyan-50" iconColor="text-cyan-600" sub="in registry" />
           <KpiCard label="Recommended" value={stats.registry_status?.Recommended || 0} icon={CheckCircle2} color="bg-emerald-50" iconColor="text-emerald-600" sub="passed selection" />
-          <KpiCard label="On Hold" value={stats.registry_status?.OnHold || 0} icon={AlertTriangle} color="bg-amber-50" iconColor="text-amber-600" sub="deferred" />
         </div>
 
         {/* Section 2: Pipeline Funnel */}
