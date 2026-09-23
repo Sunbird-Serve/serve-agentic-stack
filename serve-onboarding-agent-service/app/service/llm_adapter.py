@@ -287,6 +287,12 @@ Copy the above text EXACTLY. Do NOT modify the name, email, or phone values. Do 
         email = confirmed_fields.get("email", "")
         import os
         portal_url = os.environ.get("SERVE_PORTAL_URL", "https://up.serve.net.in")
+        default_password = os.environ.get("SERVE_DEFAULT_PASSWORD")
+        password_line = (
+            f"Password: {default_password} (you'll be asked to change this on first login)\n"
+            if default_password else
+            "Password: Please use the password setup instructions sent to your registered email or phone.\n"
+        )
 
         return f"""{_BASE_CONTEXT}
 
@@ -299,11 +305,11 @@ Your task: Congratulate {name} and share their login credentials. Say EXACTLY th
 Here are your login details:
 Portal: {portal_url}
 Username: {email}
-Password: Serve@2026 (you'll be asked to change this on first login)
+{password_line}
 
 You can now log into the SERVE Portal to track your teaching journey. Welcome aboard!"
 
-Copy the above EXACTLY. Do NOT change the URL, username, or password values. Do NOT add extra information."""
+Copy the above EXACTLY. Do NOT change the URL, username, or password instruction. Do NOT add extra information."""
 
     # ── HUMAN REVIEW (v2: transparent messaging) ────────────────────────────────
     if stage == "human_review":
@@ -377,6 +383,132 @@ async def _call_llm(system_prompt: str, messages: List[Dict[str, str]]) -> str:
     return _UNAVAILABLE_RESPONSE
 
 
+def _render_registration_review(confirmed_fields: Dict) -> str:
+    summary_lines = []
+    name = confirmed_fields.get("full_name")
+    email = confirmed_fields.get("email")
+    phone = confirmed_fields.get("phone")
+
+    if name:
+        summary_lines.append(f"Name: {name}")
+    if email:
+        summary_lines.append(f"Email: {email}")
+    if phone:
+        summary_lines.append(f"Phone: {phone}")
+
+    summary_text = "\n".join(summary_lines)
+    return f"Here is what I have:\n{summary_text}\n\nDoes this look right? Let me know if you want to change anything."
+
+
+def _render_onboarding_complete(confirmed_fields: Dict) -> str:
+    name = confirmed_fields.get("full_name", "")
+    email = confirmed_fields.get("email", "")
+    portal_url = os.environ.get("SERVE_PORTAL_URL", "https://up.serve.net.in")
+    default_password = os.environ.get("SERVE_DEFAULT_PASSWORD")
+    password_line = (
+        f"Password: {default_password} (you'll be asked to change this on first login)\n"
+        if default_password else
+        "Password: Please use the password setup instructions sent to your registered email or phone.\n"
+    )
+
+    return (
+        f"You're all set, {name}! Your SERVE account has been created.\n\n"
+        "Here are your login details:\n"
+        f"Portal: {portal_url}\n"
+        f"Username: {email}\n"
+        f"{password_line}\n"
+        "You can now log into the SERVE Portal to track your teaching journey. Welcome aboard!"
+    )
+
+
+def _render_human_review(confirmed_fields: Dict) -> str:
+    review_reason = confirmed_fields.get("review_reason", "")
+    if review_reason == "age_18_plus":
+        return "We need volunteers to be 18+ for child safety. If your situation changes, you are always welcome back!"
+    if review_reason == "has_internet_and_device":
+        return "Online teaching needs a laptop or computer with internet access. If you get access in the future, we would love to have you!"
+    if review_reason == "accepts_unpaid_role":
+        return "We totally understand. If you ever want to give volunteering a try, we will be here!"
+    return "Unfortunately we cannot proceed right now, but you are always welcome to try again in the future."
+
+
+def _render_eligibility(missing_fields: List[str], confirmed_fields: Dict) -> str:
+    pending_clarifications = [f for f in missing_fields if f.endswith("_clarification")]
+    if pending_clarifications:
+        field = pending_clarifications[0].replace("_clarification", "")
+        if field == "age_18_plus":
+            return "Just to confirm, are you 18 years or older?"
+        if field == "has_internet_and_device":
+            return "Do you have a laptop or computer with internet access for online classes?"
+        if field == "accepts_unpaid_role":
+            return "This is a volunteer role with no payment, but a chance to make real impact. Are you comfortable with that?"
+        return "Could you please clarify your previous answer?"
+
+    eligibility_fields = ["age_18_plus", "has_internet_and_device", "accepts_unpaid_role"]
+    all_unanswered = all(confirmed_fields.get(f) is None for f in eligibility_fields)
+    if all_unanswered:
+        return (
+            "Before we proceed, I just need to confirm a few things:\n"
+            "• Are you 18 years or older?\n"
+            "• Do you have a laptop/computer with internet access?\n"
+            "• Are you comfortable that this is a voluntary, unpaid role?\n\n"
+            "A simple 'yes' to all works!"
+        )
+
+    if confirmed_fields.get("age_18_plus") is not True:
+        return "Are you 18 years of age or older?"
+    if confirmed_fields.get("has_internet_and_device") is not True:
+        return "Do you have a laptop or computer with internet access for online classes?"
+    if confirmed_fields.get("accepts_unpaid_role") is not True:
+        return "This is a volunteer, unpaid role. Are you comfortable with that?"
+    return (
+        "Perfect! Just to formally confirm before we proceed, you are declaring that you are 18 years or older, "
+        "have internet and device access for online teaching, and understand this is a voluntary, unpaid role. Shall we go ahead?"
+    )
+
+
+def _render_contact_capture(confirmed_fields: Dict) -> str:
+    email_typo = confirmed_fields.get("email_typo_suggestion")
+    if email_typo:
+        return f"I noticed the email might have a typo. Did you mean {email_typo}?"
+
+    if confirmed_fields.get("volunteer_reluctant", False):
+        return (
+            "Your details are only used to coordinate class schedules and will stay private within the eVidyaloka team. "
+            "Could you share the missing details so we can continue?"
+        )
+
+    remaining = []
+    if not confirmed_fields.get("full_name"):
+        remaining.append("full name")
+    if not confirmed_fields.get("email"):
+        remaining.append("email address")
+    if not confirmed_fields.get("phone"):
+        remaining.append("phone number")
+
+    if len(remaining) >= 2:
+        return f"Could you share your {', '.join(remaining)} so I can get you registered?"
+    if len(remaining) == 1:
+        return f"Could you share your {remaining[0]}?"
+    return "Got it, thanks!"
+
+
+def _render_deterministic_response(stage: str, missing_fields: List[str], confirmed_fields: Dict) -> Optional[str]:
+    if stage == "eligibility_screening":
+        return _render_eligibility(missing_fields, confirmed_fields)
+    if stage == "contact_capture":
+        return _render_contact_capture(confirmed_fields)
+    if stage == "registration_review":
+        return _render_registration_review(confirmed_fields)
+    if stage == "onboarding_complete":
+        return _render_onboarding_complete(confirmed_fields)
+    if stage == "human_review":
+        return _render_human_review(confirmed_fields)
+    if stage == "paused":
+        return "No worries at all! Your progress is saved, and you can message anytime to pick up where you left off."
+    return None
+
+
 # ── Main adapter class ──────────────────────────────────────────────────────────
 
 class LLMAdapter:
@@ -396,6 +528,14 @@ class LLMAdapter:
     ) -> str:
         missing_fields = missing_fields or []
         confirmed_fields = confirmed_fields or {}
+
+        deterministic_response = _render_deterministic_response(
+            stage=stage,
+            missing_fields=missing_fields,
+            confirmed_fields=confirmed_fields,
+        )
+        if deterministic_response is not None:
+            return deterministic_response
 
         # Build fresh system prompt for this stage
         system_prompt = _build_stage_prompt(
