@@ -185,6 +185,8 @@ class ProfileExtractor:
         "first", "second", "third", "last", "middle",
         "surname", "pareek", "faridabad", "meerut",
     }
+    EMAIL_PATTERN = r"(?<![a-zA-Z0-9._%+-])([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(?![a-zA-Z0-9._%+-])"
+    PHONE_CANDIDATE_PATTERN = r"(?<!\d)(\+?\d[\d\s.-]{8,}\d)(?!\d)"
 
     # Phrases that should NEVER be treated as names — checked before regex extraction
     NAME_BLACKLIST_PHRASES = [
@@ -398,20 +400,74 @@ class ProfileExtractor:
 
     def _extract_email(self, message: str) -> Optional[str]:
         match = re.search(self.EMAIL_PATTERN, message)
-        return match.group(0).lower() if match else None
+        if not match:
+            return None
+        candidate = match.group(1).lower()
+        return candidate if self._is_valid_email(candidate) else None
 
     def _extract_phone(self, message: str) -> Optional[str]:
-        for pattern in self.PHONE_PATTERNS:
-            match = re.search(pattern, message)
-            if match:
-                digits = re.sub(r"[^\d+]", "", match.group(1))
-                if self._is_plausible_phone(digits):
-                    return digits
+        for match in re.finditer(self.PHONE_CANDIDATE_PATTERN, message):
+            normalized = self._normalize_phone(match.group(1))
+            if normalized:
+                return normalized
+        return None
+
+    def _is_valid_email(self, email: str) -> bool:
+        if not email or len(email) > 254 or email.count("@") != 1:
+            return False
+
+        local, domain = email.rsplit("@", 1)
+        if not local or len(local) > 64:
+            return False
+        if local.startswith(".") or local.endswith(".") or ".." in local:
+            return False
+        if not re.fullmatch(r"[a-zA-Z0-9._%+-]+", local):
+            return False
+
+        if not domain or len(domain) > 253:
+            return False
+        if domain.startswith(".") or domain.endswith(".") or ".." in domain:
+            return False
+
+        labels = domain.split(".")
+        if len(labels) < 2:
+            return False
+        for label in labels:
+            if not label or len(label) > 63:
+                return False
+            if label.startswith("-") or label.endswith("-"):
+                return False
+            if not re.fullmatch(r"[a-zA-Z0-9-]+", label):
+                return False
+
+        tld = labels[-1]
+        return tld.isalpha() and 2 <= len(tld) <= 24
+
+    def _normalize_phone(self, raw_phone: str) -> Optional[str]:
+        stripped = raw_phone.strip()
+        has_plus = stripped.startswith("+")
+        digits = re.sub(r"\D", "", stripped)
+
+        if has_plus:
+            if not digits.startswith("91") or len(digits) != 12:
+                return None
+            core = digits[2:]
+            return digits if self._is_plausible_phone(core) else None
+
+        if len(digits) == 12 and digits.startswith("91"):
+            core = digits[2:]
+            return digits if self._is_plausible_phone(core) else None
+
+        if len(digits) == 10:
+            return digits if self._is_plausible_phone(digits) else None
+
         return None
 
     def _is_plausible_phone(self, digits: str) -> bool:
-        core = digits[-10:]
-        if len(core) < 10:
+        core = re.sub(r"\D", "", digits)
+        if len(core) != 10:
+            return False
+        if core[0] not in {"6", "7", "8", "9"}:
             return False
         if len(set(core)) == 1:
             return False
@@ -814,6 +870,16 @@ class OnboardingAgentService:
         # Fetch confirmed fields from MCP
         missing_result = await domain_client.get_missing_fields(request.session_id)
         _, confirmed_fields = _unwrap_missing_fields(missing_result)
+        if confirmed_fields.get("email") and not profile_extractor._is_valid_email(str(confirmed_fields["email"])):
+            logger.warning(f"[{request.session_id}] ignoring invalid confirmed email")
+            confirmed_fields.pop("email", None)
+        if confirmed_fields.get("phone"):
+            normalized_phone = profile_extractor._normalize_phone(str(confirmed_fields["phone"]))
+            if normalized_phone:
+                confirmed_fields["phone"] = normalized_phone
+            else:
+                logger.warning(f"[{request.session_id}] ignoring invalid confirmed phone")
+                confirmed_fields.pop("phone", None)
         logger.info(f"[{request.session_id}] confirmed_fields: {list(confirmed_fields.keys())}")
 
         # Auto-populate phone from WhatsApp channel_metadata
@@ -828,8 +894,12 @@ class OnboardingAgentService:
                 or ch_meta.get("wa_id")
             )
             if phone_from_channel:
-                confirmed_fields["phone"] = phone_from_channel
-                await domain_client.save_confirmed_fields(request.session_id, {"phone": phone_from_channel})
+                normalized_phone = profile_extractor._normalize_phone(str(phone_from_channel))
+                if normalized_phone:
+                    confirmed_fields["phone"] = normalized_phone
+                    await domain_client.save_confirmed_fields(request.session_id, {"phone": normalized_phone})
+                else:
+                    logger.warning(f"[{request.session_id}] ignoring invalid channel phone")
 
         memory_context = await self.memory_service.get_memory_context(
             session_id=str(request.session_id),

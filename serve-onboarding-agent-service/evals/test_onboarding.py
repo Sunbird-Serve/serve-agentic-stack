@@ -8,6 +8,7 @@ Run: python -m pytest evals/test_onboarding.py -v
 Run a section: python -m pytest evals/test_onboarding.py::TestProfileExtraction -v
 """
 import json
+import importlib
 import pytest
 from uuid import uuid4
 
@@ -23,6 +24,8 @@ from app.service.onboarding_logic import (
 )
 from app.service.llm_adapter import LLMAdapter, _build_stage_prompt, _BASE_CONTEXT
 from app.schemas import AgentTurnRequest, SessionState
+
+llm_adapter_module = importlib.import_module("app.service.llm_adapter")
 
 
 def _sub(**overrides):
@@ -103,6 +106,16 @@ class TestProfileExtraction:
     def test_email_extraction(self, msg, expected):
         assert profile_extractor._extract_email(msg) == expected
 
+    @pytest.mark.parametrize("msg", [
+        "email is user@gmail..com",
+        "email is user..name@gmail.com",
+        "email is user@-gmail.com",
+        "email is user@gmail-.com",
+        "email is user@gmail.c",
+    ])
+    def test_invalid_email_rejected(self, msg):
+        assert profile_extractor._extract_email(msg) is None
+
     @pytest.mark.parametrize("msg", ["I don't have email", "hello world", "7760131253"])
     def test_no_email(self, msg):
         assert profile_extractor._extract_email(msg) is None
@@ -114,6 +127,15 @@ class TestProfileExtraction:
     ])
     def test_phone_extraction(self, msg, expected):
         assert profile_extractor._extract_phone(msg) == expected
+
+    @pytest.mark.parametrize("msg", [
+        "5012345678",
+        "+1 7760131253",
+        "91776013125",
+        "9917760131253",
+    ])
+    def test_invalid_mobile_rejected(self, msg):
+        assert profile_extractor._extract_phone(msg) is None
 
     def test_phone_prefix_gap(self):
         result = profile_extractor._extract_phone("phone: 9876543210")
@@ -397,7 +419,7 @@ class TestDeterministicResponses:
             called["value"] = True
             return "LLM response"
 
-        monkeypatch.setattr("app.service.llm_adapter._call_llm", fake_call_llm)
+        monkeypatch.setattr(llm_adapter_module, "_call_llm", fake_call_llm)
         response = await LLMAdapter().generate_response(
             stage=stage,
             messages=[],
@@ -417,7 +439,7 @@ class TestDeterministicResponses:
             called["value"] = True
             return "Welcome from LLM"
 
-        monkeypatch.setattr("app.service.llm_adapter._call_llm", fake_call_llm)
+        monkeypatch.setattr(llm_adapter_module, "_call_llm", fake_call_llm)
         response = await LLMAdapter().generate_response(
             stage="welcome",
             messages=[],
@@ -497,13 +519,52 @@ class TestIntegration:
         mock_domain_client.get_missing_fields.return_value = {"data": {"missing_fields": ["full_name", "email"], "confirmed_fields": {}}}
         mock_llm_adapter.generate_response.return_value = "Got it."
         req = _make_request(session_id, stage="contact_capture", sub_state=sub,
-                            user_message="I'm Asha Devi, asha@gmail.com", channel_metadata={"volunteer_phone": "9876543210"})
+                            user_message="I'm Asha Devi, asha@gmail.com", channel_metadata={"volunteer_phone": "7760131253"})
         await onboarding_agent_service.process_turn(req)
         all_saved = {}
         for call in mock_domain_client.save_confirmed_fields.call_args_list:
             if len(call.args) >= 2 and isinstance(call.args[1], dict):
                 all_saved.update(call.args[1])
-        assert all_saved.get("phone") == "9876543210"
+        assert all_saved.get("phone") == "7760131253"
+
+    @pytest.mark.asyncio
+    async def test_invalid_whatsapp_phone_not_saved(self, session_id, mock_domain_client, mock_llm_adapter):
+        sub = dict(DEFAULT_SUB_STATE)
+        sub["eligibility"] = {"age_18_plus": True, "has_internet_and_device": True, "accepts_unpaid_role": True}
+        mock_domain_client.get_missing_fields.return_value = {"data": {"missing_fields": ["full_name", "email", "phone"], "confirmed_fields": {}}}
+        mock_llm_adapter.generate_response.return_value = "Please share your phone number."
+        req = _make_request(session_id, stage="contact_capture", sub_state=sub,
+                            user_message="I'm Asha Devi, asha@gmail.com", channel_metadata={"volunteer_phone": "5012345678"})
+        resp = await onboarding_agent_service.process_turn(req)
+
+        all_saved = {}
+        for call in mock_domain_client.save_confirmed_fields.call_args_list:
+            if len(call.args) >= 2 and isinstance(call.args[1], dict):
+                all_saved.update(call.args[1])
+
+        assert "phone" not in all_saved
+        assert "phone" in resp.missing_fields
+
+    @pytest.mark.asyncio
+    async def test_invalid_confirmed_contact_fields_are_reasked(self, session_id, mock_domain_client, mock_llm_adapter):
+        sub = dict(DEFAULT_SUB_STATE)
+        sub["eligibility"] = {"age_18_plus": True, "has_internet_and_device": True, "accepts_unpaid_role": True}
+        mock_domain_client.get_missing_fields.return_value = {
+            "data": {
+                "missing_fields": [],
+                "confirmed_fields": {
+                    "full_name": "Asha Devi",
+                    "email": "asha@gmail..com",
+                    "phone": "5012345678",
+                },
+            }
+        }
+        mock_llm_adapter.generate_response.return_value = "Could you share your email address and phone number?"
+        req = _make_request(session_id, stage="contact_capture", sub_state=sub, user_message="hello")
+        resp = await onboarding_agent_service.process_turn(req)
+
+        assert resp.state == "contact_capture"
+        assert set(resp.missing_fields) == {"email", "phone"}
 
     @pytest.mark.asyncio
     async def test_pause_from_eligibility(self, session_id, mock_domain_client, mock_llm_adapter):
