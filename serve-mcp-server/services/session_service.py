@@ -245,7 +245,15 @@ class SessionService:
         _TERMINAL = {
             "need_submitted", "fulfillment_handoff_ready", "approved", "complete",
         }
-        new_status = "completed" if new_state in _TERMINAL else None
+        if new_state in _TERMINAL:
+            new_status = "completed"
+        elif new_state == "paused":
+            # Map stage -> status: scan queries (e.g. the nudge scheduler's
+            # active-session list) filter on status, so a session paused
+            # only in stage would keep surfacing as active forever.
+            new_status = "paused"
+        else:
+            new_status = None
 
         if is_db_healthy():
             try:
@@ -573,4 +581,5 @@ class SessionService:
             "created_at":      row.created_at.isoformat() if row.created_at else None,
             "updated_at":      row.updated_at.isoformat() if row.updated_at else None,
             "last_message_at": row.last_message_at.isoformat() if row.last_message_at else None,
+            "do_not_disturb":  bool(row.do_not_disturb),
         }
