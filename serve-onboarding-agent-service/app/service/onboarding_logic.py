@@ -197,7 +197,6 @@ class ProfileExtractor:
         "not now", "from today", "from tomorrow", "from monday",
         "yes to all", "unpaid", "it's unpaid", "oh its",
     ]
-    EMAIL_PATTERN = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
     PHONE_PATTERNS = [
         r"\b(\+?\d{1,3}[-.\s]?\d{10})\b",
         r"\b(00\d{10,13})\b",              # International 00xxx format (e.g., 00971529922061)
