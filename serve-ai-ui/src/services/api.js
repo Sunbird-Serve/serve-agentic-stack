@@ -48,7 +48,8 @@ export const orchestratorApi = {
     guestId = null,
     channel = "web_ui",
     persona = "new_volunteer",
-    campaignSource = null
+    campaignSource = null,
+    structuredPayload = null
   ) => {
     const channel_metadata = { guest_id: guestId };
     // Merge campaign/referral source into channel_metadata
@@ -63,6 +64,9 @@ export const orchestratorApi = {
     };
     if (sessionId) {
       payload.session_id = sessionId;
+    }
+    if (structuredPayload) {
+      payload.structured_payload = structuredPayload;
     }
     const response = await apiClient.post("/orchestrator/guest-interact", payload);
     return response.data;

@@ -2,8 +2,10 @@
  * MessageBubble — Renders a single message with role-based styling.
  * Supports user and assistant messages with distinct visual treatment.
  * Parses [VIDEO:url|caption] tags into video players.
+ * Renders structured ui_request forms when present on assistant messages.
  */
 import { User, Bot } from 'lucide-react';
+import { StructuredUiRequest } from './StructuredUiRequest';
 
 const VIDEO_TAG_RE = /\[VIDEO:(.*?)\|(.*?)\]/g;
 
@@ -14,16 +16,13 @@ function renderContent(content) {
 
   const regex = new RegExp(VIDEO_TAG_RE);
   while ((match = regex.exec(content)) !== null) {
-    // Text before the video tag
     if (match.index > lastIndex) {
       const text = content.slice(lastIndex, match.index).trim();
       if (text) parts.push({ type: 'text', value: text });
     }
-    // Video
     parts.push({ type: 'video', url: match[1], caption: match[2] });
     lastIndex = regex.lastIndex;
   }
-  // Remaining text after last video tag
   if (lastIndex < content.length) {
     const text = content.slice(lastIndex).trim();
     if (text) parts.push({ type: 'text', value: text });
@@ -56,8 +55,11 @@ function renderContent(content) {
   );
 }
 
-export function MessageBubble({ message }) {
+export function MessageBubble({ message, onStructuredSubmit, formDisabled = false }) {
   const isUser = message.role === 'user';
+  const uiRequest = !isUser ? message.metadata?.ui_request : null;
+  const formSubmitted = Boolean(message.metadata?.ui_request_submitted);
+  const submittedValues = message.metadata?.form_values || null;
 
   return (
     <div
@@ -65,7 +67,6 @@ export function MessageBubble({ message }) {
         isUser ? 'ml-auto flex-row-reverse' : 'mr-auto'
       }`}
     >
-      {/* Avatar */}
       <div
         className={`w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center ${
           isUser
@@ -76,26 +77,22 @@ export function MessageBubble({ message }) {
         {isUser ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
       </div>
 
-      {/* Bubble */}
       <div
-        className={`px-4 py-2.5 text-sm leading-relaxed ${
+        className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${
           isUser
-            ? 'bg-blue-600 text-white rounded-2xl rounded-br-sm'
-            : 'bg-slate-100 text-slate-800 rounded-2xl rounded-bl-sm'
+            ? 'bg-blue-600 text-white rounded-br-sm'
+            : 'bg-slate-100 text-slate-800 rounded-bl-sm'
         }`}
       >
         {renderContent(message.content)}
-        {message.timestamp && (
-          <p
-            className={`text-[10px] mt-1.5 ${
-              isUser ? 'text-blue-200' : 'text-slate-400'
-            }`}
-          >
-            {new Date(message.timestamp).toLocaleTimeString([], {
-              hour: '2-digit',
-              minute: '2-digit',
-            })}
-          </p>
+
+        {uiRequest && (
+          <StructuredUiRequest
+            uiRequest={uiRequest}
+            disabled={formDisabled || formSubmitted}
+            submittedValues={submittedValues}
+            onSubmit={(values) => onStructuredSubmit?.(uiRequest, values, message.id)}
+          />
         )}
       </div>
     </div>

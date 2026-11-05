@@ -95,6 +95,7 @@ class AgentTurnRequest(BaseModel):
     intent_hint: Optional[str] = None
     channel_metadata: Optional[Dict[str, Any]] = None
     volunteer_facts: Dict[str, Any] = {}  # persistent facts from volunteer fact-store
+    structured_payload: Optional[Dict[str, Any]] = None  # StructuredSubmit-shaped
 
 
 class HandoffEvent(BaseModel):
@@ -128,6 +129,7 @@ class AgentTurnResponse(BaseModel):
     new_facts: Dict[str, Any] = {}     # facts for orchestrator to merge into volunteer record
     handoff_event: Optional[HandoffEvent] = None
     telemetry_events: List[TelemetryEvent] = []
+    ui_request: Optional[Dict[str, Any]] = None  # UiRequest-shaped interactive form
 
 
 # ============ Health Response ============

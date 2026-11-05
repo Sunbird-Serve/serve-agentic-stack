@@ -127,8 +127,12 @@ class IntentResolver:
                 metadata={"signal": "no_session"},
             )
 
-        # ── 2. Scheduled / system trigger → always continue workflow
-        if event.trigger_type in (TriggerType.SCHEDULED, TriggerType.SYSTEM_TRIGGER):
+        # ── 2. Scheduled / system / structured form submit → always continue workflow
+        if event.trigger_type in (
+            TriggerType.SCHEDULED,
+            TriggerType.SYSTEM_TRIGGER,
+            TriggerType.STRUCTURED_SUBMIT,
+        ):
             return IntentResult(
                 intent=IntentType.CONTINUE_WORKFLOW,
                 confidence=0.95,

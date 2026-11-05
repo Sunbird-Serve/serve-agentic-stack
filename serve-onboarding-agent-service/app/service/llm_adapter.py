@@ -383,11 +383,42 @@ async def _call_llm(system_prompt: str, messages: List[Dict[str, str]]) -> str:
     return _UNAVAILABLE_RESPONSE
 
 
+def _render_welcome(confirmed_fields: Dict) -> str:
+    if confirmed_fields.get("welcome_response"):
+        return "Thanks for sharing that — let's continue."
+    return (
+        "Welcome to eVidyaloka! Through Project Serve, volunteers teach English "
+        "online to students in rural India — about 2–3 hours a week. "
+        "What brings you here today?"
+    )
+
+
+def _render_orientation_video(confirmed_fields: Dict) -> str:
+    classroom_vid = ONBOARDING_CLASSROOM_VIDEO_URL
+    motivation = (confirmed_fields.get("welcome_response") or "").strip()
+    ack = (
+        f'Thanks for sharing — "{motivation[:120]}". '
+        if motivation
+        else "Thanks for sharing what brings you here. "
+    )
+    if classroom_vid:
+        return (
+            f"{ack}Here's a short look at how our classes work:\n"
+            f"[VIDEO:{classroom_vid}|A glimpse of an eVidyaloka online class]\n"
+            "Watch this clip, then reply when you're ready to continue."
+        )
+    return (
+        f"{ack}Volunteers teach online for 2–3 hours a week via video call. "
+        "Reply when you're ready to continue."
+    )
+
+
 def _render_registration_review(confirmed_fields: Dict) -> str:
     summary_lines = []
     name = confirmed_fields.get("full_name")
     email = confirmed_fields.get("email")
     phone = confirmed_fields.get("phone")
+    motivation = confirmed_fields.get("welcome_response") or confirmed_fields.get("motivation")
 
     if name:
         summary_lines.append(f"Name: {name}")
@@ -395,6 +426,8 @@ def _render_registration_review(confirmed_fields: Dict) -> str:
         summary_lines.append(f"Email: {email}")
     if phone:
         summary_lines.append(f"Phone: {phone}")
+    if motivation:
+        summary_lines.append(f"Motivation: {str(motivation)[:200]}")
 
     summary_text = "\n".join(summary_lines)
     return f"Here is what I have:\n{summary_text}\n\nDoes this look right? Let me know if you want to change anything."
@@ -422,14 +455,31 @@ def _render_onboarding_complete(confirmed_fields: Dict) -> str:
 
 
 def _render_human_review(confirmed_fields: Dict) -> str:
+    """WA / non-structured stop copy — same reasons as structured present stops."""
+    # Keep in sync with onboarding_logic._ELIGIBILITY_STOP
     review_reason = confirmed_fields.get("review_reason", "")
-    if review_reason == "age_18_plus":
-        return "We need volunteers to be 18+ for child safety. If your situation changes, you are always welcome back!"
-    if review_reason == "has_internet_and_device":
-        return "Online teaching needs a laptop or computer with internet access. If you get access in the future, we would love to have you!"
-    if review_reason == "accepts_unpaid_role":
-        return "We totally understand. If you ever want to give volunteering a try, we will be here!"
-    return "Unfortunately we cannot proceed right now, but you are always welcome to try again in the future."
+    stops = {
+        "age_18_plus": (
+            "Thanks for your interest. For child-safety reasons we can only onboard "
+            "volunteers who are 18 or older. You are always welcome to come back once "
+            "you are eligible."
+        ),
+        "has_internet_and_device": (
+            "Thanks for your honesty. Online teaching with eVidyaloka needs a laptop or "
+            "computer with reliable internet — a phone alone is not enough. If you get "
+            "access later, we would love to have you."
+        ),
+        "accepts_unpaid_role": (
+            "Thanks for letting us know. Project Serve is unpaid volunteering — there is "
+            "no salary or stipend, only the chance to teach students in rural schools. "
+            "If you ever want to volunteer without pay, we will be here."
+        ),
+    }
+    return stops.get(
+        review_reason,
+        "Thanks for your interest. We cannot continue onboarding right now, but you "
+        "are always welcome to try again in the future.",
+    )
 
 
 def _render_eligibility(missing_fields: List[str], confirmed_fields: Dict) -> str:
@@ -494,6 +544,11 @@ def _render_contact_capture(confirmed_fields: Dict) -> str:
 
 
 def _render_deterministic_response(stage: str, missing_fields: List[str], confirmed_fields: Dict) -> Optional[str]:
+    # Scripted stages — no LLM (WA path and any channel without a UiRequest)
+    if stage == "welcome":
+        return _render_welcome(confirmed_fields)
+    if stage == "orientation_video":
+        return _render_orientation_video(confirmed_fields)
     if stage == "eligibility_screening":
         return _render_eligibility(missing_fields, confirmed_fields)
     if stage == "contact_capture":

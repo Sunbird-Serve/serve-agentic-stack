@@ -285,11 +285,15 @@ class OrchestrationService:
             return await self._handle_restart(event, intent_result)
 
         # Step 3: Save user message (non-critical — log warning on failure but continue)
+        user_meta = None
+        if getattr(event, "structured_payload", None):
+            user_meta = {"structured_submit": event.structured_payload}
         save_result = await domain_client.save_message(
             session_id=session_context.session_id,
             role="user",
             content=event.payload,
-            agent=session_context.active_agent
+            agent=session_context.active_agent,
+            message_metadata=user_meta,
         )
         if save_result.get("status") == "error":
             logger.warning(
@@ -347,6 +351,7 @@ class OrchestrationService:
             conversation_history=conversation,
             intent_hint=intent_result.intent.value,
             channel_metadata=event.raw_metadata if event.raw_metadata else None,
+            structured_payload=getattr(event, "structured_payload", None),
         )
 
         self._log_event(
@@ -411,11 +416,16 @@ class OrchestrationService:
                 )
 
         # Step 6: Save assistant message (non-critical — log warning on failure)
+        assistant_meta = None
+        ui_request = getattr(agent_response, "ui_request", None)
+        if ui_request:
+            assistant_meta = {"ui_request": ui_request}
         save_result = await domain_client.save_message(
             session_id=session_context.session_id,
             role="assistant",
             content=agent_response.assistant_message,
-            agent=agent_response.active_agent.value
+            agent=agent_response.active_agent.value,
+            message_metadata=assistant_meta,
         )
         if save_result.get("status") == "error":
             logger.warning(
@@ -613,6 +623,7 @@ class OrchestrationService:
             sub_state=agent_response.sub_state,
             status=SessionStatus.COMPLETED if is_complete else SessionStatus.ACTIVE,
             is_complete=is_complete,
+            ui_request=getattr(agent_response, "ui_request", None),
             journey_progress={
                 "current_state": agent_response.state,
                 "progress_percent": progress_percent,
@@ -1093,11 +1104,15 @@ class OrchestrationService:
             return await self._handle_restart(event, intent_result)
 
         # Step 4: Save user message
+        user_meta = None
+        if getattr(event, "structured_payload", None):
+            user_meta = {"structured_submit": event.structured_payload}
         await domain_client.save_message(
             session_id=session_context.session_id,
             role="user",
             content=event.payload,
             agent=session_context.active_agent,
+            message_metadata=user_meta,
         )
 
         # Step 5: Resolve desired action
@@ -1132,6 +1147,7 @@ class OrchestrationService:
             intent_hint=intent_result.intent.value,
             channel_metadata=event.raw_metadata if event.raw_metadata else None,
             volunteer_facts=facts,  # Pass full fact-store so agent has complete context
+            structured_payload=getattr(event, "structured_payload", None),
         )
 
         # Use existing agent_router for invocation (it handles HTTP, timeouts, etc.)
@@ -1161,11 +1177,14 @@ class OrchestrationService:
                 sub_state=agent_response.sub_state,
             )
 
+        ui_request = getattr(agent_response, "ui_request", None)
+        assistant_meta = {"ui_request": ui_request} if ui_request else None
         await domain_client.save_message(
             session_id=session_context.session_id,
             role="assistant",
             content=agent_response.assistant_message,
             agent=agent_response.active_agent.value,
+            message_metadata=assistant_meta,
         )
 
         # Step 9b: Handle handoff if present (transition to next agent)
@@ -1257,6 +1276,7 @@ class OrchestrationService:
 
                     # Handle auto_continue — agent wants a follow-up turn
                     final_message = auto_response.assistant_message
+                    continue_response = None
                     if getattr(auto_response, 'auto_continue', False):
                         try:
                             continue_state = SessionState(
@@ -1320,6 +1340,9 @@ class OrchestrationService:
                         sub_state=auto_response.sub_state,
                         status=SessionStatus.ACTIVE,
                         is_complete=False,
+                        ui_request=getattr(continue_response, "ui_request", None)
+                        or getattr(auto_response, "ui_request", None)
+                        or getattr(agent_response, "ui_request", None),
                         journey_progress={
                             "routing": "fact_based",
                             "gap_agent": gap.next_agent,
@@ -1346,6 +1369,7 @@ class OrchestrationService:
             sub_state=agent_response.sub_state,
             status=SessionStatus.ACTIVE,
             is_complete=agent_response.completion_status == "complete",
+            ui_request=getattr(agent_response, "ui_request", None),
             journey_progress={
                 "routing": "fact_based",
                 "gap_agent": gap.next_agent,
