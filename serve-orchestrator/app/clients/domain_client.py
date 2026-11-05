@@ -153,7 +153,8 @@ class DomainClient:
         session_id: UUID,
         role: str,
         content: str,
-        agent: str = None
+        agent: str = None,
+        message_metadata: Dict = None,
     ) -> Dict:
         """Save a conversation message via MCP."""
         args: Dict[str, Any] = {
@@ -163,6 +164,8 @@ class DomainClient:
         }
         if agent:
             args["agent"] = agent
+        if message_metadata:
+            args["message_metadata"] = message_metadata
         return await _call_mcp_tool("save_message", args)
 
     async def emit_handoff_event(

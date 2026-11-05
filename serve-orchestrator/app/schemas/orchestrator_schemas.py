@@ -22,10 +22,83 @@ class ChannelType(str, Enum):
 class TriggerType(str, Enum):
     """What caused this event to enter the orchestrator."""
     USER_MESSAGE = "user_message"       # Human typed a message
+    STRUCTURED_SUBMIT = "structured_submit"  # Typed form / picker submit
     SYSTEM_TRIGGER = "system_trigger"   # Internal orchestration event
     SCHEDULED = "scheduled"             # Scheduler-triggered (cron/timer)
     WEBHOOK = "webhook"                 # Inbound webhook notification
     RESUME = "resume"                   # Explicit re-open of a paused session
+
+
+# ============ Structured UI (generic interactive form protocol) ============
+
+class FieldOption(BaseModel):
+    id: str
+    label: str
+    description: Optional[str] = None
+    meta: Optional[Dict[str, Any]] = None
+
+
+class FieldSpec(BaseModel):
+    """One input inside a UiRequest. `input` is a registry key (boolean, text, …)."""
+    name: str
+    label: str
+    input: str
+    required: bool = True
+    value: Optional[Any] = None  # optional prefill (e.g. edit-details)
+    options: Optional[List[FieldOption]] = None
+    validation: Optional[Dict[str, Any]] = None
+    config: Optional[Dict[str, Any]] = None
+
+
+class ActionSpec(BaseModel):
+    id: str
+    label: str
+
+
+class HintSpec(BaseModel):
+    id: str
+    label: str
+
+
+class ContentBlock(BaseModel):
+    """One present-mode block. Growth = new `type` registry entries in the UI."""
+    type: str  # text | video | …
+    text: Optional[str] = None
+    url: Optional[str] = None
+    caption: Optional[str] = None
+
+
+class UiRequest(BaseModel):
+    """
+    Channel-agnostic structured turn envelope (any agent).
+
+    - mode=collect: fields[] + submit → StructuredSubmit.values
+    - mode=present: blocks[] (info/media), optional actions[] (e.g. Continue); no field submit
+
+    Growth = FieldSpec.input / ContentBlock.type registries, not new top-level kinds.
+    """
+    id: str
+    title: Optional[str] = None
+    description: Optional[str] = None
+    mode: str = "collect"  # collect | present
+    fields: List[FieldSpec] = Field(default_factory=list)
+    blocks: List[ContentBlock] = Field(default_factory=list)
+    actions: Optional[List[ActionSpec]] = None
+    hints: Optional[List[HintSpec]] = None
+    kind: str = "form"  # legacy alias; prefer `mode`
+
+
+class StructuredSubmit(BaseModel):
+    """Typed values (or action) returned from a UiRequest."""
+    ui_request_id: str
+    values: Dict[str, Any] = Field(default_factory=dict)
+    # Optional: values may include "_action" = ActionSpec.id for present Continues
+
+
+def channel_supports_structured_ui(channel: Any) -> bool:
+    """Web (and mobile) can render UiRequest; WhatsApp cannot until a presenter exists."""
+    value = channel.value if isinstance(channel, Enum) else str(channel or "")
+    return value in (ChannelType.WEB_UI.value, ChannelType.MOBILE.value, ChannelType.API.value)
 
 
 class PersonaType(str, Enum):
@@ -158,6 +231,7 @@ class NormalizedEvent(BaseModel):
     persona: Optional["PersonaType"] = None
     raw_metadata: Dict[str, Any] = Field(default_factory=dict)
     idempotency_key: Optional[str] = None
+    structured_payload: Optional[Dict[str, Any]] = None  # StructuredSubmit-shaped
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -226,6 +300,7 @@ class InteractionRequest(BaseModel):
     channel: ChannelType = ChannelType.WEB_UI
     channel_metadata: Optional[Dict[str, Any]] = None
     persona: Optional[PersonaType] = None
+    structured_payload: Optional[Dict[str, Any]] = None  # StructuredSubmit-shaped
 
 
 class InteractionResponse(BaseModel):
@@ -243,6 +318,7 @@ class InteractionResponse(BaseModel):
     is_duplicate: bool = False          # True when idempotency check rejects a repeat event
     journey_progress: Optional[Dict[str, Any]] = None
     debug_info: Optional[Dict[str, Any]] = None
+    ui_request: Optional[Dict[str, Any]] = None  # UiRequest-shaped; channel renders if capable
 
 
 # ============ Agent Turn Models ============
@@ -256,6 +332,7 @@ class AgentTurnRequest(BaseModel):
     intent_hint: Optional[str] = None  # resolved intent value, e.g. "seek_help"
     channel_metadata: Optional[Dict[str, Any]] = None  # forwarded from channel adapter
     volunteer_facts: Dict[str, Any] = {}  # persistent facts from volunteer fact-store
+    structured_payload: Optional[Dict[str, Any]] = None  # StructuredSubmit-shaped
 
 
 class HandoffEvent(BaseModel):
@@ -291,6 +368,7 @@ class AgentTurnResponse(BaseModel):
     new_facts: Dict[str, Any] = {}     # facts to merge into volunteer fact-store
     handoff_event: Optional[HandoffEvent] = None
     telemetry_events: List[TelemetryEvent] = []
+    ui_request: Optional[Dict[str, Any]] = None  # UiRequest-shaped
 
 
 # ============ Health Response ============

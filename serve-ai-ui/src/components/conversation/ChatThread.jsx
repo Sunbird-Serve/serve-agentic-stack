@@ -1,17 +1,39 @@
 /**
  * ChatThread — Scrollable message list with auto-scroll to bottom.
  */
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useMemo } from 'react';
 import { MessageBubble } from './MessageBubble';
 import { TypingIndicator } from './TypingIndicator';
 
-export function ChatThread({ messages = [], loading = false }) {
+export function ChatThread({
+  messages = [],
+  loading = false,
+  onStructuredSubmit,
+}) {
   const bottomRef = useRef(null);
 
-  // Auto-scroll when new messages arrive or loading state changes
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length, loading]);
+
+  const latestOpenFormId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      const req = m.metadata?.ui_request;
+      // Interactive only: collect fields or present actions. Info-only blocks
+      // (e.g. terminal stop with no Got it) are not "open forms".
+      if (
+        m.role === 'assistant' &&
+        req &&
+        !m.metadata?.ui_request_submitted &&
+        ((req.fields && req.fields.length > 0) ||
+          (req.actions && req.actions.length > 0))
+      ) {
+        return m.id;
+      }
+    }
+    return null;
+  }, [messages]);
 
   if (messages.length === 0 && !loading) {
     return (
@@ -27,7 +49,15 @@ export function ChatThread({ messages = [], loading = false }) {
     <div className="flex-1 overflow-y-auto px-4 py-4">
       <div className="space-y-4 max-w-3xl mx-auto">
         {messages.map((msg, idx) => (
-          <MessageBubble key={msg.id || idx} message={msg} />
+          <MessageBubble
+            key={msg.id || idx}
+            message={msg}
+            onStructuredSubmit={onStructuredSubmit}
+            formDisabled={
+              loading ||
+              (msg.metadata?.ui_request && msg.id !== latestOpenFormId)
+            }
+          />
         ))}
 
         {loading && (
