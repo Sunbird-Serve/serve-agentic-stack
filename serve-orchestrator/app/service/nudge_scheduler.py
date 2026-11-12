@@ -6,7 +6,7 @@ Background task that sends reminder messages to inactive WhatsApp sessions.
 Schedule:
   Nudge #1: 1 hour after last message
   Nudge #2: 8 hours after last message
-  Nudge #3: 24 hours after last message (final)
+  Nudge #3: 23h45m after last message (final; inside WhatsApp's 24h window)
 
 After 3 nudges with no reply, session is auto-paused.
 Volunteer can reply "stop" to opt out permanently.
@@ -22,10 +22,13 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 import httpx
+
+from app.service.nudge_messages import build_nudge_message
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +36,20 @@ logger = logging.getLogger(__name__)
 NUDGE_ENABLED = os.environ.get("NUDGE_ENABLED", "true").lower() == "true"
 NUDGE_DELAY_1_MINUTES = int(os.environ.get("NUDGE_DELAY_1_MINUTES", "60"))
 NUDGE_DELAY_2_MINUTES = int(os.environ.get("NUDGE_DELAY_2_MINUTES", "480"))
-NUDGE_DELAY_3_MINUTES = int(os.environ.get("NUDGE_DELAY_3_MINUTES", "1440"))
+# 23h45m, not 24h: WhatsApp only allows free-form messages within 24h of
+# the volunteer's last message, so the final nudge must land inside that
+# window (with margin for the check interval) or Meta rejects it.
+NUDGE_DELAY_3_MINUTES = int(os.environ.get("NUDGE_DELAY_3_MINUTES", "1425"))
+# Quiet window in IST (Asia/Kolkata, real UTC+5:30 via zoneinfo). The
+# window wraps midnight: START=21, END=8 means 21:00-23:59 and 00:00-08:00.
+# START == END disables quiet hours.
+IST = ZoneInfo("Asia/Kolkata")
 NUDGE_QUIET_HOURS_START = int(os.environ.get("NUDGE_QUIET_HOURS_START", "21"))
 NUDGE_QUIET_HOURS_END = int(os.environ.get("NUDGE_QUIET_HOURS_END", "8"))
 NUDGE_CHECK_INTERVAL_MINUTES = int(os.environ.get("NUDGE_CHECK_INTERVAL_MINUTES", "5"))
+# Dry-run: compose and log messages without calling the WhatsApp API
+# (lets the whole flow be exercised without Meta credentials).
+NUDGE_DRY_RUN = os.environ.get("NUDGE_DRY_RUN", "false").lower() == "true"
 
 MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL", "http://serve-mcp-server:8004")
 
@@ -45,27 +58,8 @@ _WA_TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
 _WA_PHONE_NUMBER_ID = os.environ.get("WHATSAPP_PHONE_NUMBER_ID", "")
 _WA_GRAPH_URL = "https://graph.facebook.com/v18.0"
 
-# ── Nudge messages ────────────────────────────────────────────────────────────
-NUDGE_MESSAGES = {
-    1: (
-        "Hi! We had a brief technical issue on our end — apologies for the interruption. "
-        "Your progress is fully saved. Just reply here to continue right where you left off. 🙏\n\n"
-        "Reply:\n"
-        "▶️ *continue* — pick up where you left off\n"
-        "⏰ *later* — remind me in a few hours\n"
-        "🚫 *stop* — don't send reminders"
-    ),
-    2: (
-        "Hey! Just a quick check-in — your progress is saved and we're ready "
-        "whenever you are. Reply anytime to continue, or 'stop' for no more reminders."
-    ),
-    3: (
-        "Hi! We're still here whenever you're ready. Your progress is saved — "
-        "just message anytime. This is our last reminder. 🙂"
-    ),
-}
-
 # ── Nudge delays (minutes from last message) ─────────────────────────────────
+# Message copy lives in nudge_messages.py (GENERIC_MESSAGES is the fallback).
 NUDGE_DELAYS = {
     1: NUDGE_DELAY_1_MINUTES,
     2: NUDGE_DELAY_2_MINUTES,
@@ -101,10 +95,18 @@ async def _call_mcp_tool(tool_name: str, arguments: Dict) -> Dict:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _is_quiet_hour() -> bool:
-    """Check if current time is within quiet hours (IST)."""
-    now = datetime.utcnow()
-    ist_hour = (now.hour + 5) % 24  # rough IST
+def _is_quiet_hour(at: Optional[datetime] = None) -> bool:
+    """Check if `at` (default: now) falls within quiet hours in IST.
+
+    `at` may be aware (converted to IST) or naive (treated as UTC).
+    The window wraps midnight when START > END (e.g. 21 -> 8).
+    """
+    if at is None:
+        ist_hour = datetime.now(IST).hour
+    else:
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        ist_hour = at.astimezone(IST).hour
     if NUDGE_QUIET_HOURS_START > NUDGE_QUIET_HOURS_END:
         return ist_hour >= NUDGE_QUIET_HOURS_START or ist_hour < NUDGE_QUIET_HOURS_END
     return NUDGE_QUIET_HOURS_START <= ist_hour < NUDGE_QUIET_HOURS_END
@@ -136,9 +138,10 @@ async def cancel_nudges_for_session(session_id: str) -> None:
     await _call_mcp_tool("nudge_cancel_for_session", {"session_id": session_id})
 
 
-def mark_do_not_disturb(session_id: str) -> None:
-    """Mark session as DND. We cancel nudges; the session.do_not_disturb flag is set via MCP."""
-    asyncio.ensure_future(cancel_nudges_for_session(session_id))
+async def mark_do_not_disturb(session_id: str) -> None:
+    """Persist the opt-out on the session and cancel any pending nudges."""
+    await _call_mcp_tool("nudge_set_do_not_disturb", {"session_id": session_id})
+    await cancel_nudges_for_session(session_id)
     logger.info(f"[nudge] Session {session_id[:8]}... marked as DO_NOT_DISTURB")
 
 
@@ -212,6 +215,7 @@ async def check_and_schedule_new_nudges() -> None:
                 "nudge_number": 1,
                 "scheduled_at": send_at.isoformat(),
                 "volunteer_name": ch_meta.get("volunteer_name", ""),
+                "episode_start": last_msg,
             })
 
 
@@ -230,8 +234,24 @@ async def process_due_nudges() -> int:
         phone = nudge["volunteer_phone"]
         nudge_num = nudge["nudge_number"]
 
-        message = NUDGE_MESSAGES.get(nudge_num, NUDGE_MESSAGES[1])
-        success = await _send_whatsapp(phone, message)
+        # Compose from the volunteer's CURRENT session context so the
+        # message references where they actually left off.
+        context: Dict = {}
+        session_result = await _call_mcp_tool("get_session", {"session_id": session_id})
+        if isinstance(session_result, dict):
+            context = session_result.get("session") or {}
+        if not context.get("volunteer_name") and nudge.get("volunteer_name"):
+            context = {**context, "volunteer_name": nudge["volunteer_name"]}
+        message = build_nudge_message(context, nudge_num)
+
+        if NUDGE_DRY_RUN:
+            logger.info(
+                f"[nudge][dry-run] Would send nudge #{nudge_num} to {phone[:6]}*** "
+                f"(session {session_id[:8]}...): {message!r}"
+            )
+            success = True
+        else:
+            success = await _send_whatsapp(phone, message)
 
         if success:
             # Mark as sent in DB
@@ -254,6 +274,14 @@ async def process_due_nudges() -> int:
                     "scheduled_at": next_at.isoformat(),
                     "volunteer_name": nudge.get("volunteer_name", ""),
                 })
+            else:
+                # Final nudge sent with no reply — pause the session so it
+                # drops out of the active scan and no new cycle is scheduled.
+                await _call_mcp_tool("advance_session_state", {
+                    "session_id": session_id,
+                    "new_state": "paused",
+                })
+                logger.info(f"[nudge] Session {session_id[:8]}... auto-paused after final nudge")
         else:
             logger.warning(f"[nudge] Failed to send nudge #{nudge_num} to {phone[:6]}***")
 
@@ -271,7 +299,7 @@ async def start_nudge_scheduler() -> None:
         logger.info("[nudge] Nudge scheduler DISABLED (NUDGE_ENABLED=false)")
         return
 
-    if not _WA_TOKEN or not _WA_PHONE_NUMBER_ID:
+    if not NUDGE_DRY_RUN and (not _WA_TOKEN or not _WA_PHONE_NUMBER_ID):
         logger.warning("[nudge] Nudge scheduler disabled — WhatsApp not configured")
         return
 
