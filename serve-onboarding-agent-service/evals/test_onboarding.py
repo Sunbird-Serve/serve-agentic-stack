@@ -257,8 +257,17 @@ class TestStateTransitions:
         state, _ = _determine_next_state("welcome", "Hello", {}, _sub(welcome_shown=False))
         assert state == "welcome"
 
-    def test_welcome_second_turn_advances(self):
+    def test_welcome_waits_for_motivation(self):
         state, _ = _determine_next_state("welcome", "I want to help", {}, _sub(welcome_shown=True))
+        assert state == "welcome"
+
+    def test_welcome_second_turn_advances(self):
+        state, _ = _determine_next_state(
+            "welcome",
+            "I want to help",
+            {},
+            _sub(welcome_shown=True, welcome_response="I want to help"),
+        )
         assert state == "orientation_video"
 
     def test_orientation_ack_advances(self):
@@ -432,7 +441,7 @@ class TestDeterministicResponses:
         assert called["value"] is False
 
     @pytest.mark.asyncio
-    async def test_welcome_still_calls_llm(self, monkeypatch):
+    async def test_welcome_is_deterministic(self, monkeypatch):
         called = {"value": False}
 
         async def fake_call_llm(*args, **kwargs):
@@ -448,8 +457,8 @@ class TestDeterministicResponses:
             confirmed_fields={},
         )
 
-        assert response == "Welcome from LLM"
-        assert called["value"] is True
+        assert "eVidyaloka" in response
+        assert called["value"] is False
 
     @pytest.mark.asyncio
     async def test_completion_password_is_env_configured(self, monkeypatch):

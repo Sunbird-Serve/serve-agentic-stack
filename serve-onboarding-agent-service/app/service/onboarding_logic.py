@@ -65,6 +65,77 @@ DEFAULT_SUB_STATE: Dict[str, Any] = {
     "eligibility_pending_negative": {},
     "review_reason": None,
     "email_typo_warned": False,
+    "stop_acknowledged": False,  # human_review terminal — don't re-emit stop card
+    "editing_contact": False,  # review → edit: re-show contact form prefilled
+    "form_prefill": None,  # {field: value} after failed save / edit staging
+    "pending_ui_request": None,  # {id, field_names} for submit binding
+}
+
+FORM_SUBMITTED_SENTINEL = "[form_submitted]"
+STRUCTURED_UI_CHANNELS = {"web_ui", "mobile", "api"}
+SYSTEM_MESSAGES = ("__handoff__", "__auto_continue__", FORM_SUBMITTED_SENTINEL)
+
+# Field catalog: stage → collect FieldSpecs. Protocol growth = rows here, not new UiRequest kinds.
+ONBOARDING_FIELD_CATALOG: Dict[str, List[Dict[str, Any]]] = {
+    OnboardingState.WELCOME.value: [
+        {
+            "name": "motivation",
+            "label": "What brings you here?",
+            "input": "textarea",
+            "required": True,
+        },
+    ],
+    OnboardingState.ELIGIBILITY_SCREENING.value: [
+        {"name": "age_18_plus", "label": "Are you 18 years or older?", "input": "boolean", "required": True},
+        {
+            "name": "has_internet_and_device",
+            "label": "Do you have a laptop/computer and reliable internet?",
+            "input": "boolean",
+            "required": True,
+        },
+        {
+            "name": "accepts_unpaid_role",
+            "label": "Are you okay volunteering without pay?",
+            "input": "boolean",
+            "required": True,
+        },
+    ],
+    OnboardingState.CONTACT_CAPTURE.value: [
+        {
+            "name": "full_name",
+            "label": "Full name",
+            "input": "text",
+            "required": True,
+            # Keep in sync with ProfileExtractor._is_valid_name / MCP SaveVolunteerFieldsInput
+            "validation": {
+                "minWords": 2,
+                "minWordLength": 2,
+                "maxWordLength": 20,
+                "maxLength": 60,
+                "hint": "First and last name",
+            },
+        },
+        {
+            "name": "email",
+            "label": "Email",
+            "input": "email",
+            "required": True,
+            "validation": {"hint": "name@example.com"},
+        },
+        {
+            "name": "phone",
+            "label": "Phone number",
+            "input": "tel",
+            "required": True,
+            "validation": {"hint": "10-digit Indian mobile"},
+        },
+    ],
+}
+
+COLLECT_STAGE_TITLES = {
+    OnboardingState.WELCOME.value: "Tell us a bit about yourself",
+    OnboardingState.ELIGIBILITY_SCREENING.value: "Quick eligibility check",
+    OnboardingState.CONTACT_CAPTURE.value: "Your registration details",
 }
 
 # ── Pattern tables ──────────────────────────────────────────────────────────────
@@ -527,6 +598,10 @@ def _load_sub_state(raw: Optional[str]) -> Dict[str, Any]:
         merged["consent_given"] = data.get("consent_given", False)
         merged["eligibility_bundled_asked"] = data.get("eligibility_bundled_asked", False)
         merged["email_typo_warned"] = data.get("email_typo_warned", False)
+        merged["stop_acknowledged"] = data.get("stop_acknowledged", False)
+        merged["editing_contact"] = data.get("editing_contact", False)
+        merged["form_prefill"] = data.get("form_prefill")
+        merged["pending_ui_request"] = data.get("pending_ui_request")
         return merged
     except (json.JSONDecodeError, ValueError):
         return json.loads(json.dumps(DEFAULT_SUB_STATE))
@@ -544,7 +619,464 @@ def _dump_sub_state(sub_state: Dict[str, Any]) -> str:
         "eligibility_pending_negative": sub_state.get("eligibility_pending_negative", {}),
         "review_reason": sub_state.get("review_reason"),
         "email_typo_warned": sub_state.get("email_typo_warned", False),
+        "stop_acknowledged": sub_state.get("stop_acknowledged", False),
+        "editing_contact": sub_state.get("editing_contact", False),
+        "form_prefill": sub_state.get("form_prefill"),
+        "pending_ui_request": sub_state.get("pending_ui_request"),
     })
+
+
+def _channel_supports_structured_ui(session_state) -> bool:
+    channel = getattr(session_state, "channel", None) or ""
+    return str(channel) in STRUCTURED_UI_CHANNELS
+
+
+def _coerce_bool(value: Any) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in ("true", "yes", "1", "y"):
+        return True
+    if text in ("false", "no", "0", "n"):
+        return False
+    return None
+
+
+def _apply_structured_payload(
+    payload: Optional[Dict[str, Any]],
+    confirmed_fields: Dict[str, Any],
+    sub_state: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Apply typed form / action values. Returns MCP field updates (contact + motivation).
+    Binds to pending_ui_request when present; ignores unknown field names.
+    """
+    if not payload or not isinstance(payload, dict):
+        return {}
+    values = payload.get("values") or {}
+    if not isinstance(values, dict) or not values:
+        return {}
+
+    pending = sub_state.get("pending_ui_request") or {}
+    request_id = payload.get("ui_request_id")
+    if pending and request_id and pending.get("id") and request_id != pending.get("id"):
+        logger.warning(
+            "structured_payload ui_request_id mismatch: got=%s pending=%s",
+            request_id,
+            pending.get("id"),
+        )
+        return {}
+
+    # Present-mode actions (Continue / Confirm / Edit / eligibility clarify)
+    action_id = values.get("_action")
+    if action_id:
+        allowed_actions = set(pending.get("actions") or [])
+        if not pending or not allowed_actions or action_id in allowed_actions:
+            if action_id in ("continue", "video_continue"):
+                sub_state["video_acknowledged"] = True
+            elif action_id == "ack":
+                pass  # legacy stop button — ignored; stop has no actions now
+            elif action_id in ("confirm", "confirm_registration"):
+                sub_state["review_confirmed"] = True
+            elif action_id in ("edit", "edit_contact"):
+                sub_state["review_edit"] = True
+                sub_state["editing_contact"] = True
+            elif action_id in ("clarify_accept", "clarify_decline"):
+                field = pending.get("clarify_field") or next(
+                    iter(sub_state.get("eligibility_pending_negative") or {}),
+                    None,
+                )
+                if field in ELIGIBILITY_FIELDS:
+                    eligibility = dict(sub_state.get("eligibility") or {})
+                    pending_neg = dict(sub_state.get("eligibility_pending_negative") or {})
+                    if action_id == "clarify_accept":
+                        eligibility[field] = True
+                        pending_neg.pop(field, None)
+                    else:
+                        eligibility[field] = False
+                        pending_neg.pop(field, None)
+                    sub_state["eligibility"] = eligibility
+                    sub_state["eligibility_pending_negative"] = pending_neg
+                    if any(eligibility.get(f) is not None for f in ELIGIBILITY_FIELDS):
+                        sub_state["eligibility_bundled_asked"] = True
+        return {}
+
+    allowed = set(pending.get("field_names") or []) if pending else None
+    contact_updates: Dict[str, Any] = {}
+    eligibility = dict(sub_state.get("eligibility") or {})
+
+    for name, raw in values.items():
+        if name == "_action":
+            continue
+        if allowed is not None and name not in allowed:
+            continue
+        if name in ELIGIBILITY_FIELDS:
+            # Structured Yes/No is definitive — no re-ask/clarify loop for forms.
+            # (Chat path still uses eligibility_pending_negative for ambiguous "no".)
+            coerced = _coerce_bool(raw)
+            if coerced is None:
+                continue
+            eligibility[name] = coerced
+            pending_neg = dict(sub_state.get("eligibility_pending_negative") or {})
+            pending_neg.pop(name, None)
+            sub_state["eligibility_pending_negative"] = pending_neg
+        elif name in ("motivation", "welcome_response"):
+            text = str(raw or "").strip()[:500]
+            if text:
+                sub_state["welcome_response"] = text
+                sub_state["_save_motivation"] = text
+                contact_updates["motivation"] = text
+        elif name == "full_name":
+            text = str(raw or "").strip()
+            # Same gate as MCP — never stage a name that cannot persist
+            if text and profile_extractor._is_valid_name(text):
+                contact_updates["full_name"] = text
+        elif name == "email":
+            text = str(raw or "").strip()
+            if text and profile_extractor._is_valid_email(text):
+                contact_updates["email"] = text.lower()
+        elif name == "phone":
+            normalized = profile_extractor._normalize_phone(str(raw or ""))
+            if normalized:
+                contact_updates["phone"] = normalized
+
+    sub_state["eligibility"] = eligibility
+    if any(eligibility.get(f) is not None for f in ELIGIBILITY_FIELDS):
+        sub_state["eligibility_bundled_asked"] = True
+    if contact_updates:
+        # motivation is profile fact; keep out of confirmed contact identity fields
+        for k, v in contact_updates.items():
+            if k != "motivation":
+                confirmed_fields[k] = v
+        # Finished an edit pass — allow advance back to review
+        if sub_state.get("editing_contact"):
+            sub_state["editing_contact"] = False
+    return contact_updates
+
+
+def _field_still_needed(
+    stage: str,
+    field_name: str,
+    confirmed_fields: Dict[str, Any],
+    sub_state: Dict[str, Any],
+) -> bool:
+    if stage == OnboardingState.WELCOME.value:
+        return not bool(sub_state.get("welcome_response"))
+    if stage == OnboardingState.ELIGIBILITY_SCREENING.value:
+        return sub_state.get("eligibility", {}).get(field_name) is not True
+    if stage == OnboardingState.CONTACT_CAPTURE.value:
+        return not bool(confirmed_fields.get(field_name))
+    return False
+
+
+# Permanent eligibility gate copy — clarify before stop; stop always names the reason.
+_ELIGIBILITY_CLARIFY = {
+    "age_18_plus": {
+        "title": "Just to confirm your age",
+        "text": (
+            "For child-safety reasons, volunteers need to be 18 or older. "
+            "Are you 18 years of age or older?"
+        ),
+        "accept": "Yes, I am 18+",
+        "decline": "No, I am under 18",
+    },
+    "has_internet_and_device": {
+        "title": "About your device and internet",
+        "text": (
+            "Online teaching needs a laptop or computer with reliable internet — "
+            "a mobile phone alone is not enough. Do you have that setup?"
+        ),
+        "accept": "Yes, I have a laptop/computer + internet",
+        "decline": "No, I don't have that yet",
+    },
+    "accepts_unpaid_role": {
+        "title": "This is an unpaid volunteer role",
+        "text": (
+            "Project Serve is volunteering with no salary or stipend — you teach "
+            "students in rural schools online for free. Were you looking for paid work, "
+            "or are you okay volunteering without pay?"
+        ),
+        "accept": "Yes, I'm okay volunteering unpaid",
+        "decline": "No, I was looking for paid work",
+    },
+}
+
+_ELIGIBILITY_STOP = {
+    "age_18_plus": {
+        "title": "We can't continue — age requirement",
+        "text": (
+            "Thanks for your interest. For child-safety reasons we can only onboard "
+            "volunteers who are 18 or older. You are always welcome to come back once "
+            "you are eligible."
+        ),
+    },
+    "has_internet_and_device": {
+        "title": "We can't continue — device & internet",
+        "text": (
+            "Thanks for your honesty. Online teaching with eVidyaloka needs a laptop or "
+            "computer with reliable internet — a phone alone is not enough. If you get "
+            "access later, we would love to have you."
+        ),
+    },
+    "accepts_unpaid_role": {
+        "title": "We can't continue — unpaid volunteering",
+        "text": (
+            "Thanks for letting us know. Project Serve is unpaid volunteering — there is "
+            "no salary or stipend, only the chance to teach students in rural schools. "
+            "If you ever want to volunteer without pay, we will be here."
+        ),
+    },
+    "_default": {
+        "title": "We can't continue right now",
+        "text": (
+            "Thanks for your interest. We cannot continue onboarding right now, but you "
+            "are always welcome to try again in the future."
+        ),
+    },
+}
+
+
+def _build_eligibility_clarify_ui_request(
+    missing_fields: List[str],
+    sub_state: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    clarify = next((f for f in missing_fields if f.endswith("_clarification")), None)
+    if not clarify:
+        pending = sub_state.get("eligibility_pending_negative") or {}
+        field = next(iter(pending), None)
+    else:
+        field = clarify.replace("_clarification", "")
+    if not field or field not in _ELIGIBILITY_CLARIFY:
+        return None
+    copy = _ELIGIBILITY_CLARIFY[field]
+    return {
+        "id": f"onboarding:eligibility_clarify:{field}",
+        "mode": "present",
+        "kind": "form",
+        "title": copy["title"],
+        "blocks": [{"type": "text", "text": copy["text"]}],
+        "actions": [
+            {"id": "clarify_accept", "label": copy["accept"]},
+            {"id": "clarify_decline", "label": copy["decline"]},
+        ],
+        # carried in pending_ui_request by process_turn via field_names/actions;
+        # also stash clarify_field on a custom key consumed when binding pending
+        "clarify_field": field,
+    }
+
+
+def _build_collect_ui_request(
+    stage: str,
+    missing_fields: List[str],
+    confirmed_fields: Dict[str, Any],
+    sub_state: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    catalog = ONBOARDING_FIELD_CATALOG.get(stage)
+    if not catalog:
+        return None
+    if stage == OnboardingState.ELIGIBILITY_SCREENING.value:
+        if any(f.endswith("_clarification") for f in missing_fields) or (
+            sub_state.get("eligibility_pending_negative") or {}
+        ):
+            return None  # clarification present card instead
+
+    # Edit / retry: re-show contact form starting from earlier (or attempted) values
+    editing_contact = (
+        stage == OnboardingState.CONTACT_CAPTURE.value
+        and sub_state.get("editing_contact")
+    )
+    prefill = sub_state.get("form_prefill") or {}
+    if editing_contact:
+        fields = []
+        for spec in catalog:
+            field = dict(spec)
+            existing = confirmed_fields.get(spec["name"])
+            if existing is None or existing == "":
+                existing = prefill.get(spec["name"])
+            if existing is not None and existing != "":
+                field["value"] = existing
+            fields.append(field)
+    else:
+        fields = []
+        for spec in catalog:
+            if not _field_still_needed(stage, spec["name"], confirmed_fields, sub_state):
+                continue
+            field = dict(spec)
+            # Retry after failed save: keep what they typed
+            if prefill.get(spec["name"]):
+                field["value"] = prefill[spec["name"]]
+            fields.append(field)
+    if not fields:
+        return None
+    req: Dict[str, Any] = {
+        "id": f"onboarding:{stage}",
+        "mode": "collect",
+        "kind": "form",
+        "title": (
+            "Update your details"
+            if editing_contact
+            else COLLECT_STAGE_TITLES.get(stage, "Please complete")
+        ),
+        "fields": fields,
+    }
+    save_error = sub_state.pop("form_save_error", None)
+    if save_error:
+        req["description"] = save_error
+    return req
+
+
+def _registration_summary_text(confirmed_fields: Dict[str, Any]) -> str:
+    lines = []
+    if confirmed_fields.get("full_name"):
+        lines.append(f"Name: {confirmed_fields['full_name']}")
+    if confirmed_fields.get("email"):
+        lines.append(f"Email: {confirmed_fields['email']}")
+    if confirmed_fields.get("phone"):
+        lines.append(f"Phone: {confirmed_fields['phone']}")
+    motivation = confirmed_fields.get("welcome_response") or confirmed_fields.get("motivation")
+    if motivation:
+        lines.append(f"Motivation: {str(motivation)[:200]}")
+    return "\n".join(lines)
+
+
+def _build_present_ui_request(
+    stage: str,
+    confirmed_fields: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Present-mode structured turn (info/media + optional Continue/Confirm)."""
+    if stage == OnboardingState.ORIENTATION_VIDEO.value:
+        from app.service.llm_adapter import ONBOARDING_CLASSROOM_VIDEO_URL
+
+        blocks: List[Dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": (
+                    "Watch this short clip to see how our classes work. "
+                    "Tap Continue when you're ready."
+                ),
+            },
+        ]
+        if ONBOARDING_CLASSROOM_VIDEO_URL:
+            blocks.append({
+                "type": "video",
+                "url": ONBOARDING_CLASSROOM_VIDEO_URL,
+                "caption": "A glimpse of an eVidyaloka online class",
+            })
+        return {
+            "id": f"onboarding:{stage}",
+            "mode": "present",
+            "kind": "form",
+            "title": "See a real classroom",
+            "blocks": blocks,
+            "actions": [{"id": "continue", "label": "Continue"}],
+        }
+
+    if stage == OnboardingState.REGISTRATION_REVIEW.value:
+        summary = _registration_summary_text(confirmed_fields)
+        if not summary:
+            return None
+        return {
+            "id": f"onboarding:{stage}",
+            "mode": "present",
+            "kind": "form",
+            "title": "Confirm your details",
+            "blocks": [{"type": "text", "text": summary}],
+            "actions": [
+                {"id": "confirm", "label": "Looks good"},
+                {"id": "edit_contact", "label": "Edit details"},
+            ],
+        }
+
+    if stage == OnboardingState.HUMAN_REVIEW.value:
+        # Terminal info card — no actions; we don't need a reply.
+        # Prefer every failed gate the volunteer already answered — not a re-ask.
+        failed = [
+            f for f in ELIGIBILITY_FIELDS
+            if confirmed_fields.get(f) is False
+        ]
+        if not failed:
+            reason = confirmed_fields.get("review_reason")
+            if reason:
+                failed = [reason]
+        if not failed:
+            failed = ["_default"]
+        if len(failed) == 1:
+            reason = failed[0]
+            copy = _ELIGIBILITY_STOP.get(reason) or _ELIGIBILITY_STOP["_default"]
+            title = copy["title"]
+            text = copy["text"]
+            stop_id = reason
+        else:
+            stop_id = "multiple"
+            title = "We can't continue — eligibility"
+            parts = []
+            for reason in failed:
+                copy = _ELIGIBILITY_STOP.get(reason) or _ELIGIBILITY_STOP["_default"]
+                parts.append(copy["text"])
+            text = "\n\n".join(parts)
+        return {
+            "id": f"onboarding:stop:{stop_id}",
+            "mode": "present",
+            "kind": "form",
+            "title": title,
+            "blocks": [{"type": "text", "text": text}],
+            "actions": [],
+        }
+    return None
+
+
+def _build_ui_request(
+    stage: str,
+    missing_fields: List[str],
+    confirmed_fields: Dict[str, Any],
+    sub_state: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Build collect or present UiRequest for structured-UI channels."""
+    sub_state = sub_state or {}
+    # Clarification presents are for chat soft-nos only — never re-ask after a form No.
+    if stage == OnboardingState.ELIGIBILITY_SCREENING.value:
+        pending = sub_state.get("eligibility_pending_negative") or {}
+        if pending and not any(
+            sub_state.get("eligibility", {}).get(f) is False for f in ELIGIBILITY_FIELDS
+        ):
+            clarify = _build_eligibility_clarify_ui_request(missing_fields, sub_state)
+            if clarify:
+                return clarify
+    collect = _build_collect_ui_request(stage, missing_fields, confirmed_fields, sub_state)
+    if collect:
+        return collect
+    return _build_present_ui_request(stage, confirmed_fields)
+
+
+def _assistant_message_for_ui_request(ui_request: Dict[str, Any], stage: str) -> str:
+    mode = (ui_request or {}).get("mode") or "collect"
+    if mode == "present":
+        if stage == OnboardingState.ORIENTATION_VIDEO.value:
+            return "Here's a quick look at an eVidyaloka online class."
+        if stage == OnboardingState.REGISTRATION_REVIEW.value:
+            return "Please confirm your details below."
+        if stage == OnboardingState.HUMAN_REVIEW.value:
+            return "Here's why we can't continue right now."
+        req_id = (ui_request or {}).get("id") or ""
+        if "eligibility_clarify" in req_id:
+            return "One quick clarification before we continue."
+        return "Please take a look below."
+    title = (ui_request or {}).get("title") or ""
+    if stage == OnboardingState.WELCOME.value:
+        return (
+            "Welcome to eVidyaloka! Through Project Serve, volunteers teach English "
+            "online to students in rural India — about 2–3 hours a week. "
+            "Tell us what brings you here."
+        )
+    if stage == OnboardingState.ELIGIBILITY_SCREENING.value:
+        return "Please answer the quick eligibility questions below."
+    if stage == OnboardingState.CONTACT_CAPTURE.value:
+        if (ui_request or {}).get("title") == "Update your details":
+            return "Update anything that needs changing, then submit."
+        return "Please fill in your details below so we can register you."
+    return f"Please complete: {title}" if title else "Please complete the form below."
 
 
 # ── Pattern matching helpers ────────────────────────────────────────────────────
@@ -700,6 +1232,9 @@ def _all_eligibility_passed(sub_state: Dict[str, Any]) -> bool:
 # ── Stage transition logic ──────────────────────────────────────────────────────
 
 def _stage_missing_fields(stage: str, confirmed_fields: Dict[str, Any], sub_state: Dict[str, Any]) -> List[str]:
+    if stage == OnboardingState.WELCOME.value:
+        return [] if sub_state.get("welcome_response") else ["motivation"]
+
     if stage == OnboardingState.ORIENTATION_VIDEO.value:
         return [] if sub_state.get("video_acknowledged") else ["video_acknowledgement"]
 
@@ -751,15 +1286,15 @@ def _determine_next_state(
     ) and _matches_any(lower, PAUSE_PATTERNS):
         return OnboardingState.PAUSED.value, "Volunteer asked to pause"
 
-    # WELCOME: v2 — collapsed to 1-2 turns
+    # WELCOME: show intro + collect motivation before advancing
     if current_state == OnboardingState.WELCOME.value:
         if not sub_state.get("welcome_shown"):
-            # Turn 1: show welcome + ask what brings them here (combined)
             sub_state["welcome_shown"] = True
             sub_state["consent_given"] = True  # implicit — they messaged us
-            return current_state, "Showing welcome + asking intent"
-        # Turn 2: they responded → capture intent, move to orientation
-        return OnboardingState.ORIENTATION_VIDEO.value, "Welcome response received — proceeding to orientation"
+            return current_state, "Showing welcome + motivation collect"
+        if not sub_state.get("welcome_response"):
+            return current_state, "Waiting for motivation"
+        return OnboardingState.ORIENTATION_VIDEO.value, "Motivation captured — proceeding to orientation"
 
     # ORIENTATION VIDEO: wait for user response, then move to eligibility
     if current_state == OnboardingState.ORIENTATION_VIDEO.value:
@@ -779,6 +1314,9 @@ def _determine_next_state(
 
     # CONTACT CAPTURE
     if current_state == OnboardingState.CONTACT_CAPTURE.value:
+        # Stay here while volunteer is editing — don't bounce straight back to review
+        if sub_state.get("editing_contact"):
+            return current_state, "Editing contact details"
         missing = _stage_missing_fields(current_state, confirmed_fields, sub_state)
         if not missing:
             return OnboardingState.REGISTRATION_REVIEW.value, "Contact details captured"
@@ -788,20 +1326,23 @@ def _determine_next_state(
     if current_state == OnboardingState.TEACHING_PROFILE.value:
         return OnboardingState.REGISTRATION_REVIEW.value, "Legacy stage redirected"
 
+    # HUMAN REVIEW — terminal eligibility stop (no further onboarding)
+    if current_state == OnboardingState.HUMAN_REVIEW.value:
+        return OnboardingState.HUMAN_REVIEW.value, "Terminal eligibility stop"
+
     # REGISTRATION REVIEW
     if current_state == OnboardingState.REGISTRATION_REVIEW.value:
-        if _matches_any(lower, CONFIRM_PATTERNS):
+        if sub_state.pop("review_edit", None):
+            sub_state["editing_contact"] = True
+            return OnboardingState.CONTACT_CAPTURE.value, "Volunteer wants to update details"
+        confirmed = sub_state.pop("review_confirmed", None) or _matches_any(lower, CONFIRM_PATTERNS)
+        if confirmed:
             ready, _ = _evaluate_registration_readiness(confirmed_fields, sub_state)
             if ready:
                 return OnboardingState.ONBOARDING_COMPLETE.value, "Volunteer confirmed registration"
         if any(t in lower for t in ["change", "update", "edit", "wrong", "fix"]):
-            # Clear the field being edited so re-extraction works
-            if "name" in lower and "full_name" in confirmed_fields:
-                del confirmed_fields["full_name"]
-            if "email" in lower and "email" in confirmed_fields:
-                del confirmed_fields["email"]
-            if "phone" in lower and "phone" in confirmed_fields:
-                del confirmed_fields["phone"]
+            # Prefill edit form — keep values; volunteer edits in place
+            sub_state["editing_contact"] = True
             return OnboardingState.CONTACT_CAPTURE.value, "Volunteer wants to update details"
         # If volunteer just types a name (correction without saying "change")
         # e.g. they said "No" then typed "Hemant Kumar"
@@ -830,6 +1371,7 @@ def _build_prompt_fields(confirmed_fields: Dict[str, Any], sub_state: Dict[str, 
     merged["consent_given"] = sub_state.get("consent_given", False)
     merged["eligibility_bundled_asked"] = sub_state.get("eligibility_bundled_asked", False)
     merged["email_typo_warned"] = sub_state.get("email_typo_warned", False)
+    merged["stop_acknowledged"] = sub_state.get("stop_acknowledged", False)
     return merged
 
 
@@ -881,6 +1423,64 @@ class OnboardingAgentService:
                 confirmed_fields.pop("phone", None)
         logger.info(f"[{request.session_id}] confirmed_fields: {list(confirmed_fields.keys())}")
 
+        # Apply structured form / action submit (before chat extraction)
+        structured_payload = getattr(request, "structured_payload", None)
+        values_in = (structured_payload or {}).get("values") or {}
+        payload_updates = _apply_structured_payload(
+            structured_payload, confirmed_fields, sub_state
+        )
+        structured_applied = bool(
+            values_in
+            and (
+                payload_updates
+                or any(k in ELIGIBILITY_FIELDS for k in values_in)
+                or values_in.get("_action")
+                or "motivation" in values_in
+                or "welcome_response" in values_in
+            )
+        )
+
+        if payload_updates:
+            logger.info(
+                f"[{request.session_id}] structured_payload fields: "
+                f"{list(payload_updates.keys())}"
+            )
+            save_result = await domain_client.save_confirmed_fields(
+                request.session_id, payload_updates
+            )
+            if save_result.get("status") == "error":
+                # Do not advance on phantom in-memory data — roll back and re-show form
+                logger.warning(
+                    f"[{request.session_id}] save_confirmed_fields failed: "
+                    f"{save_result.get('error')}"
+                )
+                for key in payload_updates:
+                    if key != "motivation":
+                        confirmed_fields.pop(key, None)
+                sub_state["form_prefill"] = {
+                    k: v for k, v in payload_updates.items() if k != "motivation"
+                }
+                sub_state["form_save_error"] = (
+                    "We couldn't save those details. Please check your name, email, and phone."
+                )
+                if any(k in CONTACT_FIELDS for k in payload_updates):
+                    sub_state["editing_contact"] = True
+            else:
+                sub_state.pop("form_prefill", None)
+                sub_state.pop("form_save_error", None)
+            telemetry_events.append(
+                TelemetryEvent(
+                    session_id=request.session_id,
+                    event_type=EventType.MCP_CALL,
+                    agent=AgentType.ONBOARDING,
+                    data={
+                        "action": "save_fields_structured",
+                        "fields": list(payload_updates.keys()),
+                        "status": save_result.get("status"),
+                    },
+                )
+            )
+
         # Auto-populate phone from WhatsApp channel_metadata
         if "phone" not in confirmed_fields:
             ch_meta = (session_state.channel_metadata or {})
@@ -906,40 +1506,47 @@ class OnboardingAgentService:
             domain_client=domain_client,
         )
 
-        # Extract profile fields from user message
-        extracted_fields = profile_extractor.extract_all(
-            request.user_message,
-            existing_fields=confirmed_fields,
-            current_stage=current_state,
-        )
-        logger.info(f"[{request.session_id}] extracted (stage={current_state}): {extracted_fields}")
-
-        # Email typo detection — check before saving
+        # Extract profile fields from chat (skipped when this turn is a form submit)
         email_typo_suggestion = None
-        if "email" in extracted_fields and not sub_state.get("email_typo_warned"):
-            suggestion = _check_email_typo(extracted_fields["email"])
-            if suggestion:
-                email_typo_suggestion = suggestion
-                sub_state["email_typo_warned"] = True
-                # Don't save the typo email yet — let the LLM ask for confirmation
-                del extracted_fields["email"]
-
-        new_fields = {k: v for k, v in extracted_fields.items() if confirmed_fields.get(k) != v}
-        if new_fields:
-            logger.info(f"[{request.session_id}] saving new fields: {list(new_fields.keys())}")
-            await domain_client.save_confirmed_fields(request.session_id, new_fields)
-            confirmed_fields.update(new_fields)
-            telemetry_events.append(
-                TelemetryEvent(
-                    session_id=request.session_id,
-                    event_type=EventType.MCP_CALL,
-                    agent=AgentType.ONBOARDING,
-                    data={"action": "save_fields", "fields": list(new_fields.keys())},
-                )
+        if structured_applied or request.user_message in SYSTEM_MESSAGES:
+            logger.info(f"[{request.session_id}] skipping ProfileExtractor — structured_payload applied")
+            extracted_fields = {}
+        else:
+            extracted_fields = profile_extractor.extract_all(
+                request.user_message,
+                existing_fields=confirmed_fields,
+                current_stage=current_state,
             )
+            logger.info(f"[{request.session_id}] extracted (stage={current_state}): {extracted_fields}")
 
-        # Update stage-specific sub_state
-        self._update_stage_specific_sub_state(current_state, request.user_message, sub_state)
+            # Email typo detection — check before saving
+            if "email" in extracted_fields and not sub_state.get("email_typo_warned"):
+                suggestion = _check_email_typo(extracted_fields["email"])
+                if suggestion:
+                    email_typo_suggestion = suggestion
+                    sub_state["email_typo_warned"] = True
+                    # Don't save the typo email yet — let the LLM ask for confirmation
+                    del extracted_fields["email"]
+
+            new_fields = {k: v for k, v in extracted_fields.items() if confirmed_fields.get(k) != v}
+            if new_fields:
+                logger.info(f"[{request.session_id}] saving new fields: {list(new_fields.keys())}")
+                await domain_client.save_confirmed_fields(request.session_id, new_fields)
+                confirmed_fields.update(new_fields)
+                telemetry_events.append(
+                    TelemetryEvent(
+                        session_id=request.session_id,
+                        event_type=EventType.MCP_CALL,
+                        agent=AgentType.ONBOARDING,
+                        data={"action": "save_fields", "fields": list(new_fields.keys())},
+                    )
+                )
+
+        # Update stage-specific sub_state (skip chat parse after structured submit)
+        if structured_applied and current_state == OnboardingState.ELIGIBILITY_SCREENING.value:
+            sub_state["eligibility_bundled_asked"] = True
+        elif not structured_applied:
+            self._update_stage_specific_sub_state(current_state, request.user_message, sub_state)
 
         # Persist motivation to profile if captured this turn
         if sub_state.get("_save_motivation"):
@@ -976,16 +1583,63 @@ class OnboardingAgentService:
             prompt_fields["volunteer_reluctant"] = True
 
         next_missing_fields = _stage_missing_fields(next_state, confirmed_fields, sub_state)
-        logger.info(f"[{request.session_id}] LLM: stage={next_state}, missing={next_missing_fields}")
+        logger.info(f"[{request.session_id}] render: stage={next_state}, missing={next_missing_fields}")
 
-        assistant_message = await llm_adapter.generate_response(
-            stage=next_state,
-            messages=request.conversation_history,
-            user_message=request.user_message,
-            missing_fields=next_missing_fields,
-            confirmed_fields=prompt_fields,
-            memory_context=memory_context,
+        # Turn triad: collect/present UiRequest → deterministic template → LLM exception
+        ui_request = None
+        already_terminal = (
+            current_state == OnboardingState.HUMAN_REVIEW.value
+            and next_state == OnboardingState.HUMAN_REVIEW.value
         )
+        if already_terminal:
+            # Stop card already shown — no re-emit, no further chat.
+            sub_state["pending_ui_request"] = None
+            assistant_message = ""
+            logger.info(f"[{request.session_id}] human_review already terminal — silent")
+        elif _channel_supports_structured_ui(session_state):
+            ui_request = _build_ui_request(
+                next_state, next_missing_fields, prompt_fields, sub_state
+            )
+            if ui_request:
+                pending_bind = {
+                    "id": ui_request["id"],
+                    "field_names": [f["name"] for f in ui_request.get("fields") or []],
+                    "actions": [
+                        a.get("id")
+                        for a in (ui_request.get("actions") or [])
+                        if a.get("id")
+                    ],
+                }
+                if ui_request.get("clarify_field"):
+                    pending_bind["clarify_field"] = ui_request["clarify_field"]
+                sub_state["pending_ui_request"] = pending_bind
+            else:
+                sub_state["pending_ui_request"] = None
+
+            if ui_request:
+                assistant_message = _assistant_message_for_ui_request(ui_request, next_state)
+                logger.info(
+                    f"[{request.session_id}] structured turn ui_request={ui_request.get('id')} "
+                    f"mode={ui_request.get('mode')} — skipped LLM"
+                )
+            else:
+                assistant_message = await llm_adapter.generate_response(
+                    stage=next_state,
+                    messages=request.conversation_history,
+                    user_message=request.user_message,
+                    missing_fields=next_missing_fields,
+                    confirmed_fields=prompt_fields,
+                    memory_context=memory_context,
+                )
+        else:
+            assistant_message = await llm_adapter.generate_response(
+                stage=next_state,
+                messages=request.conversation_history,
+                user_message=request.user_message,
+                missing_fields=next_missing_fields,
+                confirmed_fields=prompt_fields,
+                memory_context=memory_context,
+            )
 
         # Persist sub_state
         updated_sub_state = _dump_sub_state(sub_state)
@@ -1107,6 +1761,7 @@ class OnboardingAgentService:
             new_facts=response_new_facts,
             handoff_event=handoff_event,
             telemetry_events=telemetry_events,
+            ui_request=ui_request,
         )
 
     def _normalise_stage(self, stage: str) -> str:
@@ -1122,15 +1777,17 @@ class OnboardingAgentService:
 
     def _update_stage_specific_sub_state(self, current_state: str, user_message: str, sub_state: Dict[str, Any]) -> None:
         if current_state == OnboardingState.WELCOME.value:
-            # Capture the volunteer's motivation/intent response and persist it
-            if sub_state.get("welcome_shown") and user_message and user_message not in ("__handoff__", "__auto_continue__"):
+            # Chat-channel motivation (WA); never treat form/system sentinels as motivation
+            if (
+                sub_state.get("welcome_shown")
+                and user_message
+                and user_message not in SYSTEM_MESSAGES
+            ):
                 motivation_text = user_message.strip()[:500]
                 sub_state["welcome_response"] = motivation_text
-                # Persist motivation to volunteer profile so selection can pre-score it
                 sub_state["_save_motivation"] = motivation_text
         if current_state == OnboardingState.ORIENTATION_VIDEO.value:
-            # Any reply to the video message = acknowledged
-            if user_message and user_message not in ("__handoff__", "__auto_continue__"):
+            if user_message and user_message not in SYSTEM_MESSAGES:
                 sub_state["video_acknowledged"] = True
         if current_state == OnboardingState.ELIGIBILITY_SCREENING.value:
             # Mark bundled as asked after first entry (so next turn processes the answer)

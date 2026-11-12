@@ -57,14 +57,18 @@ class WebUIAdapter(ChannelAdapter):
             or meta.get("user_id")
             or (f"web_{request.session_id}" if request.session_id else "web_anonymous")
         )
+        has_structured = bool(request.structured_payload)
         return NormalizedEvent(
             actor_id=actor_id,
             channel=ChannelType.WEB_UI,
-            trigger_type=TriggerType.USER_MESSAGE,
+            trigger_type=(
+                TriggerType.STRUCTURED_SUBMIT if has_structured else TriggerType.USER_MESSAGE
+            ),
             payload=request.message,
             session_id=request.session_id,
             persona=request.persona,
             raw_metadata=meta,
+            structured_payload=request.structured_payload,
         )
 
 
@@ -113,14 +117,18 @@ class APIAdapter(ChannelAdapter):
             or meta.get("client_id")
             or "api_client"
         )
+        has_structured = bool(request.structured_payload)
         return NormalizedEvent(
             actor_id=actor_id,
             channel=ChannelType.API,
-            trigger_type=TriggerType.USER_MESSAGE,
+            trigger_type=(
+                TriggerType.STRUCTURED_SUBMIT if has_structured else TriggerType.USER_MESSAGE
+            ),
             payload=request.message,
             session_id=request.session_id,
             persona=request.persona,
             raw_metadata=meta,
+            structured_payload=request.structured_payload,
         )
 
 
@@ -178,12 +186,16 @@ class MobileAdapter(ChannelAdapter):
             or meta.get("user_id")
             or (f"mobile_{request.session_id}" if request.session_id else "mobile_anonymous")
         )
+        has_structured = bool(request.structured_payload)
         return NormalizedEvent(
             actor_id=actor_id,
             channel=ChannelType.MOBILE,
-            trigger_type=TriggerType.USER_MESSAGE,
+            trigger_type=(
+                TriggerType.STRUCTURED_SUBMIT if has_structured else TriggerType.USER_MESSAGE
+            ),
             payload=request.message,
             session_id=request.session_id,
             persona=request.persona,
             raw_metadata=meta,
+            structured_payload=request.structured_payload,
         )

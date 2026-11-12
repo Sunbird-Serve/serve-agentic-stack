@@ -38,6 +38,17 @@ function getActiveStep(messages) {
   return 0;
 }
 
+/**
+ * Optional user-bubble for structured submits.
+ * Collect forms already show answers in the card — do not re-echo them in chat.
+ * Present actions (Continue / Confirm) get a short label only.
+ */
+function formatStructuredEcho(uiRequest, values = {}) {
+  if (!values?._action) return null;
+  const action = (uiRequest?.actions || []).find((a) => a.id === values._action);
+  return action?.label || null;
+}
+
 // ─── Hero Panel (before conversation starts) ─────────────────────────────────
 
 function HeroPanel() {
@@ -208,6 +219,48 @@ export function VolunteerChatPage() {
 
   const activeStep = getActiveStep(messages);
 
+  const appendAssistantResponse = useCallback((response, idPrefix = 'assistant') => {
+    if (response.session_id) {
+      sessionIdRef.current = response.session_id;
+    }
+    if (response.debug_info?.guest_id) {
+      guestIdRef.current = response.debug_info.guest_id;
+      localStorage.setItem('serve_guest_id', response.debug_info.guest_id);
+    }
+    if (response.preliminary_message) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `progress-${Date.now()}`,
+          role: 'assistant',
+          content: response.preliminary_message,
+          timestamp: new Date().toISOString(),
+          metadata: {
+            type: 'progress',
+            agent: response.active_agent,
+            state: response.state,
+          },
+        },
+      ]);
+    }
+    if (response.assistant_message) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `${idPrefix}-${Date.now()}`,
+          role: 'assistant',
+          content: response.assistant_message,
+          timestamp: new Date().toISOString(),
+          metadata: {
+            agent: response.active_agent,
+            state: response.state,
+            ui_request: response.ui_request || null,
+          },
+        },
+      ]);
+    }
+  }, []);
+
   const sendMessage = useCallback(async (content) => {
     if (!content.trim() || loading) return;
     if (!hasStarted) setHasStarted(true);
@@ -231,59 +284,15 @@ export function VolunteerChatPage() {
         campaignSource.current
       );
 
-      if (response.session_id) {
-        sessionIdRef.current = response.session_id;
-      }
-      if (response.debug_info?.guest_id) {
-        guestIdRef.current = response.debug_info.guest_id;
-        localStorage.setItem('serve_guest_id', response.debug_info.guest_id);
-      }
+      appendAssistantResponse(response);
 
-      // Progress message
-      if (response.preliminary_message) {
-        setMessages((prev) => [...prev, {
-          id: `progress-${Date.now()}`,
-          role: 'assistant',
-          content: response.preliminary_message,
-          timestamp: new Date().toISOString(),
-          metadata: { type: 'progress', agent: response.active_agent, state: response.state },
-        }]);
-      }
-
-      // Assistant message
-      setMessages((prev) => [...prev, {
-        id: `assistant-${Date.now()}`,
-        role: 'assistant',
-        content: response.assistant_message,
-        timestamp: new Date().toISOString(),
-        metadata: { agent: response.active_agent, state: response.state },
-      }]);
-
-      // Auto-continue
       if (response.auto_continue) {
         const followup = await orchestratorApi.guestInteract(
           sessionIdRef.current,
           '__auto_continue__',
           guestIdRef.current
         );
-        if (followup.preliminary_message) {
-          setMessages((prev) => [...prev, {
-            id: `progress-f-${Date.now()}`,
-            role: 'assistant',
-            content: followup.preliminary_message,
-            timestamp: new Date().toISOString(),
-            metadata: { agent: followup.active_agent, state: followup.state },
-          }]);
-        }
-        if (followup.assistant_message) {
-          setMessages((prev) => [...prev, {
-            id: `assistant-f-${Date.now()}`,
-            role: 'assistant',
-            content: followup.assistant_message,
-            timestamp: new Date().toISOString(),
-            metadata: { agent: followup.active_agent, state: followup.state },
-          }]);
-        }
+        appendAssistantResponse(followup, 'assistant-f');
       }
     } catch (error) {
       console.error('Failed to send message:', error);
@@ -296,7 +305,87 @@ export function VolunteerChatPage() {
     }
 
     setLoading(false);
-  }, [loading, hasStarted]);
+  }, [loading, hasStarted, appendAssistantResponse]);
+
+  const submitStructured = useCallback(async (uiRequest, values, messageId) => {
+    if (loading) return;
+    setLoading(true);
+
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === messageId
+          ? {
+              ...m,
+              metadata: {
+                ...m.metadata,
+                ui_request_submitted: true,
+                form_values: values,
+              },
+            }
+          : m
+      )
+    );
+
+    // Echo what the volunteer actually answered — never "Submitted: <form title>"
+    const userEcho = formatStructuredEcho(uiRequest, values);
+    if (userEcho) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `user-form-${Date.now()}`,
+          role: 'user',
+          content: userEcho,
+          timestamp: new Date().toISOString(),
+          metadata: { form_values: values, ui_request_id: uiRequest?.id },
+        },
+      ]);
+    }
+
+    try {
+      const response = await orchestratorApi.guestInteract(
+        sessionIdRef.current,
+        '[form_submitted]',
+        guestIdRef.current,
+        'web_ui',
+        'new_volunteer',
+        campaignSource.current,
+        {
+          ui_request_id: uiRequest?.id,
+          values,
+        }
+      );
+      appendAssistantResponse(response, 'assistant-form');
+
+      if (response.auto_continue) {
+        const followup = await orchestratorApi.guestInteract(
+          sessionIdRef.current,
+          '__auto_continue__',
+          guestIdRef.current
+        );
+        appendAssistantResponse(followup, 'assistant-form-f');
+      }
+    } catch (error) {
+      console.error('Failed to submit form:', error);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId
+            ? { ...m, metadata: { ...m.metadata, ui_request_submitted: false } }
+            : m
+        )
+      );
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `error-${Date.now()}`,
+          role: 'assistant',
+          content: 'Something went wrong submitting the form. Please try again.',
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    }
+
+    setLoading(false);
+  }, [loading, appendAssistantResponse]);
 
   return (
     <div className="min-h-screen bg-white flex">
@@ -352,7 +441,11 @@ export function VolunteerChatPage() {
 
         {/* Chat area */}
         <div className={`flex-1 flex flex-col overflow-hidden ${!hasStarted && messages.length === 0 ? 'hidden md:flex' : ''}`}>
-          <ChatThread messages={messages} loading={loading} />
+          <ChatThread
+            messages={messages}
+            loading={loading}
+            onStructuredSubmit={submitStructured}
+          />
         </div>
 
         <div className="shrink-0">
